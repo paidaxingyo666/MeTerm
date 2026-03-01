@@ -19,12 +19,17 @@ on:
         type: boolean
   push:
     branches: [main, release/*]
+    tags:
+      - 'v*'
     paths:
       - 'backend/**'
       - 'desktop/**'
       - 'frontend/**'
       - 'build-macos.sh'
       - '.github/workflows/build-macos.yml'
+
+permissions:
+  contents: write
 
 env:
   GO_VERSION: '1.25'
@@ -114,6 +119,15 @@ jobs:
           name: meterm-macos-arm64-app
           path: desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
 
+      - name: Publish release assets (tag only)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
   build-macos-x86_64:
     if: ${{ github.event_name == 'push' || inputs.arch == 'x86_64' || inputs.arch == 'both' }}
     runs-on: macos-latest  # Cross-compile x86_64 on Apple Silicon
@@ -193,3 +207,12 @@ jobs:
         with:
           name: meterm-macos-x86_64-app
           path: desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+
+      - name: Publish release assets (tag only)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
