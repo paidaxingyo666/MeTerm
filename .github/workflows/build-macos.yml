@@ -100,6 +100,14 @@ jobs:
             codesign --verify --verbose=2 "$APP_PATH"
           fi
 
+      - name: Rename updater artifacts (arm64)
+        run: |
+          BUNDLE_DIR=desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos
+          if [ -f "$BUNDLE_DIR/MeTerm.app.tar.gz" ]; then
+            mv "$BUNDLE_DIR/MeTerm.app.tar.gz" "$BUNDLE_DIR/MeTerm_aarch64.app.tar.gz"
+            mv "$BUNDLE_DIR/MeTerm.app.tar.gz.sig" "$BUNDLE_DIR/MeTerm_aarch64.app.tar.gz.sig"
+          fi
+
       - name: Upload DMG (arm64)
         uses: actions/upload-artifact@v4
         with:
@@ -118,8 +126,8 @@ jobs:
         with:
           files: |
             desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
-            desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*_aarch64.app.tar.gz
+            desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*_aarch64.app.tar.gz.sig
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
@@ -191,6 +199,14 @@ jobs:
             codesign --verify --verbose=2 "$APP_PATH"
           fi
 
+      - name: Rename updater artifacts (x86_64)
+        run: |
+          BUNDLE_DIR=desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos
+          if [ -f "$BUNDLE_DIR/MeTerm.app.tar.gz" ]; then
+            mv "$BUNDLE_DIR/MeTerm.app.tar.gz" "$BUNDLE_DIR/MeTerm_x86_64.app.tar.gz"
+            mv "$BUNDLE_DIR/MeTerm.app.tar.gz.sig" "$BUNDLE_DIR/MeTerm_x86_64.app.tar.gz.sig"
+          fi
+
       - name: Upload DMG (x86_64)
         uses: actions/upload-artifact@v4
         with:
@@ -209,7 +225,7 @@ jobs:
         with:
           files: |
             desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-            desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
-            desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*_x86_64.app.tar.gz
+            desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*_x86_64.app.tar.gz.sig
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
