@@ -9,14 +9,8 @@ on:
         default: true
         type: boolean
   push:
-    branches: [main, release/*]
     tags:
       - 'v*'
-    paths:
-      - 'backend/**'
-      - 'desktop/**'
-      - 'frontend/**'
-      - '.github/workflows/build-windows.yml'
 
 permissions:
   contents: write
