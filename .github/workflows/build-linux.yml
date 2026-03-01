@@ -12,13 +12,14 @@ on:
           - amd64
           - arm64
           - both
-  push:
-    branches: [main, release/*]
-    paths:
-      - 'backend/**'
-      - 'desktop/**'
-      - 'frontend/**'
-      - '.github/workflows/build-linux.yml'
+  # push auto-build disabled — use workflow_dispatch for manual builds
+  # push:
+  #   branches: [main, release/*]
+  #   paths:
+  #     - 'backend/**'
+  #     - 'desktop/**'
+  #     - 'frontend/**'
+  #     - '.github/workflows/build-linux.yml'
 
 env:
   GO_VERSION: '1.25'

@@ -9,7 +9,7 @@ on:
         default: true
         type: boolean
   push:
-    branches: [main, release/*, dev-*]
+    branches: [dev-*]
     tags:
       - 'v*'
     paths:

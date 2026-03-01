@@ -2,81 +2,150 @@ name: Build Windows
 
 on:
   workflow_dispatch:
+    inputs:
+      upload_release:
+        description: 'Upload to GitHub Release on tag trigger'
+        required: false
+        default: true
+        type: boolean
   push:
     branches: [main, release/*]
+    tags:
+      - 'v*'
     paths:
       - 'backend/**'
       - 'desktop/**'
       - 'frontend/**'
       - '.github/workflows/build-windows.yml'
 
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: '1.25'
+  NODE_VERSION: '20'
+  RUST_TARGET: 'x86_64-pc-windows-msvc'
+
 jobs:
   build-windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: cmd
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: backend/go.sum
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ env.RUST_TARGET }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
 
-      # Web 前端必须先构建，Go 后端通过 go:embed 嵌入 backend/web/dist/
       - name: Build web frontend
         run: |
-          cd frontend
-          npm ci
-          npm run build
+          cd frontend && npm ci && npm run build
+          if not exist ..\backend\web\dist\index.html (
+            echo ERROR: frontend build did not produce backend\web\dist\index.html
+            exit /b 1
+          )
 
-      # Go 后端仅编译 Linux 版本（Windows 上通过 WSL 运行）
-      # 注意：Go 后端依赖 creack/pty 等 Unix-only 库，无法编译为 Windows 原生二进制
-      - name: Build Go backend (Linux for WSL)
-        shell: bash
+      - name: Download ConPTY (conpty.dll from NuGet, OpenConsole.exe from WT release)
+        run: |
+          set "NUGET_PKG=CI.Microsoft.Windows.Console.ConPTY"
+          set "NUGET_VER=1.22.250314001"
+          set "NUGET_URL=https://www.nuget.org/api/v2/package/%NUGET_PKG%/%NUGET_VER%"
+          set "WT_VERSION=1.23.20211.0"
+          set "WT_URL=https://github.com/microsoft/terminal/releases/download/v%WT_VERSION%/Microsoft.WindowsTerminal_%WT_VERSION%_x64.zip"
+          mkdir desktop\src-tauri\binaries\conpty
+          mkdir %TEMP%\nuget_pkg
+          mkdir %TEMP%\wt_pkg
+          echo Downloading conpty.dll from NuGet %NUGET_PKG% %NUGET_VER% ...
+          curl -fSL -o %TEMP%\nuget_pkg\conpty.nupkg "%NUGET_URL%"
+          tar -xf %TEMP%\nuget_pkg\conpty.nupkg -C %TEMP%\nuget_pkg
+          set "FOUND_DLL="
+          for /r %TEMP%\nuget_pkg %%F in (conpty.dll) do if "%%~nxF"=="conpty.dll" ( echo Found: %%F & copy "%%F" desktop\src-tauri\binaries\conpty\conpty.dll & set "FOUND_DLL=1" )
+          if not defined FOUND_DLL (
+            echo ERROR: conpty.dll not found in NuGet package
+            dir /s %TEMP%\nuget_pkg
+            exit /b 1
+          )
+          echo Downloading OpenConsole.exe from Windows Terminal v%WT_VERSION% x64 ...
+          curl -fSL -o %TEMP%\wt_pkg\wt.zip "%WT_URL%"
+          tar -xf %TEMP%\wt_pkg\wt.zip -C %TEMP%\wt_pkg
+          set "FOUND_EXE="
+          for /r %TEMP%\wt_pkg %%F in (OpenConsole.exe) do if "%%~nxF"=="OpenConsole.exe" ( echo Found: %%F & copy "%%F" desktop\src-tauri\binaries\conpty\OpenConsole.exe & set "FOUND_EXE=1" )
+          if not defined FOUND_EXE (
+            echo ERROR: OpenConsole.exe not found in WT zip
+            dir /s %TEMP%\wt_pkg
+            exit /b 1
+          )
+          dir desktop\src-tauri\binaries\conpty\
+
+      - name: Build Go sidecar (Windows native)
         run: |
           cd backend
-          GOOS=linux GOARCH=amd64 go build -o ../desktop/src-tauri/binaries/meterm-server-x86_64-unknown-linux-gnu .
+          set GOOS=windows
+          set GOARCH=amd64
+          go build -ldflags="-s -w" -o ..\desktop\src-tauri\binaries\meterm-server-x86_64-pc-windows-msvc.exe .
 
-      # Install desktop dependencies and build frontend
+      - name: Build Go sidecar (Linux fallback resource)
+        run: |
+          cd backend
+          set GOOS=linux
+          set GOARCH=amd64
+          go build -ldflags="-s -w" -o ..\desktop\src-tauri\binaries\meterm-server-x86_64-unknown-linux-gnu .
+
       - name: Build desktop frontend
         run: |
-          cd desktop
-          npm ci
-          npm run build
+          cd desktop && npm ci && npm run build
 
-      # Build Tauri app
-      - name: Build Tauri app
+      - name: Build Tauri app (Windows x64)
         run: |
           cd desktop
-          npm run tauri build -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
+          npm run tauri build -- --target ${{ env.RUST_TARGET }} --bundles nsis --config src-tauri/tauri.windows.conf.json
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      # Upload artifacts
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
           name: meterm-windows-nsis
-          path: desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          path: desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/nsis/*.exe
+          if-no-files-found: error
 
       - name: Upload MSI installer
         uses: actions/upload-artifact@v4
         with:
           name: meterm-windows-msi
-          path: desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          path: desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/msi/*.msi
+          if-no-files-found: ignore
+
+      - name: Publish release assets (tag only)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'workflow_dispatch' || inputs.upload_release) }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/msi/*.msi
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
