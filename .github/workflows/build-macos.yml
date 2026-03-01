@@ -125,6 +125,8 @@ jobs:
         with:
           files: |
             desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
@@ -214,5 +216,7 @@ jobs:
         with:
           files: |
             desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
