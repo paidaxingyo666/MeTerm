@@ -1,0 +1,175 @@
+name: Build Windows (Native Sidecar, No WSL Required)
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_release:
+        description: '在 tag 触发时上传到 GitHub Release（手动触发时忽略）'
+        required: false
+        default: true
+        type: boolean
+  push:
+    branches: [main, release/*, dev-*]
+    tags:
+      - 'v*'
+    paths:
+      - 'backend/**'
+      - 'desktop/**'
+      - 'frontend/**'
+      - '.github/workflows/build-windows-native.yml'
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: '1.25'
+  NODE_VERSION: '20'
+  RUST_TARGET: 'x86_64-pc-windows-msvc'
+
+jobs:
+  build-windows-native:
+    #runs-on: windows-latest
+    runs-on: [self-hosted, windows]
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Setup Rust
+        run: |
+          where rustup >nul 2>&1 && goto :skip_install
+          curl -sSf -o %TEMP%\rustup-init.exe https://win.rustup.rs/x86_64
+          %TEMP%\rustup-init.exe -y --default-toolchain stable --target ${{ env.RUST_TARGET }}
+          del %TEMP%\rustup-init.exe
+          echo %USERPROFILE%\.cargo\bin>> %GITHUB_PATH%
+          :skip_install
+          set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+          rustup default stable
+          rustup target add ${{ env.RUST_TARGET }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # backend/web/dist 由 go:embed 使用，必须先构建前端
+      - name: Build web frontend
+        run: |
+          cd frontend && npm ci && npm run build
+          if not exist ..\backend\web\dist\index.html (
+            echo ERROR: frontend build did not produce backend\web\dist\index.html
+            exit /b 1
+          )
+
+      # Download bundled ConPTY components (hybrid approach):
+      #   conpty.dll   — from NuGet CI.Microsoft.Windows.Console.ConPTY
+      #                  (the WT portable zip does NOT ship conpty.dll)
+      #   OpenConsole.exe — from Windows Terminal release (newer than NuGet,
+      #                  fixes Win10 TUI-exit-kills-shell and resize phantoms)
+      - name: Download ConPTY (conpty.dll from NuGet, OpenConsole.exe from WT release)
+        run: |
+          set "NUGET_PKG=CI.Microsoft.Windows.Console.ConPTY"
+          set "NUGET_VER=1.22.250314001"
+          set "NUGET_URL=https://www.nuget.org/api/v2/package/%NUGET_PKG%/%NUGET_VER%"
+          set "WT_VERSION=1.23.20211.0"
+          set "WT_URL=https://github.com/microsoft/terminal/releases/download/v%WT_VERSION%/Microsoft.WindowsTerminal_%WT_VERSION%_x64.zip"
+          mkdir desktop\src-tauri\binaries\conpty
+          mkdir %TEMP%\nuget_pkg
+          mkdir %TEMP%\wt_pkg
+          echo Downloading conpty.dll from NuGet %NUGET_PKG% %NUGET_VER% ...
+          curl -fSL -o %TEMP%\nuget_pkg\conpty.nupkg "%NUGET_URL%"
+          tar -xf %TEMP%\nuget_pkg\conpty.nupkg -C %TEMP%\nuget_pkg
+          set "FOUND_DLL="
+          for /r %TEMP%\nuget_pkg %%F in (conpty.dll) do if "%%~nxF"=="conpty.dll" ( echo Found: %%F & copy "%%F" desktop\src-tauri\binaries\conpty\conpty.dll & set "FOUND_DLL=1" )
+          if not defined FOUND_DLL (
+            echo ERROR: conpty.dll not found in NuGet package
+            dir /s %TEMP%\nuget_pkg
+            exit /b 1
+          )
+          echo Downloading OpenConsole.exe from Windows Terminal v%WT_VERSION% x64 ...
+          curl -fSL -o %TEMP%\wt_pkg\wt.zip "%WT_URL%"
+          tar -xf %TEMP%\wt_pkg\wt.zip -C %TEMP%\wt_pkg
+          set "FOUND_EXE="
+          for /r %TEMP%\wt_pkg %%F in (OpenConsole.exe) do if "%%~nxF"=="OpenConsole.exe" ( echo Found: %%F & copy "%%F" desktop\src-tauri\binaries\conpty\OpenConsole.exe & set "FOUND_EXE=1" )
+          if not defined FOUND_EXE (
+            echo ERROR: OpenConsole.exe not found in WT zip
+            dir /s %TEMP%\wt_pkg
+            exit /b 1
+          )
+          dir desktop\src-tauri\binaries\conpty\
+
+      # Windows 原生 sidecar（ConPTY backend）
+      - name: Build Go sidecar (Windows native)
+        run: |
+          cd backend
+          set GOOS=windows
+          set GOARCH=amd64
+          go build -ldflags="-s -w" -o ..\desktop\src-tauri\binaries\meterm-server-x86_64-pc-windows-msvc.exe .
+
+      # 可选 WSL fallback 资源（当前 tauri.windows.conf.json 仍会打包该文件）
+      # 不影响原生 Windows 运行；仅作为 native sidecar 启动失败时的后备路径。
+      - name: Build Go sidecar (Linux fallback resource)
+        run: |
+          cd backend
+          set GOOS=linux
+          set GOARCH=amd64
+          go build -ldflags="-s -w" -o ..\desktop\src-tauri\binaries\meterm-server-x86_64-unknown-linux-gnu .
+
+      - name: Build desktop frontend
+        run: |
+          cd desktop && npm ci && npm run build
+
+      - name: Build Tauri app (Windows x64)
+        run: |
+          cd desktop
+          npm run tauri build -- --target ${{ env.RUST_TARGET }} --bundles nsis --config src-tauri/tauri.windows.conf.json
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: meterm-windows-native-nsis
+          path: desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: meterm-windows-native-msi
+          path: desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/msi/*.msi
+          if-no-files-found: ignore
+
+      - name: Upload EXE bundle (portable, if generated)
+        uses: actions/upload-artifact@v4
+        with:
+          name: meterm-windows-native-exe
+          path: desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/*.exe
+          if-no-files-found: ignore
+
+      - name: Publish release assets (tag only)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'workflow_dispatch' || inputs.upload_release) }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/msi/*.msi
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

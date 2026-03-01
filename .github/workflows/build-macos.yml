@@ -1,0 +1,195 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: '目标架构'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - arm64
+          - x86_64
+          - both
+      sign:
+        description: '启用代码签名'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches: [main, release/*]
+    paths:
+      - 'backend/**'
+      - 'desktop/**'
+      - 'frontend/**'
+      - 'build-macos.sh'
+      - '.github/workflows/build-macos.yml'
+
+env:
+  GO_VERSION: '1.25'
+  NODE_VERSION: '20'
+  # Must match minimumSystemVersion in tauri.conf.json to ensure consistent
+  # native UI rendering (traffic light buttons, titlebar style, etc.)
+  MACOSX_DEPLOYMENT_TARGET: '13.0'
+
+jobs:
+  build-macos-arm64:
+    if: ${{ github.event_name == 'push' || inputs.arch == 'arm64' || inputs.arch == 'both' }}
+    runs-on: macos-latest  # Apple Silicon (M1+)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # Web 前端必须先构建，Go 后端通过 go:embed 嵌入 backend/web/dist/
+      - name: Build web frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Build Go sidecar (arm64)
+        run: |
+          cd backend
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" \
+            -o ../desktop/src-tauri/binaries/meterm-server-aarch64-apple-darwin .
+
+      - name: Build desktop frontend
+        run: |
+          cd desktop
+          npm ci
+          npm run build
+
+      - name: Build Tauri app (arm64)
+        run: |
+          cd desktop
+          npm run tauri build -- --target aarch64-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # 可选: 代码签名
+      - name: Code sign (optional)
+        if: ${{ inputs.sign && env.APPLE_SIGNING_IDENTITY != '' }}
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          APP_PATH=$(find desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          if [ -n "$APP_PATH" ]; then
+            codesign --deep --force --options runtime \
+              --sign "$APPLE_SIGNING_IDENTITY" \
+              --timestamp "$APP_PATH"
+            codesign --verify --verbose=2 "$APP_PATH"
+          fi
+
+      - name: Upload DMG (arm64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: meterm-macos-arm64-dmg
+          path: desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+
+      - name: Upload App Bundle (arm64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: meterm-macos-arm64-app
+          path: desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+
+  build-macos-x86_64:
+    if: ${{ github.event_name == 'push' || inputs.arch == 'x86_64' || inputs.arch == 'both' }}
+    runs-on: macos-latest  # Cross-compile x86_64 on Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # Web 前端必须先构建，Go 后端通过 go:embed 嵌入 backend/web/dist/
+      - name: Build web frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Build Go sidecar (x86_64)
+        run: |
+          cd backend
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" \
+            -o ../desktop/src-tauri/binaries/meterm-server-x86_64-apple-darwin .
+
+      - name: Build desktop frontend
+        run: |
+          cd desktop
+          npm ci
+          npm run build
+
+      - name: Build Tauri app (x86_64)
+        run: |
+          cd desktop
+          npm run tauri build -- --target x86_64-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # 可选: 代码签名
+      - name: Code sign (optional)
+        if: ${{ inputs.sign && env.APPLE_SIGNING_IDENTITY != '' }}
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          APP_PATH=$(find desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          if [ -n "$APP_PATH" ]; then
+            codesign --deep --force --options runtime \
+              --sign "$APPLE_SIGNING_IDENTITY" \
+              --timestamp "$APP_PATH"
+            codesign --verify --verbose=2 "$APP_PATH"
+          fi
+
+      - name: Upload DMG (x86_64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: meterm-macos-x86_64-dmg
+          path: desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+
+      - name: Upload App Bundle (x86_64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: meterm-macos-x86_64-app
+          path: desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app

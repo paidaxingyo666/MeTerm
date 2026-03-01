@@ -1,0 +1,82 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, release/*]
+    paths:
+      - 'backend/**'
+      - 'desktop/**'
+      - 'frontend/**'
+      - '.github/workflows/build-windows.yml'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # Web 前端必须先构建，Go 后端通过 go:embed 嵌入 backend/web/dist/
+      - name: Build web frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      # Go 后端仅编译 Linux 版本（Windows 上通过 WSL 运行）
+      # 注意：Go 后端依赖 creack/pty 等 Unix-only 库，无法编译为 Windows 原生二进制
+      - name: Build Go backend (Linux for WSL)
+        shell: bash
+        run: |
+          cd backend
+          GOOS=linux GOARCH=amd64 go build -o ../desktop/src-tauri/binaries/meterm-server-x86_64-unknown-linux-gnu .
+
+      # Install desktop dependencies and build frontend
+      - name: Build desktop frontend
+        run: |
+          cd desktop
+          npm ci
+          npm run build
+
+      # Build Tauri app
+      - name: Build Tauri app
+        run: |
+          cd desktop
+          npm run tauri build -- --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # Upload artifacts
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: meterm-windows-nsis
+          path: desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: meterm-windows-msi
+          path: desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi

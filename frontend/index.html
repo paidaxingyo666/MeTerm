@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MeTerm Web Viewer</title>
+  </head>
+  <body>
+    <div id="app">
+      <!-- Auth View -->
+      <div id="view-auth" class="view">
+        <div class="auth-container">
+          <div class="auth-logo">
+            <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="3" y="5" width="18" height="14" rx="2.2" ry="2.2"/>
+              <path d="M7 10l3 2.5L7 15" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M12.5 15H17" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <h1 class="auth-title">MeTerm Web Viewer</h1>
+          <p class="auth-subtitle">Connect to observe terminal sessions</p>
+          <div class="auth-form">
+            <input type="text" id="auth-token" placeholder="Enter access token" autocomplete="off" spellcheck="false" />
+            <button id="auth-connect">Connect</button>
+          </div>
+          <div id="auth-error" class="auth-error"></div>
+        </div>
+      </div>
+
+      <!-- Sessions View -->
+      <div id="view-sessions" class="view" style="display:none">
+        <div class="sessions-header">
+          <h2>Sessions</h2>
+          <button id="sessions-disconnect" class="btn-icon" title="Disconnect">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+          </button>
+        </div>
+        <div id="sessions-list" class="sessions-list"></div>
+        <div id="sessions-empty" class="sessions-empty" style="display:none">
+          <p>No active sessions</p>
+          <p class="sessions-empty-hint">The host computer has no terminal sessions running.</p>
+        </div>
+      </div>
+
+      <!-- Terminal View -->
+      <div id="view-terminal" class="view" style="display:none">
+        <div id="terminal-toolbar">
+          <button id="terminal-back" class="btn-icon" title="Back to sessions">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 18l-6-6 6-6"/>
+            </svg>
+          </button>
+          <div id="terminal-info">
+            <span id="terminal-session-id"></span>
+          </div>
+          <div id="terminal-role-badge"></div>
+          <button id="terminal-request-master" class="btn-request" style="display:none">Request Control</button>
+        </div>
+        <div id="terminal"></div>
+        <div id="terminal-status">Disconnected</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

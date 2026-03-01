@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16213e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f3460"/>
+      <stop offset="100%" style="stop-color:#533483"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded rectangle background -->
+  <rect x="64" y="64" width="896" height="896" rx="180" ry="180" fill="url(#bg)"/>
+  <!-- Terminal window frame -->
+  <rect x="128" y="180" width="768" height="560" rx="24" ry="24" fill="#0d1117" stroke="#30363d" stroke-width="8"/>
+  <!-- Title bar -->
+  <rect x="128" y="180" width="768" height="72" rx="24" ry="24" fill="#161b22"/>
+  <rect x="128" y="228" width="768" height="24" fill="#161b22"/>
+  <!-- Traffic lights -->
+  <circle cx="200" cy="216" r="20" fill="#ff5f56"/>
+  <circle cx="272" cy="216" r="20" fill="#ffbd2e"/>
+  <circle cx="344" cy="216" r="20" fill="#27c93f"/>
+  <!-- Cursive M letter -->
+  <defs>
+    <linearGradient id="mGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#58a6ff"/>
+      <stop offset="50%" style="stop-color:#d2a8ff"/>
+      <stop offset="100%" style="stop-color:#f78166"/>
+    </linearGradient>
+  </defs>
+  <path d="M240,690 L240,290 L512,575 L784,290 L784,690 L714,690 L714,395 L512,635 L310,395 L310,690 Z"
+        fill="url(#mGrad)" opacity="0.9"/>
+  <!-- Multi-window indicator (stacked windows effect) -->
+  <rect x="192" y="740" width="640" height="60" rx="12" fill="url(#accent)" opacity="0.6"/>
+  <rect x="256" y="800" width="512" height="60" rx="12" fill="url(#accent)" opacity="0.4"/>
+</svg>

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      // Set background color immediately to prevent white flash in new windows
+      (function() {
+        try {
+          var s = JSON.parse(localStorage.getItem('meterm-settings') || '{}');
+          var cs = s.colorScheme || 'auto';
+          var dark = cs === 'dark' || cs === 'darker' || (cs === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.style.backgroundColor = cs === 'darker' ? '#121214' : dark ? '#2d2d2d' : '#f5f5f5';
+        } catch(e) {
+          document.documentElement.style.backgroundColor = '#2d2d2d';
+        }
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MeTerm</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="window-toolbar">
+        <div id="window-toolbar-drag-layer" data-tauri-drag-region></div>
+        <div id="window-toolbar-left"></div>
+        <div id="window-toolbar-tabs"></div>
+        <div id="window-toolbar-right"></div>
+      </div>
+      <div id="tab-bar"></div>
+      <div id="status"></div>
+      <div id="terminal-panel"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+  </html>

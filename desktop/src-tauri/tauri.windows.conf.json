@@ -1,0 +1,20 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/meterm-server"],
+    "resources": {
+      "binaries/meterm-server-x86_64-unknown-linux-gnu": "binaries/meterm-server-x86_64-unknown-linux-gnu",
+      "binaries/conpty/conpty.dll": "conpty.dll",
+      "binaries/conpty/OpenConsole.exe": "OpenConsole.exe"
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "MeTerm",
+        "decorations": false,
+        "transparent": true
+      }
+    ]
+  }
+}

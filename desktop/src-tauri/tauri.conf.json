@@ -1,0 +1,79 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MeTerm",
+  "version": "0.1.0",
+  "identifier": "com.meterm.dev",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5175"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": ["binaries/meterm-server"],
+    "category": "DeveloperTool",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    },
+    "windows": {
+      "wix": {
+        "language": ["en-US", "zh-CN"]
+      },
+      "nsis": {
+        "languages": ["English", "SimpChinese"]
+      }
+    }
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "MeTerm",
+        "width": 1000,
+        "height": 700,
+        "resizable": true,
+        "decorations": true,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 18
+        },
+        "hiddenTitle": true,
+        "acceptFirstMouse": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; connect-src * ipc://localhost http://ipc.localhost http://tauri.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https://asset.localhost data:; frame-src 'none'; object-src 'none'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$RESOURCE/**", "$APPDATA/backgrounds/**"]
+      }
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": false
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ2QjQyOTNCQkUzMjc2OEUKUldTT2RqSytPeW0wUmlqZzZqN0ZTTGFUTG1lMUx0UUo0M1hpWUhCMStnWElzYUd1Mm5jUXZCQ2oK",
+      "endpoints": [
+        "https://update.meterm.app/meterm/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "dialog": false,
+      "windows": {
+        "installMode": "quiet"
+      }
+    }
+  }
+}

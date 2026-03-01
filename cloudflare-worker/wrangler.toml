@@ -1,0 +1,13 @@
+name            = "meterm-updater"
+main            = "update-worker.js"
+compatibility_date = "2024-01-01"
+
+# Routes: https://update.meterm.app/*
+# Configure this in the Cloudflare dashboard or add a routes section:
+# routes = [{ pattern = "update.meterm.app/*", zone_name = "meterm.app" }]
+
+[vars]
+GITHUB_REPO = "paidaxingyo666/meterm"
+
+# Optional: bind a GitHub token secret to avoid API rate limits
+# Set via: wrangler secret put GITHUB_TOKEN
