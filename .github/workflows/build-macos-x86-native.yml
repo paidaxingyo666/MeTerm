@@ -23,7 +23,7 @@ env:
   GO_VERSION: '1.25'
   NODE_VERSION: '20'
   RUST_TARGET: 'x86_64-apple-darwin'
-  MACOSX_DEPLOYMENT_TARGET: '13.0'
+  MACOSX_DEPLOYMENT_TARGET: '14.0'
 
 jobs:
   build-macos-x86:

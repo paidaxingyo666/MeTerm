@@ -29,7 +29,7 @@ env:
   NODE_VERSION: '20'
   # Must match minimumSystemVersion in tauri.conf.json to ensure consistent
   # native UI rendering (traffic light buttons, titlebar style, etc.)
-  MACOSX_DEPLOYMENT_TARGET: '13.0'
+  MACOSX_DEPLOYMENT_TARGET: '14.0'
 
 jobs:
   build-macos-arm64:
