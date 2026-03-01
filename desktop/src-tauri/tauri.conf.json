@@ -12,6 +12,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "externalBin": ["binaries/meterm-server"],
     "category": "DeveloperTool",
     "icon": [
