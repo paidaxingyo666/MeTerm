@@ -38,6 +38,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Select Xcode 26 (macOS 26 SDK for native UI)
+        run: |
+          XCODE_26=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XCODE_26" ]; then
+            sudo xcode-select -s "$XCODE_26"
+            echo "Selected: $XCODE_26"
+          fi
+          xcodebuild -version
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -136,6 +145,15 @@ jobs:
     runs-on: macos-latest  # Cross-compile x86_64 on Apple Silicon
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select Xcode 26 (macOS 26 SDK for native UI)
+        run: |
+          XCODE_26=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XCODE_26" ]; then
+            sudo xcode-select -s "$XCODE_26"
+            echo "Selected: $XCODE_26"
+          fi
+          xcodebuild -version
 
       - name: Setup Go
         uses: actions/setup-go@v5
