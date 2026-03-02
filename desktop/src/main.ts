@@ -547,6 +547,7 @@ async function openSettings(tab?: string): Promise<void> {
   // Check if settings window already exists
   const existing = await WebviewWindow.getByLabel('settings');
   if (existing) {
+    void existing.show();
     void existing.setFocus();
     return;
   }
@@ -571,6 +572,9 @@ async function openSettings(tab?: string): Promise<void> {
     theme: nativeTheme,
   });
 
+  settingsWindow.once('tauri://created', () => {
+    void settingsWindow.setFocus();
+  });
   settingsWindow.once('tauri://error', (e: unknown) => {
     console.error('Failed to create settings window:', e);
   });

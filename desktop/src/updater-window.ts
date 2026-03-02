@@ -2,6 +2,7 @@ import './style.css';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { LogicalSize } from '@tauri-apps/api/dpi';
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage, t } from './i18n';
 
@@ -178,6 +179,12 @@ function renderUpdaterWindow(container: HTMLElement): () => void {
 
   container.appendChild(root);
 
+  // ── Window resize helper ──
+  // 根据内容状态动态调整窗口高度，max 440px（含 Windows 自定义标题栏）
+  function resizeWindow(height: number): void {
+    void getCurrentWindow().setSize(new LogicalSize(500, height));
+  }
+
   // ── State helpers ──
   function setState(state: State, extra?: string): void {
     switch (state) {
@@ -201,6 +208,7 @@ function renderUpdaterWindow(container: HTMLElement): () => void {
         hintEl.style.display = 'none';
         updateBtn.style.display = 'none';
         cancelBtn.textContent = t('updateModalClose');
+        resizeWindow(240);
         break;
 
       case 'ready':
@@ -215,6 +223,7 @@ function renderUpdaterWindow(container: HTMLElement): () => void {
         cancelBtn.style.display = 'none';
         progressWrap.style.display = '';
         hintEl.style.display = '';
+        resizeWindow(360);
         break;
 
       case 'error':
@@ -227,6 +236,7 @@ function renderUpdaterWindow(container: HTMLElement): () => void {
         hintEl.style.display = 'none';
         updateBtn.style.display = 'none';
         cancelBtn.textContent = t('updateModalClose');
+        resizeWindow(260);
         break;
     }
   }
@@ -263,6 +273,7 @@ function renderUpdaterWindow(container: HTMLElement): () => void {
       }
 
       setState('ready', t('updateModalTitle').replace('{version}', update.version));
+      resizeWindow(hasNotes ? 440 : 330);
 
       // ── Update Now button ──
       updateBtn.onclick = async () => {

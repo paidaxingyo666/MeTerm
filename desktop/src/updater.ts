@@ -17,6 +17,7 @@ async function notifyMenuBadge(version: string | null): Promise<void> {
 async function openUpdaterWindow(): Promise<void> {
   const existing = await WebviewWindow.getByLabel('updater');
   if (existing) {
+    void existing.show();
     void existing.setFocus();
     return;
   }
@@ -34,7 +35,7 @@ async function openUpdaterWindow(): Promise<void> {
     url: `${baseUrl}?window=updater`,
     title: t('checkUpdates'),
     width: 500,
-    height: 440,
+    height: 300,
     resizable: false,
     center: true,
     decorations: !navigator.userAgent.toLowerCase().includes('windows'),
@@ -42,6 +43,7 @@ async function openUpdaterWindow(): Promise<void> {
     theme: nativeTheme,
   });
 
+  win.once('tauri://created', () => { void win.setFocus(); });
   win.once('tauri://error', (e: unknown) => {
     console.error('[updater] Failed to create updater window:', e);
   });

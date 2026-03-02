@@ -1253,3 +1253,47 @@ pub async fn fetch_ai_models(request: FetchAiModelsRequest) -> Result<FetchAiMod
         body,
     })
 }
+
+/// 通过 Rust reqwest 发起 HTTP POST 请求并以流式方式将响应体推送到前端 Channel。
+/// 用于 AI 聊天的 SSE 流式输出，完全绕过 WebView2（Windows）的 CORS 限制。
+#[tauri::command]
+pub async fn fetch_ai_stream(
+    url: String,
+    headers: Vec<(String, String)>,
+    body: String,
+    on_event: tauri::ipc::Channel<String>,
+) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("only http and https URLs are allowed".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut builder = client.post(&url).body(body);
+    for (key, value) in &headers {
+        builder = builder.header(key.as_str(), value.as_str());
+    }
+
+    let resp = builder.send().await.map_err(|e| e.to_string())?;
+    let status = resp.status().as_u16();
+
+    if status < 200 || status >= 300 {
+        let err_body = resp.text().await.unwrap_or_default();
+        let snippet = &err_body[..err_body.len().min(300)];
+        return Err(format!("HTTP {}: {}", status, snippet));
+    }
+
+    let mut resp = resp;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        let text = String::from_utf8_lossy(&chunk).to_string();
+        if on_event.send(text).is_err() {
+            // 前端已关闭 channel（窗口关闭或请求取消），停止发送
+            break;
+        }
+    }
+
+    Ok(())
+}

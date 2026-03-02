@@ -2,7 +2,7 @@
 // Unified interface for OpenAI-compatible, Anthropic, and Google Gemini APIs
 // with SSE streaming support.
 
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, Channel } from '@tauri-apps/api/core';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -97,6 +97,64 @@ async function nativeFetch(
   return { ok: resp.ok, status: resp.status, data };
 }
 
+/**
+ * 通过 Tauri Rust 后端发起 HTTP POST 请求并以流式方式读取 SSE 响应。
+ * 解决 Windows WebView2 的 CORS 限制，替代浏览器 fetch() 用于 AI 流式聊天。
+ */
+async function nativeStreamPost(
+  url: string,
+  headers: Record<string, string>,
+  body: object,
+  onData: (data: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw Object.assign(new Error('AbortError'), { name: 'AbortError' });
+
+  return new Promise<void>((resolve, reject) => {
+    const channel = new Channel<string>();
+    let buffer = '';
+
+    const onAbort = () => {
+      reject(Object.assign(new Error('AbortError'), { name: 'AbortError' }));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    channel.onmessage = (text: string) => {
+      if (signal?.aborted) return;
+      buffer += text;
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('data: ')) {
+          const data = trimmed.slice(6);
+          if (data !== '[DONE]') onData(data);
+        }
+      }
+    };
+
+    invoke<void>('fetch_ai_stream', {
+      url,
+      headers: Object.entries(headers),
+      body: JSON.stringify(body),
+      onEvent: channel,
+    }).then(() => {
+      signal?.removeEventListener('abort', onAbort);
+      if (!signal?.aborted) {
+        // 处理流末尾可能残留的不完整行
+        if (buffer.trim().startsWith('data: ')) {
+          const data = buffer.trim().slice(6);
+          if (data !== '[DONE]') onData(data);
+        }
+        resolve();
+      }
+    }).catch((e: unknown) => {
+      signal?.removeEventListener('abort', onAbort);
+      if (!signal?.aborted) reject(new Error(String(e)));
+    });
+  });
+}
+
 export async function fetchModels(entry: AIProviderEntry): Promise<string[]> {
   switch (entry.type) {
     case 'openai':    return fetchOpenAIModels(entry);
@@ -186,52 +244,6 @@ export function resolveActiveModel(
   return { entry, model: modelName };
 }
 
-// ─── SSE Parser ─────────────────────────────────────────────────
-
-async function parseSSEStream(
-  response: Response,
-  onData: (data: string) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    while (true) {
-      if (signal?.aborted) {
-        reader.cancel();
-        return;
-      }
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // Process complete lines
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('data: ')) {
-          const data = trimmed.slice(6);
-          if (data === '[DONE]') return;
-          onData(data);
-        }
-      }
-    }
-
-    // Process remaining buffer
-    if (buffer.trim().startsWith('data: ')) {
-      const data = buffer.trim().slice(6);
-      if (data !== '[DONE]') onData(data);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 // ─── OpenAI Compatible Provider ─────────────────────────────────
 
 class OpenAIProvider implements AIProvider {
@@ -262,14 +274,9 @@ class OpenAIProvider implements AIProvider {
     try {
       const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/models`;
       const headers: Record<string, string> = {};
-      if (this.config.apiKey) {
-        headers['Authorization'] = `Bearer ${this.config.apiKey}`;
-      }
-      const res = await fetch(url, { headers, signal: AbortSignal.timeout(10000) });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
-      }
+      if (this.config.apiKey) headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+      const res = await nativeFetch(url, headers);
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
       return { ok: true };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
@@ -285,20 +292,7 @@ class OpenAIProvider implements AIProvider {
   ): Promise<void> {
     let fullText = '';
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal,
-      });
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        callbacks.onError(new Error(`HTTP ${res.status}: ${errText.slice(0, 300)}`));
-        return;
-      }
-
-      await parseSSEStream(res, (data) => {
+      await nativeStreamPost(url, headers, body, (data) => {
         try {
           const parsed = JSON.parse(data);
           const delta = parsed.choices?.[0]?.delta?.content;
@@ -308,7 +302,6 @@ class OpenAIProvider implements AIProvider {
           }
         } catch { /* skip malformed chunks */ }
       }, signal);
-
       callbacks.onComplete(fullText);
     } catch (e) {
       if ((e as Error).name === 'AbortError') return;
@@ -353,26 +346,12 @@ class AnthropicProvider implements AIProvider {
 
   async validateConfig(): Promise<{ ok: boolean; error?: string }> {
     try {
-      const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/messages`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.config.apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify({
-          model: this.config.model,
-          max_tokens: 1,
-          messages: [{ role: 'user', content: 'hi' }],
-        }),
-        signal: AbortSignal.timeout(10000),
+      const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/models`;
+      const res = await nativeFetch(url, {
+        'x-api-key': this.config.apiKey,
+        'anthropic-version': '2023-06-01',
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
-      }
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
       return { ok: true };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
@@ -388,20 +367,7 @@ class AnthropicProvider implements AIProvider {
   ): Promise<void> {
     let fullText = '';
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal,
-      });
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        callbacks.onError(new Error(`HTTP ${res.status}: ${errText.slice(0, 300)}`));
-        return;
-      }
-
-      await parseSSEStream(res, (data) => {
+      await nativeStreamPost(url, headers, body, (data) => {
         try {
           const parsed = JSON.parse(data);
           if (parsed.type === 'content_block_delta') {
@@ -413,7 +379,6 @@ class AnthropicProvider implements AIProvider {
           }
         } catch { /* skip malformed chunks */ }
       }, signal);
-
       callbacks.onComplete(fullText);
     } catch (e) {
       if ((e as Error).name === 'AbortError') return;
@@ -466,14 +431,8 @@ class GeminiProvider implements AIProvider {
     try {
       const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
       const url = `${baseUrl}/v1beta/models/${this.config.model}`;
-      const res = await fetch(url, {
-        headers: { 'x-goog-api-key': this.config.apiKey },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
-      }
+      const res = await nativeFetch(url, { 'x-goog-api-key': this.config.apiKey });
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
       return { ok: true };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
@@ -489,20 +448,7 @@ class GeminiProvider implements AIProvider {
   ): Promise<void> {
     let fullText = '';
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal,
-      });
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        callbacks.onError(new Error(`HTTP ${res.status}: ${errText.slice(0, 300)}`));
-        return;
-      }
-
-      await parseSSEStream(res, (data) => {
+      await nativeStreamPost(url, headers, body, (data) => {
         try {
           const parsed = JSON.parse(data);
           const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -512,7 +458,6 @@ class GeminiProvider implements AIProvider {
           }
         } catch { /* skip malformed chunks */ }
       }, signal);
-
       callbacks.onComplete(fullText);
     } catch (e) {
       if ((e as Error).name === 'AbortError') return;

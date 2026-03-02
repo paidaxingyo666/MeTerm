@@ -223,8 +223,15 @@ fn normalize_menu_id(raw: &str) -> Option<&'static str> {
 }
 
 fn get_target_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
-	// Try to get the currently focused window first
+	// Utility windows (settings, updater, tray-dialog) are never menu targets —
+	// menu actions must be dispatched to a main window so they are actually handled.
+	let is_main = |label: &str| {
+		label != "settings" && label != "updater" && label != "tray-dialog"
+	};
+
+	// Try to get the currently focused main window first
 	for window in app.webview_windows().values() {
+		if !is_main(window.label()) { continue; }
 		if let Ok(is_focused) = window.is_focused() {
 			if is_focused {
 				debug_log!("[DEBUG] Using focused window: {}", window.label());
@@ -233,8 +240,9 @@ fn get_target_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
 		}
 	}
 
-	// Fall back to any visible window
+	// Fall back to any visible main window
 	for window in app.webview_windows().values() {
+		if !is_main(window.label()) { continue; }
 		if let Ok(is_visible) = window.is_visible() {
 			if is_visible {
 				debug_log!("[DEBUG] Using visible window: {}", window.label());
@@ -666,6 +674,7 @@ pub fn run() {
             commands::copy_background_image,
             commands::delete_background_image,
             commands::fetch_ai_models,
+            commands::fetch_ai_stream,
             commands::set_update_badge,
         ])
         .build(tauri::generate_context!())
