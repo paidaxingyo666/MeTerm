@@ -74,8 +74,8 @@ CLAUDE.md
 # Mobile
 mobile/
 
-# Internal docs
-docs/
+# Internal docs (images 公开，plans 及内部文档忽略)
+docs/plans/
 DESIGN.md
 PROJECT_RULES.md
 TRAY_MENU_I18N_ANALYSIS.md
