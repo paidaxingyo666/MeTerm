@@ -796,12 +796,13 @@ class TerminalRegistryClass {
       : 'Menlo, Monaco, "Courier New", monospace';
     const fontWeight = this.settings?.enableBoldFont ? 'bold' as const : 'normal' as const;
     const opacityVal = this.settings ? Math.max(20, Math.min(100, this.settings.opacity)) / 100 : 1;
-    const needsTransparency = isWindowsPlatform || opacityVal < 1;
+    const hasBackgroundImage = !!this.settings?.backgroundImage;
+    const needsTransparency = isWindowsPlatform || opacityVal < 1 || hasBackgroundImage;
 
     const terminalTheme = (() => {
       if (!theme) return undefined;
       const bgHex = this.settings ? getColorSchemeBg(this.settings.colorScheme) : theme.background!;
-      const bg = opacityVal < 1 ? hexToRgba(bgHex, opacityVal) : bgHex;
+      const bg = hasBackgroundImage ? 'rgba(0,0,0,0)' : (opacityVal < 1 ? hexToRgba(bgHex, opacityVal) : bgHex);
       return { ...theme, background: bg };
     })();
 
@@ -845,6 +846,9 @@ class TerminalRegistryClass {
       }
     }
     terminal.open(container);
+    if (hasBackgroundImage) {
+      container.style.backgroundColor = 'transparent';
+    }
     patchOverlayScrollbar(terminal, container);
     // patchConPtyAlternateScreen removed — see note above
 
@@ -1414,12 +1418,13 @@ class TerminalRegistryClass {
       : 'Menlo, Monaco, "Courier New", monospace';
     const fontWeight = this.settings?.enableBoldFont ? 'bold' as const : 'normal' as const;
     const opacityVal = this.settings ? Math.max(20, Math.min(100, this.settings.opacity)) / 100 : 1;
-    const needsTransparency = isWindowsPlatform || opacityVal < 1;
+    const hasBackgroundImage = !!this.settings?.backgroundImage;
+    const needsTransparency = isWindowsPlatform || opacityVal < 1 || hasBackgroundImage;
 
     const terminalTheme = (() => {
       if (!theme) return undefined;
       const bgHex = this.settings ? getColorSchemeBg(this.settings.colorScheme) : theme.background!;
-      const bg = opacityVal < 1 ? hexToRgba(bgHex, opacityVal) : bgHex;
+      const bg = hasBackgroundImage ? 'rgba(0,0,0,0)' : (opacityVal < 1 ? hexToRgba(bgHex, opacityVal) : bgHex);
       return { ...theme, background: bg };
     })();
 

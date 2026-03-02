@@ -24,7 +24,7 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function createCustomTitleBar(title: string): HTMLElement {
+function createCustomTitleBar(title: string, onClose?: () => void): HTMLElement {
   const titleBar = document.createElement('div');
   titleBar.className = 'settings-titlebar';
 
@@ -46,7 +46,7 @@ function createCustomTitleBar(title: string): HTMLElement {
   closeBtn.className = 'settings-titlebar-close';
   closeBtn.type = 'button';
   closeBtn.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1 1 9 9M9 1 1 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
-  closeBtn.onclick = () => { void getCurrentWindow().close(); };
+  closeBtn.onclick = () => { onClose?.(); void getCurrentWindow().close(); };
   titleBar.appendChild(closeBtn);
 
   return titleBar;
@@ -66,15 +66,19 @@ export function initUpdaterWindow(): void {
 
   document.body.classList.add('updater-window-mode');
 
-  if (isWindowsPlatform) {
-    document.body.appendChild(createCustomTitleBar(t('checkUpdates')));
-  }
-
+  // Render the updater panel first so we get safeClose back,
+  // then wire it into the custom title bar (Windows only).
+  // safeClose sets isClosing=true before closing the window, ensuring any
+  // in-flight async work (check / downloadAndInstall) won't touch the DOM.
   const container = document.createElement('div');
   container.id = 'updater-window-container';
   document.body.appendChild(container);
 
-  renderUpdaterWindow(container);
+  const safeClose = renderUpdaterWindow(container);
+
+  if (isWindowsPlatform) {
+    document.body.insertBefore(createCustomTitleBar(t('checkUpdates'), safeClose), container);
+  }
 }
 
 // ── States ─────────────────────────────────────────────────────────────────────
@@ -82,8 +86,13 @@ export function initUpdaterWindow(): void {
 
 type State = 'loading' | 'ready' | 'no-update' | 'downloading' | 'error';
 
-function renderUpdaterWindow(container: HTMLElement): void {
+function renderUpdaterWindow(container: HTMLElement): () => void {
   container.innerHTML = '';
+  let isClosing = false;
+  const safeClose = () => {
+    isClosing = true;
+    void getCurrentWindow().close();
+  };
 
   const root = document.createElement('div');
   root.className = 'updater-panel';
@@ -156,7 +165,7 @@ function renderUpdaterWindow(container: HTMLElement): void {
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'updater-btn secondary';
   cancelBtn.textContent = t('updateLater');
-  cancelBtn.onclick = () => { void getCurrentWindow().close(); };
+  cancelBtn.onclick = safeClose;
 
   const updateBtn = document.createElement('button');
   updateBtn.className = 'updater-btn primary';
@@ -233,6 +242,7 @@ function renderUpdaterWindow(container: HTMLElement): void {
     try {
       const update = await check();
 
+      if (isClosing) return;
       if (!update) {
         setState('no-update');
         return;
@@ -264,6 +274,7 @@ function renderUpdaterWindow(container: HTMLElement): void {
 
         try {
           await update.downloadAndInstall((event) => {
+            if (isClosing) return;
             if (event.event === 'Started') {
               total = (event.data as { contentLength?: number }).contentLength ?? 0;
             } else if (event.event === 'Progress') {
@@ -275,15 +286,18 @@ function renderUpdaterWindow(container: HTMLElement): void {
             }
           });
 
+          if (isClosing) return;
           setProgress(100, t('updateRestarting'));
           await new Promise((r) => setTimeout(r, 800));
           await relaunch();
         } catch (err) {
-          setState('error', String(err));
+          if (!isClosing) setState('error', String(err));
         }
       };
     } catch (err) {
-      setState('error', String(err));
+      if (!isClosing) setState('error', String(err));
     }
   })();
+
+  return safeClose;
 }
