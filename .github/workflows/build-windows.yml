@@ -140,8 +140,7 @@ jobs:
         with:
           files: |
             desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/nsis/*.nsis.zip
-            desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/nsis/*.nsis.zip.sig
+            desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/nsis/*.exe.sig
             desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/msi/*.msi
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}

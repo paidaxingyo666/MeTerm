@@ -17,7 +17,7 @@
  *   darwin/x86_64   → meterm_*_x86_64.app.tar.gz  + .sig
  *   linux/x86_64    → meterm_*_amd64.AppImage      + .sig
  *   linux/aarch64   → meterm_*_aarch64.AppImage    + .sig
- *   windows/x86_64  → meterm_*_x64-setup.nsis.zip  + .sig
+ *   windows/x86_64  → MeTerm_*_x64-setup.exe       + .sig
  */
 
 // 从 Cloudflare Worker 环境变量读取，wrangler.toml 中配置：
@@ -31,7 +31,7 @@ const ASSET_PATTERNS = {
   'darwin-x86_64':  { binary: 'x86_64.app.tar.gz',  sig: 'x86_64.app.tar.gz.sig'  },
   'linux-x86_64':   { binary: 'amd64.AppImage',       sig: 'amd64.AppImage.sig'      },
   'linux-aarch64':  { binary: 'aarch64.AppImage',     sig: 'aarch64.AppImage.sig'    },
-  'windows-x86_64': { binary: 'x64-setup.nsis.zip',  sig: 'x64-setup.nsis.zip.sig'  },
+  'windows-x86_64': { binary: 'x64-setup.exe',       sig: 'x64-setup.exe.sig'      },
 };
 
 export default {
