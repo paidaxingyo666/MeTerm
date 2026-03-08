@@ -1644,3 +1644,36 @@ pub async fn fetch_ai_stream(
 
     Ok(())
 }
+
+/// Restart the app via `open -a` on macOS so the new process is properly
+/// associated with the .app bundle (inherits Local Network privacy, TCC
+/// permissions, etc.).  Falls back to Tauri's built-in restart on other
+/// platforms or in dev mode (binary not inside a .app bundle).
+#[tauri::command]
+pub fn restart_app_via_open(app: AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            // exe: …/MeTerm.app/Contents/MacOS/meterm
+            if let Some(bundle) = exe
+                .parent()                   // MacOS/
+                .and_then(|p| p.parent())   // Contents/
+                .and_then(|p| p.parent())   // MeTerm.app
+            {
+                if bundle.extension().map_or(false, |e| e == "app") {
+                    let bundle_path = bundle.display().to_string();
+                    // Spawn a detached shell that waits for us to exit, then re-opens the app
+                    let _ = std::process::Command::new("sh")
+                        .args(["-c", &format!("sleep 1 && open -a '{}'", bundle_path)])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                    app.exit(0);
+                    return;
+                }
+            }
+        }
+    }
+    // Fallback: use Tauri's default restart
+    app.restart();
+}

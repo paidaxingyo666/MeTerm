@@ -1,6 +1,6 @@
 import './style.css';
 import { check } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { emit } from '@tauri-apps/api/event';
@@ -383,7 +383,7 @@ function renderUpdaterWindow(container: HTMLElement): () => void {
           if (isClosing) return;
           setProgress(100, t('updateRestarting'));
           await new Promise((r) => setTimeout(r, 800));
-          await relaunch();
+          await invoke('restart_app_via_open');
         } catch (err) {
           if (!isClosing) setState('error', String(err));
         }
