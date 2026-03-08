@@ -13,7 +13,7 @@ import { initSettingsWindow } from './settings-window';
 import { initUpdaterWindow } from './updater-window';
 import { initLanguage, setLanguage, t } from './i18n';
 import { icon } from './icons';
-import { createSSHHomeView, updateSSHHomeView, setSSHConnectHandler, createSSHSession, addConnection, addRecentConnection, exportConnectionsToJSON, importConnectionsFromJSON, migrateSSHCredentials, type SSHConnectionConfig } from './ssh';
+import { createSSHHomeView, updateSSHHomeView, setSSHConnectHandler, createSSHSession, addConnection, addRecentConnection, exportConnectionsToJSON, importConnectionsFromJSON, migrateSSHCredentials, showAuthFailedDialog, updateSavedPassword, type SSHConnectionConfig } from './ssh';
 import { showRemoteConnectDialog, setRemoteConnectHandler, fetchRemoteSessions, addRecentRemoteConnection, loadRemoteToken, migrateRemoteCredentials, remoteWsBase, type RemoteServerInfo, type RemoteSession } from './remote';
 import { initTabDrag, setupTabTransferListener, type TabTransferSessionInfo } from './tab-drag';
 import { StatusBar, escapeHtml } from './status-bar';
@@ -2704,6 +2704,31 @@ async function init(): Promise<void> {
       StatusBar.setConnection('connected', `${config.username}@${config.host}`);
       renderTabs();
     } catch (err) {
+      const errStr = String(err);
+      const isAuthFailure = config.authMethod === 'password' && config.name &&
+        /unable to authenticate|permission denied|auth/i.test(errStr);
+
+      // Auth failure for saved connection — offer password re-entry
+      if (isAuthFailure) {
+        removeSSHConnectingPlaceholder();
+        const newPassword = await showAuthFailedDialog(config);
+        if (newPassword) {
+          // Update saved password and retry
+          await updateSavedPassword(config.name, newPassword);
+          // Clean up the failed tab before retry
+          if (sshTabId) {
+            const failedTab = TabManager.tabs.find((t) => t.id === sshTabId);
+            if (failedTab) {
+              const idx = TabManager.tabs.indexOf(failedTab);
+              if (idx >= 0) TabManager.tabs.splice(idx, 1);
+            }
+          }
+          renderTabs();
+          // Retry with new password
+          return handleSSHConnect({ ...config, password: newPassword });
+        }
+      }
+
       // Remove placeholder and clean up failed tab
       removeSSHConnectingPlaceholder();
       if (sshTabId) {
@@ -2723,7 +2748,7 @@ async function init(): Promise<void> {
         }
       }
       renderTabs();
-      StatusBar.setError(`${t('sshFailed')}: ${String(err)}`);
+      StatusBar.setError(`${t('sshFailed')}: ${errStr}`);
     }
   }
   setSSHConnectHandler(handleSSHConnect);

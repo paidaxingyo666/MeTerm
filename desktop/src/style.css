@@ -2739,10 +2739,18 @@ html.platform-windows #settings-window-container {
 }
 .updater-notes-md h2 { font-size: 13px; }
 .updater-notes-md p { margin: 2px 0; }
-.updater-notes-md li {
+.updater-notes-md ul {
+  margin: 2px 0;
+  padding-left: 20px;
   list-style: disc;
-  margin-left: 16px;
+}
+.updater-notes-md li {
   margin-bottom: 2px;
+}
+.updater-notes-md hr {
+  border: none;
+  border-top: 1px solid var(--border-primary, rgba(128,128,128,0.2));
+  margin: 8px 0;
 }
 .updater-notes-md code {
   background: rgba(128,128,128,0.15);
@@ -3341,6 +3349,38 @@ html.platform-windows #settings-window-container {
 .ssh-auth-icon-pwd { display: block; }
 .ssh-auth-toggle.is-key .ssh-auth-icon-pwd { display: none; }
 .ssh-auth-toggle.is-key .ssh-auth-icon-key { display: block; }
+
+/* Password visibility toggle (eye icon) */
+.ssh-pwd-toggle {
+  flex: none;
+  width: 28px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: color 0.15s;
+}
+.ssh-pwd-toggle:hover { color: var(--text-primary); }
+.ssh-pwd-icon-hide { display: none; }
+.ssh-pwd-icon-show { display: block; }
+.ssh-pwd-toggle.is-visible .ssh-pwd-icon-show { display: none; }
+.ssh-pwd-toggle.is-visible .ssh-pwd-icon-hide { display: block; }
+
+/* Connect & Save button — outlined accent style */
+.ssh-btn-connect-save {
+  background: transparent !important;
+  color: var(--accent) !important;
+  border: 1px solid var(--accent) !important;
+}
+.ssh-btn-connect-save:hover {
+  background: rgba(106, 164, 255, 0.12) !important;
+}
 
 .ssh-form-actions {
   display: flex;
@@ -5182,7 +5222,7 @@ body.drawer-splitting {
   overflow: visible;
   background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
   border: 1px solid var(--border-primary);
-  order: 2;
+  order: 1;
 }
 
 /* Floating button to restore hidden AI bar */
@@ -5264,6 +5304,7 @@ body.drawer-splitting {
   left: 0;
   min-width: 180px;
   max-width: 240px;
+  overflow-y: auto;
   background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
   backdrop-filter: blur(20px) saturate(1.4);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);

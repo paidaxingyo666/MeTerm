@@ -448,6 +448,84 @@ export async function testSSHConnection(config: SSHConnectionConfig, trustedFing
   return parsed as { ok: boolean; error?: string };
 }
 
+/**
+ * Show a dialog when SSH auth fails (e.g. password changed), let user enter
+ * new password, and return it. Returns null if user cancels.
+ */
+export function showAuthFailedDialog(config: SSHConnectionConfig): Promise<string | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'ssh-modal-overlay';
+    overlay.style.zIndex = '10001';
+
+    const dialog = document.createElement('div');
+    dialog.className = 'ssh-modal';
+    dialog.style.maxWidth = '420px';
+
+    const title = document.createElement('h3');
+    title.textContent = t('sshAuthFailedTitle');
+    title.style.margin = '0 0 12px';
+    dialog.appendChild(title);
+
+    const msg = document.createElement('p');
+    msg.style.cssText = 'margin:0 0 16px;font-size:13px;color:var(--text-secondary);line-height:1.5;';
+    msg.textContent = t('sshAuthFailedMsg')
+      .replace('{username}', config.username)
+      .replace('{host}', config.host);
+    dialog.appendChild(msg);
+
+    const pwdInput = document.createElement('input');
+    pwdInput.type = 'password';
+    pwdInput.className = 'ssh-input';
+    pwdInput.autocapitalize = 'off';
+    pwdInput.autocomplete = 'off';
+    pwdInput.setAttribute('autocorrect', 'off');
+    pwdInput.spellcheck = false;
+    pwdInput.placeholder = t('sshPassword');
+    pwdInput.style.marginBottom = '16px';
+    dialog.appendChild(pwdInput);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'ssh-btn ssh-btn-secondary';
+    cancelBtn.textContent = t('sshUnsavedCancel');
+    cancelBtn.onclick = () => { overlay.remove(); resolve(null); };
+
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'ssh-btn ssh-btn-primary';
+    retryBtn.textContent = t('sshAuthFailedRetry');
+    retryBtn.onclick = () => {
+      const pwd = pwdInput.value;
+      overlay.remove();
+      resolve(pwd || null);
+    };
+
+    pwdInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') retryBtn.click();
+      if (e.key === 'Escape') cancelBtn.click();
+    });
+
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(retryBtn);
+    dialog.appendChild(btnRow);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) { overlay.remove(); resolve(null); }
+    });
+
+    setTimeout(() => pwdInput.focus(), 50);
+  });
+}
+
+/** Update saved password in keychain for a named connection */
+export async function updateSavedPassword(name: string, newPassword: string): Promise<void> {
+  await storeSSHSecrets(name, newPassword);
+}
+
 function createConnectionForm(
   prefill?: SSHConnectionConfig,
   onSubmit?: (config: SSHConnectionConfig) => void,
@@ -465,6 +543,10 @@ function createConnectionForm(
   nameInput.type = 'text';
   nameInput.id = 'ssh-name';
   nameInput.className = 'ssh-input';
+  nameInput.autocapitalize = 'off';
+  nameInput.autocomplete = 'off';
+  nameInput.setAttribute('autocorrect', 'off');
+  nameInput.spellcheck = false;
   nameInput.value = prefill?.name || '';
   nameGroup.appendChild(nameLabel);
   nameGroup.appendChild(nameInput);
@@ -483,6 +565,10 @@ function createConnectionForm(
   hostInput.type = 'text';
   hostInput.id = 'ssh-host';
   hostInput.className = 'ssh-input';
+  hostInput.autocapitalize = 'off';
+  hostInput.autocomplete = 'off';
+  hostInput.setAttribute('autocorrect', 'off');
+  hostInput.spellcheck = false;
   hostInput.value = prefill?.host || '';
   hostInput.placeholder = '192.168.1.1';
   hostGroup.appendChild(hostLabel);
@@ -518,6 +604,10 @@ function createConnectionForm(
   userInput.type = 'text';
   userInput.id = 'ssh-username';
   userInput.className = 'ssh-input';
+  userInput.autocapitalize = 'off';
+  userInput.autocomplete = 'off';
+  userInput.setAttribute('autocorrect', 'off');
+  userInput.spellcheck = false;
   userInput.value = prefill?.username || '';
   userInput.placeholder = 'root';
   userGroup.appendChild(userLabel);
@@ -549,12 +639,34 @@ function createConnectionForm(
   pwdInput.type = 'password';
   pwdInput.id = 'ssh-password';
   pwdInput.className = 'ssh-input';
+  pwdInput.autocapitalize = 'off';
+  pwdInput.autocomplete = 'off';
+  pwdInput.setAttribute('autocorrect', 'off');
+  pwdInput.spellcheck = false;
   pwdInput.value = prefill?.password || '';
+
+  // Password visibility toggle (eye icon)
+  const pwdToggleBtn = document.createElement('button');
+  pwdToggleBtn.type = 'button';
+  pwdToggleBtn.className = 'ssh-pwd-toggle';
+  pwdToggleBtn.title = 'Show/Hide';
+  const eyeOpenSvg = `<svg class="ssh-pwd-icon ssh-pwd-icon-show" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z"/><circle cx="8" cy="8" r="2"/></svg>`;
+  const eyeClosedSvg = `<svg class="ssh-pwd-icon ssh-pwd-icon-hide" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z"/><circle cx="8" cy="8" r="2"/><line x1="2" y1="14" x2="14" y2="2"/></svg>`;
+  pwdToggleBtn.innerHTML = eyeOpenSvg + eyeClosedSvg;
+  pwdToggleBtn.addEventListener('click', () => {
+    const isHidden = pwdInput.type === 'password';
+    pwdInput.type = isHidden ? 'text' : 'password';
+    pwdToggleBtn.classList.toggle('is-visible', isHidden);
+  });
 
   const keyInput = document.createElement('input');
   keyInput.type = 'text';
   keyInput.id = 'ssh-privateKey';
   keyInput.className = 'ssh-input';
+  keyInput.autocapitalize = 'off';
+  keyInput.autocomplete = 'off';
+  keyInput.setAttribute('autocorrect', 'off');
+  keyInput.spellcheck = false;
   keyInput.value = prefill?.privateKey || '';
   keyInput.placeholder = '~/.ssh/id_rsa';
   keyInput.style.display = 'none';
@@ -572,6 +684,7 @@ function createConnectionForm(
   authToggleBtn.innerHTML = svgPwd + svgKey;
 
   credInputWrap.appendChild(pwdInput);
+  credInputWrap.appendChild(pwdToggleBtn);
   credInputWrap.appendChild(keyInput);
   credInputWrap.appendChild(authToggleBtn);
   credInputWrap.appendChild(authSelect);
@@ -587,6 +700,7 @@ function createConnectionForm(
   const toggleAuth = () => {
     const isPassword = authSelect.value === 'password';
     pwdInput.style.display = isPassword ? '' : 'none';
+    pwdToggleBtn.style.display = isPassword ? '' : 'none';
     keyInput.style.display = isPassword ? 'none' : '';
     credLabel.textContent = isPassword ? t('sshPassword') : t('sshPrivateKey');
     authToggleBtn.title = isPassword ? t('sshAuthKey') : t('sshAuthPassword');
@@ -674,6 +788,22 @@ function createConnectionForm(
     }
   };
 
+  const connectSaveBtn = document.createElement('button');
+  connectSaveBtn.className = 'ssh-btn ssh-btn-primary ssh-btn-connect-save';
+  connectSaveBtn.textContent = t('sshConnectAndSave');
+  connectSaveBtn.onclick = () => {
+    const config = readFormConfig();
+    if (!config.host || !config.username) return;
+    clearStatus();
+    addConnection(config);
+    document.dispatchEvent(new CustomEvent('ssh-connections-changed'));
+    if (onSubmit) {
+      onSubmit(config);
+    } else if (onConnectHandler) {
+      onConnectHandler(config);
+    }
+  };
+
   const saveBtn = document.createElement('button');
   saveBtn.className = 'ssh-btn ssh-btn-secondary';
   saveBtn.textContent = t('sshSaveConnection');
@@ -691,6 +821,7 @@ function createConnectionForm(
   btnRow.appendChild(testBtn);
   btnRow.appendChild(spacer);
   btnRow.appendChild(connectBtn);
+  btnRow.appendChild(connectSaveBtn);
   btnRow.appendChild(saveBtn);
   form.appendChild(btnRow);
 

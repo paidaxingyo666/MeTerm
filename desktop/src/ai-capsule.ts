@@ -224,6 +224,8 @@ class AICapsuleManagerClass {
         this.buildModelDropdown(modelDropdown, modelLabel);
         modelDropdown.style.display = '';
         modelSelect.classList.add('open');
+        const aiBar = modelSelect.closest('.ai-bar') as HTMLElement;
+        if (aiBar) this.adjustPopupMaxHeight(modelDropdown, aiBar);
       }
     });
 
@@ -1925,6 +1927,7 @@ class AICapsuleManagerClass {
     if (panel) {
       this.renderHistoryPanel(instance);
       panel.style.display = '';
+      this.adjustPopupMaxHeight(panel, instance.element);
     }
     if (btn) btn.classList.add('active');
     // 进入搜索模式
@@ -2278,6 +2281,7 @@ class AICapsuleManagerClass {
       instance.element.appendChild(panel);
     }
     panel.style.display = '';
+    this.adjustPopupMaxHeight(panel, instance.element);
     instance.chatHistoryPanel = panel;
     this.renderChatHistoryList(instance);
     // 进入搜索模式
@@ -2594,6 +2598,21 @@ class AICapsuleManagerClass {
       const drawerHeight = DrawerManager.getDrawerHeight(sessionId);
       this.setDrawerOffset(sessionId, drawerHeight);
     }
+  }
+
+  /** 根据 AI bar 上方可用空间动态设置弹窗 max-height，至少保留 4 行终端内容 */
+  private adjustPopupMaxHeight(panel: HTMLElement, aiBar: HTMLElement): void {
+    const container = aiBar.closest('#terminal-panel') || aiBar.parentElement;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    const barRect = aiBar.getBoundingClientRect();
+    // 动态获取终端行高，回退 18px
+    const row = container.querySelector('.xterm-rows > div');
+    const lineHeight = row ? row.getBoundingClientRect().height : 18;
+    // 预留至少 4 行终端内容 + 8px 余量
+    const reserved = lineHeight * 4 + 8;
+    const available = barRect.top - containerRect.top - reserved;
+    panel.style.maxHeight = Math.max(available, 120) + 'px';
   }
 
   setDrawerOffset(sessionId: string, drawerHeight: number): void {

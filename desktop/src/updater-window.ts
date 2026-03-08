@@ -28,29 +28,46 @@ function escapeHtml(s: string): string {
 
 /** Lightweight Markdown → HTML converter for release notes. */
 function markdownToHtml(md: string): string {
-  const lines = md.split('\n');
+  const lines = md.replace(/\r\n/g, '\n').split('\n');
   const out: string[] = [];
+  let inList = false;
+
+  function closeList(): void {
+    if (inList) { out.push('</ul>'); inList = false; }
+  }
+
   for (const raw of lines) {
-    let line = raw;
+    const line = raw;
+    // Horizontal rule
+    if (/^---+$/.test(line.trim())) {
+      closeList();
+      out.push('<hr>');
+      continue;
+    }
     // Headings
     if (/^### /.test(line)) {
-      out.push(`<h4>${escapeHtml(line.slice(4).trim())}</h4>`);
+      closeList();
+      out.push(`<h4>${inlineMarkdown(line.slice(4).trim())}</h4>`);
       continue;
     }
     if (/^## /.test(line)) {
-      out.push(`<h3>${escapeHtml(line.slice(3).trim())}</h3>`);
+      closeList();
+      out.push(`<h3>${inlineMarkdown(line.slice(3).trim())}</h3>`);
       continue;
     }
     if (/^# /.test(line)) {
-      out.push(`<h2>${escapeHtml(line.slice(2).trim())}</h2>`);
+      closeList();
+      out.push(`<h2>${inlineMarkdown(line.slice(2).trim())}</h2>`);
       continue;
     }
     // List items
     if (/^[-*] /.test(line)) {
+      if (!inList) { out.push('<ul>'); inList = true; }
       const content = inlineMarkdown(line.slice(2).trim());
       out.push(`<li>${content}</li>`);
       continue;
     }
+    closeList();
     // Blank line → paragraph break
     if (line.trim() === '') {
       out.push('<br>');
@@ -58,6 +75,7 @@ function markdownToHtml(md: string): string {
     }
     out.push(`<p>${inlineMarkdown(line)}</p>`);
   }
+  closeList();
   return out.join('');
 }
 

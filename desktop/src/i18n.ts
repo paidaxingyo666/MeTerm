@@ -94,9 +94,14 @@ export interface Translations {
   sshTestSuccess: string;
   sshTestFailed: string;
   sshTesting: string;
+  sshConnectAndSave: string;
   sshUnsavedConfirm: string;
   sshUnsavedDiscard: string;
   sshUnsavedCancel: string;
+  sshAuthFailedTitle: string;
+  sshAuthFailedMsg: string;
+  sshAuthFailedRetry: string;
+  sshPasswordUpdated: string;
   drawerTabFiles: string;
   drawerTabProcesses: string;
   serverInfoHost: string;
@@ -478,9 +483,14 @@ const translations: Record<Language, Translations> = {
     sshTestSuccess: 'Connection successful!',
     sshTestFailed: 'Connection failed',
     sshTesting: 'Testing...',
+    sshConnectAndSave: 'Connect & Save',
     sshUnsavedConfirm: 'You have unsaved changes. Discard?',
     sshUnsavedDiscard: 'Discard',
     sshUnsavedCancel: 'Cancel',
+    sshAuthFailedTitle: 'Authentication Failed',
+    sshAuthFailedMsg: 'The saved password may have changed. Please enter the new password for {username}@{host}:',
+    sshAuthFailedRetry: 'Reconnect',
+    sshPasswordUpdated: 'Password updated and saved.',
     drawerTabFiles: 'Files',
     drawerTabProcesses: 'Processes',
     serverInfoHost: 'Host',
@@ -860,9 +870,14 @@ const translations: Record<Language, Translations> = {
     sshTestSuccess: '连接成功！',
     sshTestFailed: '连接失败',
     sshTesting: '测试中...',
+    sshConnectAndSave: '连接并保存',
     sshUnsavedConfirm: '有未保存的更改，确定关闭？',
     sshUnsavedDiscard: '放弃',
     sshUnsavedCancel: '取消',
+    sshAuthFailedTitle: '认证失败',
+    sshAuthFailedMsg: '保存的密码可能已变更，请输入 {username}@{host} 的新密码：',
+    sshAuthFailedRetry: '重新连接',
+    sshPasswordUpdated: '密码已更新并保存。',
     drawerTabFiles: '文件',
     drawerTabProcesses: '进程',
     serverInfoHost: '主机',
