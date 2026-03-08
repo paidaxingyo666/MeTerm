@@ -65,7 +65,13 @@ func (sm *SessionManager) Config() SessionConfig {
 
 // Create allocates a new session with a PTY terminal engine.
 func (sm *SessionManager) Create() (*Session, error) {
-	return sm.CreateWithExecutor(executor.NewLocalShellExecutor(80, 24))
+	return sm.CreateWithShell("")
+}
+
+// CreateWithShell allocates a new session with a specific shell.
+// If shell is empty, the default shell is used.
+func (sm *SessionManager) CreateWithShell(shell string) (*Session, error) {
+	return sm.CreateWithExecutor(executor.NewLocalShellExecutorWithShell(80, 24, shell))
 }
 
 func (sm *SessionManager) CreateWithExecutor(exec executor.Executor) (*Session, error) {
@@ -84,8 +90,9 @@ func (sm *SessionManager) CreateWithExecutor(exec executor.Executor) (*Session, 
 	// the terminal if the shell exits unexpectedly (e.g. ConPTY bug on Win10
 	// where alternate screen restore kills the shell process).
 	if exec.Info().Type == "local-shell" {
+		shellForRestart := exec.Info().Labels["shell"]
 		s.TermFactory = func(cols, rows uint16) (terminal.Terminal, error) {
-			return terminal.NewPTYEngine(cols, rows)
+			return terminal.NewPTYEngineWithShell(cols, rows, shellForRestart)
 		}
 	}
 

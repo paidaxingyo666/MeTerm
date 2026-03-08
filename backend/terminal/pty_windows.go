@@ -10,6 +10,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,12 +38,48 @@ var _ Terminal = (*PTYEngine)(nil)
 
 // NewPTYEngine creates a ConPTY-backed shell using terminal size cols x rows.
 func NewPTYEngine(cols, rows uint16) (*PTYEngine, error) {
-	shellPath, shellArgs, err := resolveWindowsShell()
-	if err != nil {
-		return nil, err
+	return NewPTYEngineWithShell(cols, rows, "")
+}
+
+// NewPTYEngineWithShell creates a ConPTY-backed shell with an explicit shell path.
+// If shell is empty, falls back to resolveWindowsShell().
+func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) {
+	var shellPath string
+	var shellArgs []string
+	var err error
+	var commandLine string
+	if shell != "" {
+		// Shell may be a simple exe ("powershell.exe") or a complex command
+		// line from Windows Terminal fragments ("cmd.exe /k \"...\\VsDevCmd.bat\"").
+		// For complex command lines (containing quotes or /k), pass directly
+		// to ConPTY without splitting — CreateProcess handles parsing natively.
+		if strings.ContainsAny(shell, "\"'") || strings.Contains(strings.ToLower(shell), " /k ") {
+			commandLine = shell
+			shellPath = strings.Fields(shell)[0]
+		} else {
+			parts := strings.Fields(shell)
+			shellPath = parts[0]
+			extraArgs := parts[1:]
+			base := strings.ToLower(filepath.Base(shellPath))
+			switch {
+			case base == "pwsh.exe" || base == "powershell.exe":
+				shellArgs = append(extraArgs, "-NoLogo", "-NoExit")
+			case base == "cmd.exe":
+				shellArgs = append(extraArgs, "/Q")
+			default:
+				shellArgs = extraArgs
+			}
+			cmdParts := append([]string{shellPath}, shellArgs...)
+			commandLine = buildCommandLine(cmdParts)
+		}
+	} else {
+		shellPath, shellArgs, err = resolveWindowsShell()
+		if err != nil {
+			return nil, err
+		}
+		cmdParts := append([]string{shellPath}, shellArgs...)
+		commandLine = buildCommandLine(cmdParts)
 	}
-	cmdParts := append([]string{shellPath}, shellArgs...)
-	commandLine := buildCommandLine(cmdParts)
 
 	var workDir string
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
@@ -59,7 +97,6 @@ func NewPTYEngine(cols, rows uint16) (*PTYEngine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("conpty start (%s): %w", shellPath, err)
 	}
-	// Log after Start() so ensureInit() has run and UsingBundled is accurate.
 	log.Printf("[conpty] NewPTYEngine: shell=%s args=%v cols=%d rows=%d bundled=%v PID=%d", shellPath, shellArgs, cols, rows, conpty.UsingBundled, cpty.Pid())
 
 	engine := &PTYEngine{

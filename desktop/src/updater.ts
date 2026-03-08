@@ -3,6 +3,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { t } from './i18n';
 import { loadSettings, resolveIsDark } from './themes';
+import { showToast } from './notify';
+
+// ── Update state (module-level) ───────────────────────────────────────────────
+// Exposed so main.ts can read it for the title bar icon.
+export let pendingUpdateVersion: string | null = null;
+export let pendingUpdateBody: string | null = null;
 
 // Notify Rust to update the tray/menu-bar "Check for Updates" badge.
 async function notifyMenuBadge(version: string | null): Promise<void> {
@@ -14,7 +20,7 @@ async function notifyMenuBadge(version: string | null): Promise<void> {
 }
 
 // Open the dedicated updater window (single-instance).
-async function openUpdaterWindow(): Promise<void> {
+export async function openUpdaterWindow(): Promise<void> {
   const existing = await WebviewWindow.getByLabel('updater');
   if (existing) {
     void existing.show();
@@ -50,15 +56,20 @@ async function openUpdaterWindow(): Promise<void> {
 }
 
 // Check for updates silently on startup (after a short delay to not block app load).
-// If an update is found, a non-blocking notification bar is shown at the top.
+// If an update is found, shows an in-app toast and dispatches 'update-available'.
 export async function initUpdater(): Promise<void> {
   // Small delay so the main app UI is fully ready before we talk to the network.
   await new Promise((r) => setTimeout(r, 8000));
   try {
     const update = await check();
     if (update) {
+      pendingUpdateVersion = update.version;
+      pendingUpdateBody = update.body ?? null;
       void notifyMenuBadge(update.version);
-      showBanner(update.version);
+      showUpdateToast(update.version, update.body ?? null);
+      document.dispatchEvent(new CustomEvent('update-available', {
+        detail: { version: update.version, body: update.body ?? null },
+      }));
     }
   } catch {
     // Silent — update check failures should never surface to the user.
@@ -71,43 +82,21 @@ export function checkUpdateNow(): void {
   void openUpdaterWindow();
 }
 
-// ── Banner (startup notification) ────────────────────────────────────────────
-// Shown as a non-intrusive bar at the top; clicking "Update Now" opens the window.
+// ── In-app toast notification ─────────────────────────────────────────────────
 
-let bannerEl: HTMLElement | null = null;
-
-function showBanner(version: string): void {
-  if (bannerEl) return;
-
-  const el = document.createElement('div');
-  el.className = 'update-banner';
-  el.innerHTML = `
-    <span class="update-banner-text">${t('updateAvailable').replace('{version}', version)}</span>
-    <div class="update-banner-actions">
-      <button class="update-banner-btn primary" data-action="now">${t('updateNow')}</button>
-      <button class="update-banner-btn" data-action="later">${t('updateLater')}</button>
-    </div>
-  `;
-
-  el.addEventListener('click', (e) => {
-    const action = (e.target as HTMLElement).dataset.action;
-    if (action === 'now') {
-      hideBanner();
-      void openUpdaterWindow();
-    } else if (action === 'later') {
-      hideBanner();
-    }
+function showUpdateToast(version: string, body: string | null): void {
+  const title = t('updateAvailable').replace('{version}', version);
+  // Truncate changelog body to ~120 chars for the toast
+  let bodyText = '';
+  if (body) {
+    // Strip markdown symbols for plain-text preview
+    const plain = body.replace(/^#{1,3}\s+/gm, '').replace(/\*\*/g, '').replace(/`/g, '').trim();
+    bodyText = plain.length > 120 ? plain.slice(0, 117) + '...' : plain;
+  }
+  showToast({
+    title,
+    body: bodyText || t('updateNow'),
+    duration: 10000,
+    onClick: () => { void openUpdaterWindow(); },
   });
-
-  document.body.appendChild(el);
-  bannerEl = el;
-  requestAnimationFrame(() => el.classList.add('visible'));
-}
-
-function hideBanner(): void {
-  if (!bannerEl) return;
-  bannerEl.classList.remove('visible');
-  const el = bannerEl;
-  bannerEl = null;
-  setTimeout(() => el.remove(), 250);
 }

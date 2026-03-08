@@ -4,9 +4,10 @@ import { writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-ma
 import { writeTextFile, readTextFile, mkdir, exists, readDir, remove, BaseDirectory } from '@tauri-apps/plugin-fs';
 import { t } from './i18n';
 import { loadSettings, saveSettings } from './themes';
-import { AIAgent } from './ai-agent';
+import { AIAgent, AgentCallbacks } from './ai-agent';
 import { escapeHtml } from './status-bar';
 import { resolveActiveModel, resolveModel } from './ai-provider';
+import { toolIcon, statusIcon, pulseIcon, spinnerIcon, thinkingIcon, shieldIcon, stopIcon, approveIcon, rejectIcon, editIcon, chevronIcon, TOOL_COLORS, STATUS_COLORS, TRUST_COLORS } from './ai-icons';
 
 export interface HistoryEntry {
   command: string;
@@ -18,7 +19,7 @@ export interface AICapsuleInstance {
   sessionId: string;
   historyKey: string;
   element: HTMLDivElement;
-  messages: { role: 'user' | 'assistant'; content: string; timestamp: number }[];
+  messages: ConvEntry[];
   selectedModel: string;
   history: HistoryEntry[];
   lineBuffer: string;
@@ -32,16 +33,26 @@ export interface AICapsuleInstance {
   isStreaming: boolean;
   streamBuffer: string;
   streamMsgEl: HTMLDivElement | null;
+  reasoningBuffer: string;
   // LLM chat history panel state
   chatHistoryOpen: boolean;
   chatHistoryPanel: HTMLDivElement | null;
   currentConversationId: string;
 }
 
+/** Discriminated-union entry stored per conversation turn */
+export type ConvEntry =
+  | { type: 'user';      content: string; timestamp: number }
+  | { type: 'thinking';  content: string; reasoning?: string; timestamp: number }
+  | { type: 'assistant'; content: string; timestamp: number }
+  | { type: 'system';    content: string; timestamp: number }
+  | { type: 'tool_call'; toolName: string; args: Record<string, unknown>;
+      result: string | null; isError: boolean; timestamp: number };
+
 export interface ChatConversation {
   id: string;
   title: string;
-  messages: { role: 'user' | 'assistant'; content: string; timestamp: number }[];
+  messages: ConvEntry[];
   createdAt: number;
   updatedAt: number;
 }
@@ -68,13 +79,18 @@ function renderMarkdown(text: string, sessionId: string, addHistoryFn: (cmd: str
     const code = match[2].trim();
     const isBash = /^(bash|sh|shell|zsh|fish|cmd|powershell)?$/.test(lang);
 
+    // Single-line: no newlines and short enough to fit on one row
+    const isInline = !code.includes('\n') && code.length <= 65;
+
     // Generate a unique id for command execution binding
     const blockId = `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     segments.push(
-      `<div class="ai-cmd-block" data-block-id="${blockId}">` +
-      `<div class="ai-cmd-lang">${escapeHtml(lang || 'code')}</div>` +
+      `<div class="ai-cmd-block ${isInline ? 'ai-cmd-inline' : 'ai-cmd-stacked'}" data-block-id="${blockId}">` +
+      `<div class="ai-cmd-screen">` +
+      (!isInline ? `<div class="ai-cmd-lang">${escapeHtml(lang || 'code')}</div>` : '') +
       `<pre><code>${escapeHtml(code)}</code></pre>` +
+      `</div>` +
       `<div class="ai-cmd-actions">` +
       (isBash
         ? `<button class="ai-cmd-run" data-cmd="${escapeHtml(code)}" data-session="${sessionId}">${t('aiRunCommand')}</button>`
@@ -153,6 +169,7 @@ class AICapsuleManagerClass {
       isStreaming: false,
       streamBuffer: '',
       streamMsgEl: null,
+      reasoningBuffer: '',
       chatHistoryOpen: false,
       chatHistoryPanel: null,
       currentConversationId: conversationId,
@@ -277,6 +294,10 @@ class AICapsuleManagerClass {
       bar.appendChild(drawerBtn);
     }
 
+    // Trust level switcher
+    const trustSwitcher = this.createTrustSwitcher();
+    bar.appendChild(trustSwitcher);
+
     // Hide AI bar button (always last)
     const hideBtn = document.createElement('button');
     hideBtn.className = 'ai-bar-btn ai-bar-btn-hide';
@@ -372,6 +393,11 @@ class AICapsuleManagerClass {
     const panel = document.createElement('div');
     panel.className = 'ai-chat-panel';
 
+    // Resize handle at the top edge
+    const resizeHandle = document.createElement('div');
+    resizeHandle.className = 'ai-chat-resize-handle';
+    this.setupChatResize(panel, resizeHandle);
+
     // Header
     const header = document.createElement('div');
     header.className = 'ai-chat-header';
@@ -380,10 +406,34 @@ class AICapsuleManagerClass {
     title.className = 'ai-chat-title';
     title.textContent = t('aiCapsule');
 
+    // New chat button — save current conversation to history, then start fresh
+    const newChatBtn = document.createElement('button');
+    newChatBtn.className = 'ai-chat-clear';
+    newChatBtn.textContent = t('aiNewChat');
+    newChatBtn.addEventListener('click', () => {
+      if (instance.isStreaming) return;
+      // Save current conversation to history if it has messages
+      if (instance.messages.length > 0) {
+        const snapshot = { id: instance.currentConversationId, messages: [...instance.messages] };
+        void this.saveConversation(instance, snapshot);
+      }
+      // Reset to a fresh conversation
+      instance.agent.clear();
+      instance.messages = [];
+      instance.currentConversationId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      instance.streamMsgEl = null;
+      instance.streamBuffer = '';
+      instance.reasoningBuffer = '';
+      const msgContainer = panel.querySelector('.ai-chat-messages');
+      if (msgContainer) msgContainer.innerHTML = '';
+      this.updateChatTitle(instance);
+    });
+
     const clearBtn = document.createElement('button');
     clearBtn.className = 'ai-chat-clear';
     clearBtn.textContent = t('aiClearChat');
     clearBtn.addEventListener('click', () => {
+      if (instance.isStreaming) return;
       // Clear without saving to history — user explicitly discards
       // Delete persisted file for current conversation
       void this.deleteConversation(instance.currentConversationId);
@@ -392,6 +442,7 @@ class AICapsuleManagerClass {
       instance.currentConversationId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const msgContainer = panel.querySelector('.ai-chat-messages');
       if (msgContainer) msgContainer.innerHTML = '';
+      this.updateChatTitle(instance);
     });
 
     // Minimize button — hides panel but keeps conversation alive
@@ -408,6 +459,7 @@ class AICapsuleManagerClass {
     closeBtn.addEventListener('click', () => this.closeChatAndSave(instance));
 
     header.appendChild(title);
+    header.appendChild(newChatBtn);
     header.appendChild(clearBtn);
     header.appendChild(minimizeBtn);
     header.appendChild(closeBtn);
@@ -416,10 +468,47 @@ class AICapsuleManagerClass {
     const messages = document.createElement('div');
     messages.className = 'ai-chat-messages';
 
+    panel.appendChild(resizeHandle);
     panel.appendChild(header);
     panel.appendChild(messages);
 
+    // Bind context menu on the messages container (event delegation)
+    this.bindChatContextMenu(instance, messages);
+
     return panel;
+  }
+
+  /** Wire up drag-to-resize on the chat panel's top handle. */
+  private setupChatResize(panel: HTMLDivElement, handle: HTMLDivElement): void {
+    let startY = 0;
+    let startH = 0;
+
+    const onMouseMove = (e: MouseEvent) => {
+      // Dragging up → larger panel (startY - e.clientY is positive)
+      const delta = startY - e.clientY;
+      const header = panel.querySelector('.ai-chat-header') as HTMLElement | null;
+      const minH = header ? header.offsetHeight + 6 : 36; // header + resize handle
+      const maxH = window.innerHeight * 0.8;
+      const newH = Math.min(maxH, Math.max(minH, startH + delta));
+      panel.style.height = `${newH}px`;
+      panel.style.flex = 'none'; // override flex sizing during manual resize
+      TerminalRegistry.resizeAll();
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.classList.remove('ai-chat-resizing');
+    };
+
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      startY = e.clientY;
+      startH = panel.offsetHeight;
+      document.body.classList.add('ai-chat-resizing');
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
   }
 
   private openChat(instance: AICapsuleInstance): void {
@@ -427,8 +516,12 @@ class AICapsuleManagerClass {
 
     if (!instance.chatPanel) {
       instance.chatPanel = this.createChatPanel(instance);
-      // Insert chat panel before the bar element (so it appears above)
-      instance.element.insertBefore(instance.chatPanel, instance.element.firstChild);
+      // Insert chat panel into #terminal-panel (before .ai-bar) so it
+      // participates in the flex layout and pushes the terminal area up.
+      const terminalPanel = instance.element.parentElement;
+      if (terminalPanel) {
+        terminalPanel.insertBefore(instance.chatPanel, instance.element);
+      }
     }
 
     instance.chatPanel.style.display = '';
@@ -436,6 +529,8 @@ class AICapsuleManagerClass {
     instance.chatMinimized = false;
     this.closeHistory(instance);
     this.updateButtonHighlight(instance);
+    // Refit terminal to new available height
+    TerminalRegistry.resizeAll();
   }
 
   /** Minimize: hide panel but keep conversation alive */
@@ -447,6 +542,7 @@ class AICapsuleManagerClass {
     instance.chatOpen = false;
     instance.chatMinimized = true;
     this.updateButtonHighlight(instance);
+    TerminalRegistry.resizeAll();
   }
 
   /** Close: save to history then reset conversation */
@@ -456,6 +552,7 @@ class AICapsuleManagerClass {
       instance.agent.abort();
       instance.isStreaming = false;
       document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
+      this.updateButtonHighlight(instance);
     }
 
     // Snapshot messages before clearing, then save asynchronously
@@ -477,7 +574,10 @@ class AICapsuleManagerClass {
     instance.chatMinimized = false;
     instance.streamMsgEl = null;
     instance.streamBuffer = '';
+    instance.reasoningBuffer = '';
+    this.updateChatTitle(instance);
     this.updateButtonHighlight(instance);
+    TerminalRegistry.resizeAll();
   }
 
   /** Restore a saved conversation into the main chat panel */
@@ -498,33 +598,81 @@ class AICapsuleManagerClass {
     // Restore conversation state
     instance.currentConversationId = conv.id;
     instance.messages = conv.messages.map(m => ({ ...m }));
+    instance.reasoningBuffer = '';
 
     // Ensure chat panel exists
     if (!instance.chatPanel) {
       instance.chatPanel = this.createChatPanel(instance);
-      instance.element.insertBefore(instance.chatPanel, instance.element.firstChild);
+      const terminalPanel = instance.element.parentElement;
+      if (terminalPanel) {
+        terminalPanel.insertBefore(instance.chatPanel, instance.element);
+      }
     }
 
     // Clear and rebuild message UI
     const msgContainer = instance.chatPanel.querySelector('.ai-chat-messages');
     if (msgContainer) {
       msgContainer.innerHTML = '';
+      const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
+
       for (const msg of instance.messages) {
-        const role = msg.role === 'assistant' ? 'assistant' : 'user';
-        const msgEl = document.createElement('div');
-        msgEl.className = `ai-msg ai-msg-${role}`;
-        const content = document.createElement('div');
-        content.className = 'ai-msg-content';
-        if (role === 'assistant') {
-          const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
-          content.innerHTML = renderMarkdown(msg.content, instance.sessionId, addHistory);
-        } else {
-          content.textContent = msg.content;
+        if (msg.type === 'user') {
+          const el = document.createElement('div');
+          el.className = 'ai-msg ai-msg-user';
+          const c = document.createElement('div');
+          c.className = 'ai-msg-content';
+          c.textContent = msg.content;
+          el.appendChild(c);
+          msgContainer.appendChild(el);
+
+        } else if (msg.type === 'thinking') {
+          // Reasoning block — standalone, no bubble
+          if (msg.reasoning) {
+            const block = document.createElement('div');
+            block.className = 'ai-thinking-block';
+            const details = document.createElement('details');
+            details.className = 'ai-reasoning';
+            const summary = document.createElement('summary');
+            summary.innerHTML = `${thinkingIcon(12)} <span>${t('aiThinking')}</span>`;
+            const textEl = document.createElement('div');
+            textEl.className = 'ai-reasoning-text';
+            textEl.textContent = msg.reasoning;
+            details.appendChild(summary);
+            details.appendChild(textEl);
+            block.appendChild(details);
+            msgContainer.appendChild(block);
+          }
+          // Assistant text — render as regular bubble
+          if (msg.content) {
+            const el = document.createElement('div');
+            el.className = 'ai-msg ai-msg-assistant';
+            const c = document.createElement('div');
+            c.className = 'ai-msg-content';
+            c.innerHTML = renderMarkdown(msg.content, instance.sessionId, addHistory);
+            el.appendChild(c);
+            msgContainer.appendChild(el);
+          }
+
+        } else if (msg.type === 'tool_call') {
+          msgContainer.appendChild(this.buildToolCard(msg));
+
+        } else if (msg.type === 'assistant') {
+          const el = document.createElement('div');
+          el.className = 'ai-msg ai-msg-assistant';
+          const c = document.createElement('div');
+          c.className = 'ai-msg-content';
+          c.innerHTML = renderMarkdown(msg.content, instance.sessionId, addHistory);
+          el.appendChild(c);
+          msgContainer.appendChild(el);
+
+        } else if (msg.type === 'system') {
+          const notice = document.createElement('div');
+          notice.className = 'ai-system-notice';
+          notice.textContent = msg.content;
+          msgContainer.appendChild(notice);
         }
-        msgEl.appendChild(content);
-        msgContainer.appendChild(msgEl);
       }
-      // Bind command buttons in restored markdown
+
       this.bindCommandButtons(instance, msgContainer);
       msgContainer.scrollTop = msgContainer.scrollHeight;
     }
@@ -536,16 +684,50 @@ class AICapsuleManagerClass {
     instance.isStreaming = false;
     instance.streamMsgEl = null;
     instance.streamBuffer = '';
+    this.updateChatTitle(instance, conv.title);
     this.updateButtonHighlight(instance);
+    TerminalRegistry.resizeAll();
   }
 
-  /** Update term/llm button highlight based on chat state */
+  private static readonly LLM_SEND_SVG = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8L7 3.5 13.5 2.5 12.5 9 8 13.5z"/><path d="M2.5 8L6.5 6.5 9.5 9.5 8 13.5"/><circle cx="9.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg>`;
+
+  /** Update term/llm button highlight + streaming stop state */
   private updateButtonHighlight(instance: AICapsuleInstance): void {
     const termBtn = instance.element.querySelector('.ai-bar-btn-term') as HTMLButtonElement;
     const llmBtn = instance.element.querySelector('.ai-bar-btn-llm') as HTMLButtonElement;
     const chatActive = instance.chatOpen || instance.chatMinimized;
     if (termBtn) termBtn.classList.toggle('chat-active', chatActive);
-    if (llmBtn) llmBtn.classList.toggle('chat-active', chatActive);
+    if (llmBtn) {
+      llmBtn.classList.toggle('chat-active', chatActive);
+      // Toggle between send and stop icon based on streaming state
+      if (instance.isStreaming) {
+        llmBtn.innerHTML = stopIcon(16);
+        llmBtn.classList.add('streaming-active');
+        llmBtn.title = t('aiStopGenerating');
+      } else {
+        llmBtn.innerHTML = AICapsuleManagerClass.LLM_SEND_SVG;
+        llmBtn.classList.remove('streaming-active');
+        llmBtn.title = `${t('aiSendPrompt')} (Ctrl+Enter)`;
+      }
+    }
+  }
+
+  /** Update chat panel title bar. If no explicit title given, derives from first user message. */
+  private updateChatTitle(instance: AICapsuleInstance, title?: string): void {
+    if (!instance.chatPanel) return;
+    const titleEl = instance.chatPanel.querySelector('.ai-chat-title');
+    if (!titleEl) return;
+    if (title) {
+      titleEl.textContent = title.length > 40 ? title.slice(0, 40) + '...' : title;
+      return;
+    }
+    const firstUser = instance.messages.find(m => m.type === 'user');
+    if (firstUser) {
+      const text = firstUser.content;
+      titleEl.textContent = text.length > 40 ? text.slice(0, 40) + '...' : text;
+    } else {
+      titleEl.textContent = t('aiCapsule');
+    }
   }
 
   private appendUserMessage(instance: AICapsuleInstance, text: string): void {
@@ -563,10 +745,54 @@ class AICapsuleManagerClass {
     container.scrollTop = container.scrollHeight;
   }
 
-  private beginAssistantMessage(instance: AICapsuleInstance): HTMLDivElement {
-    if (!instance.chatPanel) return document.createElement('div');
+  /** Show a pulsing indicator at the bottom of the chat to signal agent is running. */
+  private showAgentPulse(instance: AICapsuleInstance): void {
+    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
+    if (!container || container.querySelector('.ai-agent-pulse')) return;
+    const pulse = document.createElement('div');
+    pulse.className = 'ai-agent-pulse';
+    const dots = Array.from({ length: 6 }, (_, i) =>
+      `<span class="ai-pulse-dot" style="animation-delay:${i * 0.25}s">·</span>`
+    ).join('');
+    pulse.innerHTML = `${pulseIcon('var(--accent, #6aa4ff)', 10)} <span class="ai-pulse-label">${t('aiWorking')}</span><span class="ai-pulse-dots">${dots}</span>`;
+    container.appendChild(pulse);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  /** Remove the pulsing agent indicator. */
+  private hideAgentPulse(instance: AICapsuleInstance): void {
+    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
+    if (!container) return;
+    container.querySelector('.ai-agent-pulse')?.remove();
+  }
+
+  /** Re-position the pulse to the bottom of the messages container. */
+  private sinkAgentPulse(instance: AICapsuleInstance): void {
+    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
+    if (!container) return;
+    const pulse = container.querySelector('.ai-agent-pulse');
+    if (pulse) container.appendChild(pulse); // moves to end
+  }
+
+  /** Prepare for a new assistant response. Doesn't create the bubble yet —
+   *  it will be created lazily when the first content token arrives. */
+  private beginAssistantMessage(instance: AICapsuleInstance): void {
+    // Collapse any previous thinking block
+    this.collapseActiveThinking(instance);
+    instance.streamMsgEl = null;
+    instance.streamBuffer = '';
+    instance.reasoningBuffer = '';
+  }
+
+  /** Create the assistant bubble on demand (first content token). */
+  private ensureStreamBubble(instance: AICapsuleInstance): HTMLDivElement | null {
+    if (instance.streamMsgEl) return instance.streamMsgEl;
+    if (!instance.chatPanel) return null;
     const container = instance.chatPanel.querySelector('.ai-chat-messages');
-    if (!container) return document.createElement('div');
+    if (!container) return null;
+
+    // Collapse thinking block before starting content bubble
+    this.collapseActiveThinking(instance);
 
     const msg = document.createElement('div');
     msg.className = 'ai-msg ai-msg-assistant streaming';
@@ -580,6 +806,7 @@ class AICapsuleManagerClass {
 
     msg.appendChild(content);
     container.appendChild(msg);
+    this.sinkAgentPulse(instance);
     container.scrollTop = container.scrollHeight;
 
     instance.streamMsgEl = msg;
@@ -589,6 +816,7 @@ class AICapsuleManagerClass {
   private appendStreamToken(instance: AICapsuleInstance, token: string): void {
     instance.streamBuffer += token;
 
+    this.ensureStreamBubble(instance);
     if (!instance.streamMsgEl) return;
     const content = instance.streamMsgEl.querySelector('.ai-msg-content');
     if (!content) return;
@@ -611,33 +839,157 @@ class AICapsuleManagerClass {
     if (container) container.scrollTop = container.scrollHeight;
   }
 
+  /** Collapse any active standalone thinking block. */
+  private collapseActiveThinking(instance: AICapsuleInstance): void {
+    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
+    if (!container) return;
+    const block = container.querySelector('.ai-thinking-block.active');
+    if (block) {
+      block.classList.remove('active');
+      const details = block.querySelector('details');
+      if (details) details.open = false;
+    }
+  }
+
+  /**
+   * Append a reasoning/thinking token to a standalone thinking block
+   * (outside any bubble) in the chat messages container.
+   */
+  private appendReasoningToken(instance: AICapsuleInstance, token: string): void {
+    instance.reasoningBuffer += token;
+
+    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
+    if (!container) return;
+
+    // Find or create the standalone thinking block
+    let block = container.querySelector('.ai-thinking-block.active') as HTMLElement | null;
+    if (!block) {
+      block = document.createElement('div');
+      block.className = 'ai-thinking-block active';
+
+      const details = document.createElement('details');
+      details.className = 'ai-reasoning';
+      details.open = true;
+
+      const summary = document.createElement('summary');
+      summary.innerHTML = `${thinkingIcon(12)} <span>${t('aiThinking')}</span>`;
+      details.appendChild(summary);
+
+      const pre = document.createElement('div');
+      pre.className = 'ai-reasoning-text';
+      details.appendChild(pre);
+
+      block.appendChild(details);
+      container.appendChild(block);
+      this.sinkAgentPulse(instance);
+    }
+
+    const textEl = block.querySelector('.ai-reasoning-text');
+    if (textEl) textEl.textContent += token;
+
+    container.scrollTop = container.scrollHeight;
+  }
+
   private finalizeMessage(instance: AICapsuleInstance, fullText: string): void {
     instance.isStreaming = false;
     document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
+    this.updateButtonHighlight(instance);
+    this.hideAgentPulse(instance);
 
-    if (!instance.streamMsgEl) return;
-    instance.streamMsgEl.classList.remove('streaming');
+    // Collapse standalone thinking block
+    this.collapseActiveThinking(instance);
 
-    const content = instance.streamMsgEl.querySelector('.ai-msg-content');
-    if (!content) return;
+    // Save reasoning if present
+    if (instance.reasoningBuffer) {
+      instance.messages.push({ type: 'thinking', content: '', reasoning: instance.reasoningBuffer, timestamp: Date.now() });
+      instance.reasoningBuffer = '';
+    }
 
-    // Replace raw text with rendered markdown
-    const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
-    content.innerHTML = renderMarkdown(fullText, instance.sessionId, addHistory);
+    // Create bubble if content exists but no bubble was created yet
+    if (!instance.streamMsgEl && fullText) {
+      this.ensureStreamBubble(instance);
+    }
 
-    // Bind command block buttons
-    this.bindCommandButtons(instance, content);
+    if (instance.streamMsgEl) {
+      instance.streamMsgEl.classList.remove('streaming');
+      const content = instance.streamMsgEl.querySelector('.ai-msg-content');
+      if (content) {
+        content.querySelector('.ai-stream-text')?.remove();
+        content.querySelector('.ai-cursor')?.remove();
+        if (fullText) {
+          const mdWrapper = document.createElement('div');
+          const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
+          mdWrapper.innerHTML = renderMarkdown(fullText, instance.sessionId, addHistory);
+          while (mdWrapper.firstChild) content.appendChild(mdWrapper.firstChild);
+          this.bindCommandButtons(instance, content);
+        }
+      }
+    }
 
     instance.streamMsgEl = null;
     instance.streamBuffer = '';
 
-    // Store in messages
-    instance.messages.push({ role: 'assistant', content: fullText, timestamp: Date.now() });
-
-    // Persist conversation to file
+    // Store assistant message
+    if (fullText) {
+      instance.messages.push({ type: 'assistant', content: fullText, timestamp: Date.now() });
+    }
     void this.saveConversation(instance);
 
-    // Auto-scroll
+    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
+    if (container) container.scrollTop = container.scrollHeight;
+  }
+
+  /**
+   * Finalize the current thinking text *without* ending the streaming state.
+   * Called when LLM returns text + tool_calls — the text is rendered into a
+   * finished markdown bubble so tool cards appear below it cleanly.
+   */
+  private finalizeThinking(instance: AICapsuleInstance, text: string): void {
+    // Collapse standalone thinking block
+    this.collapseActiveThinking(instance);
+
+    // Save reasoning + assistant text as a thinking entry
+    const reasoning = instance.reasoningBuffer || undefined;
+    if (reasoning || text) {
+      instance.messages.push({ type: 'thinking', content: text, reasoning, timestamp: Date.now() });
+    }
+    instance.reasoningBuffer = '';
+
+    // Finalize the bubble if it has content
+    if (instance.streamMsgEl) {
+      instance.streamMsgEl.classList.remove('streaming');
+      const content = instance.streamMsgEl.querySelector('.ai-msg-content');
+      if (content) {
+        content.querySelector('.ai-stream-text')?.remove();
+        content.querySelector('.ai-cursor')?.remove();
+        if (text) {
+          const mdWrapper = document.createElement('div');
+          const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
+          mdWrapper.innerHTML = renderMarkdown(text, instance.sessionId, addHistory);
+          while (mdWrapper.firstChild) content.appendChild(mdWrapper.firstChild);
+          this.bindCommandButtons(instance, content);
+        }
+      }
+    } else if (text) {
+      // No bubble was created yet (reasoning-only phase), create one for the text
+      const bubble = this.ensureStreamBubble(instance);
+      if (bubble) {
+        bubble.classList.remove('streaming');
+        const content = bubble.querySelector('.ai-msg-content');
+        if (content) {
+          content.querySelector('.ai-cursor')?.remove();
+          const mdWrapper = document.createElement('div');
+          const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
+          mdWrapper.innerHTML = renderMarkdown(text, instance.sessionId, addHistory);
+          while (mdWrapper.firstChild) content.appendChild(mdWrapper.firstChild);
+          this.bindCommandButtons(instance, content);
+        }
+      }
+    }
+
+    instance.streamMsgEl = null;
+    instance.streamBuffer = '';
+
     const container = instance.chatPanel?.querySelector('.ai-chat-messages');
     if (container) container.scrollTop = container.scrollHeight;
   }
@@ -645,7 +997,13 @@ class AICapsuleManagerClass {
   private showError(instance: AICapsuleInstance, message: string): void {
     instance.isStreaming = false;
     document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
+    this.updateButtonHighlight(instance);
+    this.hideAgentPulse(instance);
+    this.collapseActiveThinking(instance);
 
+    if (!instance.streamMsgEl) {
+      this.ensureStreamBubble(instance);
+    }
     if (instance.streamMsgEl) {
       instance.streamMsgEl.classList.remove('streaming');
       const content = instance.streamMsgEl.querySelector('.ai-msg-content');
@@ -656,6 +1014,353 @@ class AICapsuleManagerClass {
 
     instance.streamMsgEl = null;
     instance.streamBuffer = '';
+    instance.reasoningBuffer = '';
+  }
+
+  // ─── Agent Tool Call UI ───────────────────────────────────────
+
+  /** Build inline args HTML for a tool card header. */
+  private static toolArgsInline(toolName: string, args: Record<string, unknown>): string {
+    if (toolName === 'run_command' && args.command) {
+      return `<span class="ai-tool-args-inline"><code>$ ${escapeHtml(String(args.command))}</code></span>`;
+    } else if ((toolName === 'read_file' || toolName === 'write_file') && args.path) {
+      return `<span class="ai-tool-args-inline"><code>${escapeHtml(String(args.path))}</code></span>`;
+    } else if (toolName === 'read_terminal') {
+      return `<span class="ai-tool-args-inline"><code>${args.lines ?? 50} lines</code></span>`;
+    }
+    return '';
+  }
+
+  /** Build a completed tool card element (for history rendering). */
+  private buildToolCard(msg: Extract<ConvEntry, { type: 'tool_call' }>): HTMLDivElement {
+    const card = document.createElement('div');
+    card.className = 'ai-tool-card completed';
+    card.dataset.tool = msg.toolName;
+    const status = msg.result !== null
+      ? (msg.isError ? statusIcon('error', 12) : statusIcon('success', 12))
+      : statusIcon('error', 12);
+    const header = document.createElement('div');
+    header.className = 'ai-tool-card-header clickable';
+    header.innerHTML = `
+      <span class="ai-tool-icon">${toolIcon(msg.toolName, 14)}</span>
+      <span class="ai-tool-name">${escapeHtml(msg.toolName)}</span>
+      ${AICapsuleManagerClass.toolArgsInline(msg.toolName, msg.args)}
+      <span class="ai-tool-status">${status}</span>`;
+    const resultEl = document.createElement('div');
+    resultEl.className = `ai-tool-result${msg.isError ? ' ai-tool-result-error' : ''}`;
+    resultEl.style.display = 'none';
+    const raw = msg.result ?? '';
+    const truncated = raw.length > 500 ? raw.slice(0, 500) + '...' : raw;
+    resultEl.innerHTML = `<pre>${escapeHtml(truncated)}</pre>`;
+    header.addEventListener('click', () => {
+      resultEl.style.display = resultEl.style.display === 'none' ? '' : 'none';
+    });
+    card.appendChild(header);
+    card.appendChild(resultEl);
+    return card;
+  }
+
+  /** Render an inline tool-call card in the chat panel. */
+  private appendToolCallCard(
+    instance: AICapsuleInstance,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): void {
+    if (!instance.chatPanel) return;
+    const container = instance.chatPanel.querySelector('.ai-chat-messages');
+    if (!container) return;
+
+    const card = document.createElement('div');
+    card.className = 'ai-tool-card';
+    card.dataset.tool = toolName;
+    card.dataset.toolId = `tc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+    const color = TOOL_COLORS[toolName] ?? '#6B7280';
+
+    // Header row: icon + tool name + inline args + spinner
+    const header = document.createElement('div');
+    header.className = 'ai-tool-card-header';
+    header.innerHTML = `
+      <span class="ai-tool-icon">${toolIcon(toolName, 14)}</span>
+      <span class="ai-tool-name">${escapeHtml(toolName)}</span>
+      ${AICapsuleManagerClass.toolArgsInline(toolName, args)}
+      <span class="ai-tool-status">${spinnerIcon(color, 12)}</span>
+    `;
+
+    card.appendChild(header);
+    container.appendChild(card);
+    this.sinkAgentPulse(instance);
+    container.scrollTop = container.scrollHeight;
+
+    // Add run_command commands to history so they appear in the history panel
+    if (toolName === 'run_command' && typeof args.command === 'string' && args.command.trim()) {
+      this.addHistory(instance, args.command.trim(), 'ai');
+    }
+
+    // Persist tool call (result filled in by updateToolResultCard)
+    instance.messages.push({ type: 'tool_call', toolName, args, result: null, isError: false, timestamp: Date.now() });
+  }
+
+  /** Update the most recent tool card with execution result. */
+  private updateToolResultCard(
+    instance: AICapsuleInstance,
+    toolName: string,
+    result: string,
+    isError: boolean,
+  ): void {
+    if (!instance.chatPanel) return;
+    const container = instance.chatPanel.querySelector('.ai-chat-messages');
+    if (!container) return;
+
+    // Find the last tool card matching this tool
+    const cards = container.querySelectorAll<HTMLDivElement>(`.ai-tool-card[data-tool="${toolName}"]`);
+    const card = cards[cards.length - 1];
+    if (!card) return;
+
+    // Update status icon
+    const statusEl = card.querySelector('.ai-tool-status');
+    if (statusEl) {
+      statusEl.innerHTML = isError ? statusIcon('error', 12) : statusIcon('success', 12);
+    }
+
+    // Add collapsible result
+    const resultEl = document.createElement('div');
+    resultEl.className = `ai-tool-result ${isError ? 'ai-tool-result-error' : ''}`;
+    resultEl.style.display = 'none'; // collapsed by default
+
+    const truncated = result.length > 500 ? result.slice(0, 500) + '...' : result;
+    resultEl.innerHTML = `<pre>${escapeHtml(truncated)}</pre>`;
+    card.appendChild(resultEl);
+
+    // Make header clickable to toggle result
+    const header = card.querySelector('.ai-tool-card-header');
+    if (header) {
+      header.classList.add('clickable');
+      header.addEventListener('click', () => {
+        resultEl.style.display = resultEl.style.display === 'none' ? '' : 'none';
+      });
+    }
+
+    card.classList.add('completed');
+    container.scrollTop = container.scrollHeight;
+
+    // Back-fill result into the last pending tool_call entry for this tool
+    for (let i = instance.messages.length - 1; i >= 0; i--) {
+      const e = instance.messages[i];
+      if (e.type === 'tool_call' && e.toolName === toolName && e.result === null) {
+        e.result = result;
+        e.isError = isError;
+        break;
+      }
+    }
+  }
+
+  /**
+   * Show inline confirmation card and return a Promise.
+   * Resolves with: true (approve), false (reject), or string (edited command).
+   */
+  private showConfirmCard(
+    instance: AICapsuleInstance,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<boolean | string> {
+    return new Promise((resolve) => {
+      if (!instance.chatPanel) { resolve(false); return; }
+      const container = instance.chatPanel.querySelector('.ai-chat-messages');
+      if (!container) { resolve(false); return; }
+
+      const card = document.createElement('div');
+      card.className = 'ai-confirm-card';
+      card.dataset.tool = toolName;
+
+      const color = TOOL_COLORS[toolName] ?? '#6B7280';
+
+      // Header
+      const header = document.createElement('div');
+      header.className = 'ai-confirm-header';
+      header.innerHTML = `
+        <span class="ai-tool-icon">${toolIcon(toolName, 14)}</span>
+        <span class="ai-tool-name">${escapeHtml(toolName)}</span>
+      `;
+
+      // Command preview
+      const preview = document.createElement('div');
+      preview.className = 'ai-confirm-preview';
+      if (toolName === 'run_command' && args.command) {
+        preview.innerHTML = `<code>$ ${escapeHtml(String(args.command))}</code>`;
+      } else if (toolName === 'write_file' && args.path) {
+        preview.innerHTML = `<code>${escapeHtml(String(args.path))}</code>`;
+      } else {
+        preview.innerHTML = `<code>${escapeHtml(JSON.stringify(args, null, 2).slice(0, 200))}</code>`;
+      }
+
+      // Buttons
+      const buttons = document.createElement('div');
+      buttons.className = 'ai-confirm-buttons';
+
+      const approveBtn = document.createElement('button');
+      approveBtn.className = 'ai-confirm-btn ai-confirm-approve';
+      approveBtn.innerHTML = `${approveIcon(12)} <span>Allow</span>`;
+
+      const rejectBtn = document.createElement('button');
+      rejectBtn.className = 'ai-confirm-btn ai-confirm-reject';
+      rejectBtn.innerHTML = `${rejectIcon(12)} <span>Reject</span>`;
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'ai-confirm-btn ai-confirm-edit';
+      editBtn.innerHTML = `${editIcon(12)} <span>Edit</span>`;
+
+      buttons.appendChild(approveBtn);
+      buttons.appendChild(rejectBtn);
+      if (toolName === 'run_command') {
+        buttons.appendChild(editBtn);
+      }
+
+      card.appendChild(header);
+      card.appendChild(preview);
+      card.appendChild(buttons);
+      container.appendChild(card);
+      container.scrollTop = container.scrollHeight;
+
+      // Button handlers
+      const cleanup = () => {
+        card.classList.add('resolved');
+        approveBtn.disabled = true;
+        rejectBtn.disabled = true;
+        editBtn.disabled = true;
+      };
+
+      approveBtn.addEventListener('click', () => {
+        cleanup();
+        card.querySelector('.ai-confirm-header')!.innerHTML += ` <span class="ai-confirm-resolved">${statusIcon('success', 10)} Approved</span>`;
+        resolve(true);
+      });
+
+      rejectBtn.addEventListener('click', () => {
+        cleanup();
+        card.querySelector('.ai-confirm-header')!.innerHTML += ` <span class="ai-confirm-resolved">${statusIcon('error', 10)} Rejected</span>`;
+        resolve(false);
+      });
+
+      editBtn.addEventListener('click', () => {
+        // Show inline editor
+        const cmd = String(args.command || '');
+        const editorDiv = document.createElement('div');
+        editorDiv.className = 'ai-confirm-editor';
+        const editInput = document.createElement('input');
+        editInput.type = 'text';
+        editInput.className = 'ai-confirm-edit-input';
+        editInput.value = cmd;
+        const confirmEditBtn = document.createElement('button');
+        confirmEditBtn.className = 'ai-confirm-btn ai-confirm-approve';
+        confirmEditBtn.innerHTML = `${approveIcon(12)} <span>Run</span>`;
+        editorDiv.appendChild(editInput);
+        editorDiv.appendChild(confirmEditBtn);
+        preview.replaceWith(editorDiv);
+        editInput.focus();
+
+        const runEdited = () => {
+          cleanup();
+          card.querySelector('.ai-confirm-header')!.innerHTML += ` <span class="ai-confirm-resolved">${statusIcon('success', 10)} Edited</span>`;
+          resolve(editInput.value);
+        };
+
+        confirmEditBtn.addEventListener('click', runEdited);
+        editInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') runEdited();
+          e.stopPropagation();
+        });
+      });
+    });
+  }
+
+  /** Insert a system notice (e.g. trust level change, degradation). */
+  private appendSystemNotice(instance: AICapsuleInstance, text: string): void {
+    if (!instance.chatPanel) return;
+    const container = instance.chatPanel.querySelector('.ai-chat-messages');
+    if (!container) return;
+
+    const notice = document.createElement('div');
+    notice.className = 'ai-system-notice';
+    notice.textContent = text;
+    container.appendChild(notice);
+    container.scrollTop = container.scrollHeight;
+
+    instance.messages.push({ type: 'system', content: text, timestamp: Date.now() });
+  }
+
+  /** Create the trust-level quick switcher button for the AI bar. */
+  private createTrustSwitcher(): HTMLDivElement {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'ai-bar-trust-switcher';
+
+    const settings = loadSettings();
+    const level = settings.aiAgentTrustLevel ?? 0;
+
+    const btn = document.createElement('button');
+    btn.className = 'ai-bar-btn ai-bar-btn-trust';
+    btn.title = `Trust Level ${level}`;
+    btn.innerHTML = shieldIcon(level, 16);
+    btn.dataset.level = String(level);
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'ai-trust-dropdown';
+    dropdown.style.display = 'none';
+
+    const labels = [
+      { value: 0, label: t('aiAgentTrustManual'), color: TRUST_COLORS[0] },
+      { value: 1, label: t('aiAgentTrustSemiAuto'), color: TRUST_COLORS[1] },
+      { value: 2, label: t('aiAgentTrustFullAuto'), color: TRUST_COLORS[2] },
+    ];
+
+    const buildDropdown = () => {
+      const currentLevel = loadSettings().aiAgentTrustLevel ?? 0;
+      dropdown.innerHTML = '';
+      for (const l of labels) {
+        const item = document.createElement('div');
+        item.className = `ai-trust-item ${l.value === currentLevel ? 'active' : ''}`;
+        item.innerHTML = `${shieldIcon(l.value, 14)} <span>${escapeHtml(l.label)}</span>`;
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const s = loadSettings();
+          s.aiAgentTrustLevel = l.value;
+          saveSettings(s);
+          btn.innerHTML = shieldIcon(l.value, 16);
+          btn.dataset.level = String(l.value);
+          btn.title = `Trust Level ${l.value}`;
+          dropdown.style.display = 'none';
+          wrapper.classList.remove('open');
+          // Notify all open capsules
+          for (const [, inst] of this.capsules) {
+            this.appendSystemNotice(inst,
+              `── Trust level changed to Level ${l.value} ──`);
+          }
+        });
+        dropdown.appendChild(item);
+      }
+    };
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = dropdown.style.display !== 'none';
+      if (isOpen) {
+        dropdown.style.display = 'none';
+        wrapper.classList.remove('open');
+      } else {
+        buildDropdown();
+        dropdown.style.display = '';
+        wrapper.classList.add('open');
+      }
+    });
+
+    document.addEventListener('click', () => {
+      dropdown.style.display = 'none';
+      wrapper.classList.remove('open');
+    });
+
+    wrapper.appendChild(btn);
+    wrapper.appendChild(dropdown);
+    return wrapper;
   }
 
   private static readonly DANGER_PATTERNS = [
@@ -784,6 +1489,183 @@ class AICapsuleManagerClass {
         }, 1200);
       });
     });
+  }
+
+  // ─── Chat Bubble Context Menu ─────────────────────────────────
+
+  /** Attach context-menu handler to the messages container (event delegation). */
+  private bindChatContextMenu(instance: AICapsuleInstance, container?: Element): void {
+    const el = container ?? instance.chatPanel?.querySelector('.ai-chat-messages');
+    if (!el) return;
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation(); // Prevent global handler from interfering
+      const target = e.target as HTMLElement;
+
+      // Find closest message bubble or tool card
+      const bubble = target.closest('.ai-msg') as HTMLElement | null;
+      const toolCard = target.closest('.ai-tool-card') as HTMLElement | null;
+      const thinkingBlock = target.closest('.ai-thinking-block') as HTMLElement | null;
+
+      if (!bubble && !toolCard && !thinkingBlock) return;
+
+      // Determine raw text for copying
+      let rawText = '';
+      let msgIndex = -1;
+      let isUser = false;
+
+      if (bubble) {
+        const content = bubble.querySelector('.ai-msg-content');
+        rawText = content?.textContent ?? '';
+        isUser = bubble.classList.contains('ai-msg-user');
+        // Find matching message index
+        const allMsgs = Array.from(el.querySelectorAll('.ai-msg, .ai-tool-card, .ai-thinking-block'));
+        const pos = allMsgs.indexOf(bubble);
+        msgIndex = this.resolveMessageIndex(instance, allMsgs, pos);
+      } else if (toolCard) {
+        const resultEl = toolCard.querySelector('.ai-tool-result pre');
+        const argsEl = toolCard.querySelector('.ai-tool-args-inline code');
+        rawText = resultEl?.textContent ?? argsEl?.textContent ?? '';
+        const allMsgs = Array.from(el.querySelectorAll('.ai-msg, .ai-tool-card, .ai-thinking-block'));
+        const pos = allMsgs.indexOf(toolCard);
+        msgIndex = this.resolveMessageIndex(instance, allMsgs, pos);
+      } else if (thinkingBlock) {
+        const textEl = thinkingBlock.querySelector('.ai-reasoning-text');
+        rawText = textEl?.textContent ?? '';
+        const allMsgs = Array.from(el.querySelectorAll('.ai-msg, .ai-tool-card, .ai-thinking-block'));
+        const pos = allMsgs.indexOf(thinkingBlock);
+        msgIndex = this.resolveMessageIndex(instance, allMsgs, pos);
+      }
+
+      // Build menu items
+      type MenuItem = { label: string; action: () => void; disabled?: boolean } | 'divider';
+      const items: MenuItem[] = [];
+
+      // Copy selected text (if any text is selected within the bubble)
+      const selection = window.getSelection();
+      const hasSelection = selection && selection.toString().trim().length > 0;
+
+      if (hasSelection) {
+        items.push({ label: t('aiCtxCopy'), action: () => void clipboardWriteText(selection!.toString()) });
+      } else if (toolCard) {
+        // Tool card: copy result if available
+        const resultEl = toolCard.querySelector('.ai-tool-result pre');
+        if (resultEl?.textContent) {
+          items.push({ label: t('aiCtxCopyResult'), action: () => void clipboardWriteText(resultEl.textContent ?? '') });
+        }
+        const argsEl = toolCard.querySelector('.ai-tool-args-inline code');
+        if (argsEl?.textContent) {
+          items.push({ label: t('aiCtxCopy'), action: () => void clipboardWriteText(argsEl.textContent ?? '') });
+        }
+      } else if (rawText) {
+        items.push({ label: t('aiCtxCopy'), action: () => void clipboardWriteText(rawText) });
+      }
+
+      // Resend (user messages only)
+      if (isUser && rawText && !instance.isStreaming) {
+        if (items.length > 0) items.push('divider');
+        items.push({
+          label: t('aiCtxResend'),
+          action: () => {
+            const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement | null;
+            if (input) {
+              input.value = rawText;
+              input.focus();
+            }
+          },
+        });
+      }
+
+      // Delete message
+      if (msgIndex >= 0 && !instance.isStreaming) {
+        if (items.length > 0) items.push('divider');
+        items.push({
+          label: t('aiCtxDelete'),
+          action: () => {
+            instance.messages.splice(msgIndex, 1);
+            // Remove DOM element
+            if (bubble) bubble.remove();
+            else if (toolCard) toolCard.remove();
+            else if (thinkingBlock) thinkingBlock.remove();
+            void this.saveConversation(instance);
+          },
+        });
+      }
+
+      if (items.length === 0) return;
+      this.showBubbleContextMenu(e as MouseEvent, items);
+    });
+  }
+
+  /** Map a DOM position index to the corresponding messages[] index. */
+  private resolveMessageIndex(instance: AICapsuleInstance, domNodes: Element[], domPos: number): number {
+    // Walk the messages array, counting rendered elements to match domPos.
+    let rendered = 0;
+    for (let i = 0; i < instance.messages.length; i++) {
+      const msg = instance.messages[i];
+      if (msg.type === 'thinking') {
+        // A thinking entry can produce 1-2 DOM elements (reasoning block + content bubble)
+        if (msg.reasoning) { if (rendered === domPos) return i; rendered++; }
+        if (msg.content) { if (rendered === domPos) return i; rendered++; }
+        if (!msg.reasoning && !msg.content) { rendered++; }
+      } else {
+        if (rendered === domPos) return i;
+        rendered++;
+      }
+    }
+    return -1;
+  }
+
+  /** Show a context menu at mouse position with given items. */
+  private showBubbleContextMenu(e: MouseEvent, items: ({ label: string; action: () => void; disabled?: boolean } | 'divider')[]): void {
+    // Remove any existing menu
+    document.querySelector('.ai-bubble-ctx-menu')?.remove();
+
+    const menu = document.createElement('div');
+    menu.className = 'custom-context-menu ai-bubble-ctx-menu';
+
+    for (const item of items) {
+      if (item === 'divider') {
+        const div = document.createElement('div');
+        div.className = 'custom-context-menu-divider';
+        menu.appendChild(div);
+        continue;
+      }
+      const btn = document.createElement('button');
+      btn.className = 'custom-context-menu-item';
+      btn.textContent = item.label;
+      if (item.disabled) btn.disabled = true;
+      btn.addEventListener('click', () => {
+        menu.remove();
+        item.action();
+      });
+      menu.appendChild(btn);
+    }
+
+    // Position
+    menu.style.left = `${e.clientX}px`;
+    menu.style.top = `${e.clientY}px`;
+    document.body.appendChild(menu);
+
+    // Adjust if menu overflows viewport
+    requestAnimationFrame(() => {
+      const rect = menu.getBoundingClientRect();
+      if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
+      if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
+    });
+
+    // Close on outside click / Escape
+    const close = (ev: Event) => {
+      if (ev.type === 'keydown' && (ev as KeyboardEvent).key !== 'Escape') return;
+      menu.remove();
+      document.removeEventListener('click', close);
+      document.removeEventListener('keydown', close);
+    };
+    // Delay to prevent immediate close from the contextmenu event
+    setTimeout(() => {
+      document.addEventListener('click', close);
+      document.addEventListener('keydown', close);
+    }, 0);
   }
 
   // ─── Terminal command capture ──────────────────────────────────
@@ -1093,7 +1975,8 @@ class AICapsuleManagerClass {
       // Open chat panel and send
       this.openChat(instance);
       this.appendUserMessage(instance, text);
-      instance.messages.push({ role: 'user', content: text, timestamp: Date.now() });
+      instance.messages.push({ type: 'user', content: text, timestamp: Date.now() });
+      this.updateChatTitle(instance);
       void this.saveConversation(instance);
       input.value = '';
 
@@ -1101,17 +1984,67 @@ class AICapsuleManagerClass {
       instance.isStreaming = true;
       instance.streamBuffer = '';
       document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: true } }));
+      this.updateButtonHighlight(instance);
       this.beginAssistantMessage(instance);
+      this.showAgentPulse(instance);
 
-      instance.agent.send(text, instance.sessionId, {
+      const agentCallbacks: AgentCallbacks = {
         onToken: (token) => this.appendStreamToken(instance, token),
+        onReasoning: (token) => this.appendReasoningToken(instance, token),
         onComplete: (fullText) => this.finalizeMessage(instance, fullText),
         onError: (err) => this.showError(instance, err.message),
-      });
+        onThinkingComplete: (text) => {
+          // Finalize thinking block + bubble before tool call cards appear.
+          this.finalizeThinking(instance, text);
+        },
+        onIterationStart: () => {
+          // New agentic iteration — create a fresh assistant message bubble
+          instance.streamBuffer = '';
+          this.beginAssistantMessage(instance);
+        },
+        onToolCall: (toolName, args) => this.appendToolCallCard(instance, toolName, args),
+        onToolResult: (toolName, result, isError) => this.updateToolResultCard(instance, toolName, result, isError),
+        onConfirmRequired: (toolName, args) => this.showConfirmCard(instance, toolName, args),
+        onAborted: (_steps) => {
+          this.collapseActiveThinking(instance);
+          instance.reasoningBuffer = '';
+          if (instance.streamMsgEl && instance.streamBuffer) {
+            this.finalizeMessage(instance, instance.streamBuffer);
+          } else {
+            instance.isStreaming = false;
+            document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
+            this.updateButtonHighlight(instance);
+            this.hideAgentPulse(instance);
+            instance.streamMsgEl = null;
+            instance.streamBuffer = '';
+          }
+        },
+        onDegraded: (reason) => this.appendSystemNotice(instance, reason),
+      };
+      instance.agent.send(text, instance.sessionId, agentCallbacks);
     };
 
     termBtn.addEventListener('click', sendToTerminal);
-    llmBtn.addEventListener('click', sendToLLM);
+    llmBtn.addEventListener('click', () => {
+      if (instance.isStreaming) {
+        // Streaming active → abort
+        instance.agent.abort();
+        this.collapseActiveThinking(instance);
+        instance.reasoningBuffer = '';
+        if (instance.streamMsgEl && instance.streamBuffer) {
+          this.finalizeMessage(instance, instance.streamBuffer);
+        } else {
+          instance.isStreaming = false;
+          instance.streamMsgEl = null;
+          instance.streamBuffer = '';
+          this.updateButtonHighlight(instance);
+          this.hideAgentPulse(instance);
+          document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
+        }
+      } else {
+        sendToLLM();
+      }
+    });
 
     // Right-click on LLM button: restore minimized chat
     llmBtn.addEventListener('contextmenu', (e) => {
@@ -1122,6 +2055,11 @@ class AICapsuleManagerClass {
     });
 
     input.addEventListener('keydown', (e) => {
+      // IME guard: keyCode 229 means the key event is being handled by the
+      // input method editor (composition in progress). Ignore it entirely so
+      // that Enter confirms the IME candidate instead of sending the message.
+      if (e.keyCode === 229) return;
+
       // 弹窗搜索模式下拦截 Enter/Escape
       if (instance.historyOpen || instance.chatHistoryOpen) {
         if (e.key === 'Enter') {
@@ -1169,6 +2107,7 @@ class AICapsuleManagerClass {
         if (instance.isStreaming) {
           instance.agent.abort();
           instance.isStreaming = false;
+          this.updateButtonHighlight(instance);
           if (instance.streamMsgEl) {
             instance.streamMsgEl.classList.remove('streaming');
             // Finalize whatever we have so far
@@ -1239,15 +2178,16 @@ class AICapsuleManagerClass {
     this._chatHistoryDir = AICapsuleManagerClass.CHAT_DIR;
   }
 
-  private async saveConversation(instance: AICapsuleInstance, snapshot?: { id: string; messages: { role: 'user' | 'assistant'; content: string; timestamp: number }[] }): Promise<void> {
+  private async saveConversation(instance: AICapsuleInstance, snapshot?: { id: string; messages: ConvEntry[] }): Promise<void> {
     const id = snapshot?.id ?? instance.currentConversationId;
     const msgs = snapshot?.messages ?? instance.messages;
     if (msgs.length === 0) return;
     try {
       await this.ensureChatDir();
+      const firstUser = msgs.find(m => m.type === 'user');
       const conv: ChatConversation = {
         id,
-        title: msgs[0]?.content.slice(0, 80) || 'Untitled',
+        title: firstUser ? firstUser.content.slice(0, 80) : 'Untitled',
         messages: msgs,
         createdAt: msgs[0]?.timestamp || Date.now(),
         updatedAt: Date.now(),
@@ -1274,7 +2214,13 @@ class AICapsuleManagerClass {
         if (/[/\\]/.test(entry.name)) continue;
         try {
           const content = await readTextFile(`${AICapsuleManagerClass.CHAT_DIR}/${entry.name}`, AICapsuleManagerClass.FS_OPTS);
-          convs.push(JSON.parse(content) as ChatConversation);
+          const raw = JSON.parse(content) as ChatConversation;
+          // Migrate old format: { role, content } → { type, content }
+          if (raw.messages?.length && 'role' in raw.messages[0]) {
+            raw.messages = (raw.messages as unknown as { role: string; content: string; timestamp: number }[])
+              .map(m => ({ type: (m.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.content, timestamp: m.timestamp }));
+          }
+          convs.push(raw);
         } catch (e) { console.error('[chat-history] read failed:', entry.name, e); }
       }
       convs.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -1384,7 +2330,7 @@ class AICapsuleManagerClass {
 
     const filtered = filter
       ? convs.filter(c => this.fuzzyMatch(c.title, filter) ||
-          c.messages.some(m => this.fuzzyMatch(m.content, filter)))
+          c.messages.some(m => m.type !== 'tool_call' && this.fuzzyMatch(m.content, filter)))
       : convs;
 
     if (filtered.length === 0) {
@@ -1460,17 +2406,51 @@ class AICapsuleManagerClass {
     msgContainer.className = 'ai-chat-hist-messages';
 
     for (const msg of conv.messages) {
-      const role = msg.role === 'assistant' ? 'assistant' : 'user';
       const msgEl = document.createElement('div');
-      msgEl.className = `ai-msg ai-msg-${role}`;
       const content = document.createElement('div');
       content.className = 'ai-msg-content';
-      if (role === 'assistant') {
+
+      if (msg.type === 'tool_call') {
+        msgContainer.appendChild(this.buildToolCard(msg));
+        continue;
+      } else if (msg.type === 'assistant') {
+        msgEl.className = 'ai-msg ai-msg-assistant';
         const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
         content.innerHTML = renderMarkdown(msg.content, instance.sessionId, addHistory);
+      } else if (msg.type === 'thinking') {
+        // Reasoning — standalone block (no bubble)
+        if (msg.reasoning) {
+          const block = document.createElement('div');
+          block.className = 'ai-thinking-block';
+          const details = document.createElement('details');
+          details.className = 'ai-reasoning';
+          const summary = document.createElement('summary');
+          summary.innerHTML = `${thinkingIcon(12)} <span>${t('aiThinking')}</span>`;
+          const textEl = document.createElement('div');
+          textEl.className = 'ai-reasoning-text';
+          textEl.textContent = msg.reasoning;
+          details.appendChild(summary);
+          details.appendChild(textEl);
+          block.appendChild(details);
+          msgContainer.appendChild(block);
+        }
+        // Assistant text — render as regular bubble
+        if (msg.content) {
+          msgEl.className = 'ai-msg ai-msg-assistant';
+          const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
+          content.innerHTML = renderMarkdown(msg.content, instance.sessionId, addHistory);
+        } else {
+          continue; // No content to render as a bubble
+        }
+      } else if (msg.type === 'system') {
+        msgEl.className = 'ai-msg ai-msg-system';
+        content.textContent = msg.content;
       } else {
+        // user
+        msgEl.className = 'ai-msg ai-msg-user';
         content.textContent = msg.content;
       }
+
       msgEl.appendChild(content);
       msgContainer.appendChild(msgEl);
     }
@@ -1578,11 +2558,16 @@ class AICapsuleManagerClass {
     if (instance.element.parentElement !== container) {
       container.appendChild(instance.element);
     }
+    // Mount chat panel before the AI bar so it appears above
+    if (instance.chatPanel && instance.chatPanel.parentElement !== container) {
+      container.insertBefore(instance.chatPanel, instance.element);
+    }
   }
 
   hideAll(): void {
     this.capsules.forEach((inst) => {
       inst.element.style.display = 'none';
+      if (inst.chatPanel) inst.chatPanel.style.display = 'none';
     });
   }
 
@@ -1591,12 +2576,17 @@ class AICapsuleManagerClass {
     if (inst) {
       if (this._barHidden) {
         inst.element.style.display = 'none';
+        if (inst.chatPanel) inst.chatPanel.style.display = 'none';
         this.ensureFloatingBtn();
         if (this._floatingBtn) this._floatingBtn.style.display = 'flex';
         return;
       }
       this._lastShownSessionId = sessionId;
       inst.element.style.display = '';
+      // Restore chat panel visibility if it was open
+      if (inst.chatPanel && inst.chatOpen) {
+        inst.chatPanel.style.display = '';
+      }
       // Update model label whenever shown
       const label = inst.element.querySelector('.ai-bar-model-label') as HTMLSpanElement;
       if (label) this.updateModelLabel(label);

@@ -339,18 +339,365 @@ pub fn get_pairing_info(state: State<'_, MeTermProcess>) -> Result<String, Strin
 }
 
 #[tauri::command]
-pub async fn create_session(state: State<'_, MeTermProcess>) -> Result<String, String> {
+pub async fn create_session(
+    state: State<'_, MeTermProcess>,
+    shell: Option<String>,
+) -> Result<String, String> {
     let port = state.port();
     let url = format!("http://127.0.0.1:{}/api/sessions", port);
     let client = auth_client(&state)?;
 
-    let resp = client
-        .post(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut req = client.post(&url);
+    if let Some(s) = shell {
+        req = req.json(&serde_json::json!({ "shell": s }));
+    }
 
+    let resp = req.send().await.map_err(|e| e.to_string())?;
     resp.text().await.map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct ShellInfo {
+    pub path: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[tauri::command]
+pub fn list_available_shells() -> Vec<ShellInfo> {
+    let mut shells = Vec::new();
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let default_shell = std::env::var("SHELL").unwrap_or_default();
+
+        // Read /etc/shells
+        if let Ok(content) = std::fs::read_to_string("/etc/shells") {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if std::path::Path::new(line).exists() {
+                    let name = std::path::Path::new(line)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(line)
+                        .to_string();
+                    shells.push(ShellInfo {
+                        path: line.to_string(),
+                        is_default: line == default_shell,
+                        name,
+                    });
+                }
+            }
+        }
+        // Ensure at least bash is present
+        if shells.is_empty() {
+            if std::path::Path::new("/bin/bash").exists() {
+                shells.push(ShellInfo {
+                    path: "/bin/bash".to_string(),
+                    name: "bash".to_string(),
+                    is_default: default_shell == "/bin/bash",
+                });
+            }
+            if std::path::Path::new("/bin/sh").exists() {
+                shells.push(ShellInfo {
+                    path: "/bin/sh".to_string(),
+                    name: "sh".to_string(),
+                    is_default: default_shell == "/bin/sh",
+                });
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+
+        fn try_shell(exe: &str, test_args: &[&str]) -> bool {
+            let mut cmd = Command::new(exe);
+            cmd.args(test_args);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            cmd.output().map(|o| o.status.success()).unwrap_or(false)
+        }
+
+        // PowerShell 7 (pwsh) — default on Windows
+        if try_shell("pwsh.exe", &["--version"]) {
+            shells.push(ShellInfo {
+                path: "pwsh.exe".to_string(),
+                name: "PowerShell 7".to_string(),
+                is_default: true,
+            });
+        }
+
+        // Windows PowerShell 5
+        let has_pwsh = shells.iter().any(|s| s.is_default);
+        if try_shell("powershell.exe", &["-Command", "echo ok"]) {
+            shells.push(ShellInfo {
+                path: "powershell.exe".to_string(),
+                name: "Windows PowerShell".to_string(),
+                is_default: !has_pwsh,
+            });
+        }
+
+        // cmd.exe
+        if try_shell("cmd.exe", &["/C", "echo ok"]) {
+            shells.push(ShellInfo {
+                path: "cmd.exe".to_string(),
+                name: "Command Prompt".to_string(),
+                is_default: false,
+            });
+        }
+
+        // Git Bash — try multiple detection methods
+        let git_bash: Option<String> = (|| {
+            // 1. Common installation paths
+            for p in &[
+                r"C:\Program Files\Git\bin\bash.exe",
+                r"C:\Program Files (x86)\Git\bin\bash.exe",
+            ] {
+                if std::path::Path::new(p).exists() {
+                    return Some(p.to_string());
+                }
+            }
+
+            // 2. Find git.exe in PATH → derive bash.exe location
+            //    git.exe is at <install>/cmd/git.exe, bash.exe is at <install>/bin/bash.exe
+            let mut where_cmd = Command::new("where");
+            where_cmd.arg("git.exe");
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                where_cmd.creation_flags(0x08000000);
+            }
+            if let Ok(out) = where_cmd.output() {
+                if out.status.success() {
+                    if let Ok(text) = String::from_utf8(out.stdout) {
+                        if let Some(git_path) = text.lines().next() {
+                            let git_exe = std::path::Path::new(git_path.trim());
+                            if let Some(install_dir) = git_exe.parent().and_then(|p| p.parent()) {
+                                let bash = install_dir.join("bin").join("bash.exe");
+                                if bash.exists() {
+                                    return Some(bash.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Registry: HKLM\SOFTWARE\GitForWindows\InstallPath
+            let mut reg_cmd = Command::new("reg");
+            reg_cmd.args(&["query", r"HKLM\SOFTWARE\GitForWindows", "/v", "InstallPath"]);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                reg_cmd.creation_flags(0x08000000);
+            }
+            if let Ok(out) = reg_cmd.output() {
+                if out.status.success() {
+                    if let Ok(text) = String::from_utf8(out.stdout) {
+                        for line in text.lines() {
+                            if line.contains("InstallPath") {
+                                if let Some(path_str) = line.split("REG_SZ").nth(1) {
+                                    let bash = std::path::Path::new(path_str.trim())
+                                        .join("bin")
+                                        .join("bash.exe");
+                                    if bash.exists() {
+                                        return Some(bash.to_string_lossy().to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            None
+        })();
+        if let Some(bash_path) = git_bash {
+            shells.push(ShellInfo {
+                path: bash_path,
+                name: "Git Bash".to_string(),
+                is_default: false,
+            });
+        }
+
+        // Discover additional shells from Windows Terminal profile fragments.
+        // Apps like VS 2022, Azure CLI, etc. register profiles as JSON fragments in:
+        //   %LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\<app>\*.json
+        //   %ProgramData%\Microsoft\Windows Terminal\Fragments\<app>\*.json
+        {
+            let known_names: std::collections::HashSet<String> = shells.iter()
+                .map(|s| s.name.to_lowercase())
+                .collect();
+            let known_cmds: std::collections::HashSet<String> = shells.iter()
+                .map(|s| s.path.to_lowercase())
+                .collect();
+
+            let mut frag_dirs = Vec::new();
+            if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                frag_dirs.push(std::path::PathBuf::from(&local).join(r"Microsoft\Windows Terminal\Fragments"));
+            }
+            if let Ok(pdata) = std::env::var("ProgramData") {
+                frag_dirs.push(std::path::PathBuf::from(&pdata).join(r"Microsoft\Windows Terminal\Fragments"));
+            }
+
+            for frag_dir in &frag_dirs {
+                let Ok(apps) = std::fs::read_dir(frag_dir) else { continue };
+                for app_entry in apps.flatten() {
+                    let app_path = app_entry.path();
+                    if !app_path.is_dir() { continue; }
+                    let Ok(files) = std::fs::read_dir(&app_path) else { continue };
+                    for file_entry in files.flatten() {
+                        let fp = file_entry.path();
+                        if fp.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
+                        let Ok(content) = std::fs::read_to_string(&fp) else { continue };
+                        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+                        let Some(profiles) = json.get("profiles").and_then(|p| p.as_array()) else { continue };
+                        for profile in profiles {
+                            let Some(name) = profile.get("name").and_then(|n| n.as_str()) else { continue };
+                            let Some(cmdline) = profile.get("commandline").and_then(|c| c.as_str()) else { continue };
+                            let cmdline = cmdline.trim();
+                            if cmdline.is_empty() { continue; }
+                            // Skip if already detected (by name or command path)
+                            if known_names.contains(&name.to_lowercase()) { continue; }
+                            let first_token = cmdline.split_whitespace().next().unwrap_or(cmdline)
+                                .trim_matches('"').to_lowercase();
+                            if known_cmds.contains(&first_token) { continue; }
+                            // Validate: check that the executable exists
+                            let exe_path = first_token.replace('/', r"\");
+                            let exe_exists = std::path::Path::new(&exe_path).exists()
+                                || Command::new("where").arg(&exe_path)
+                                    .output().map(|o| o.status.success()).unwrap_or(false);
+                            if !exe_exists {
+                                // For cmd /k "batch.bat" patterns, validate the batch file
+                                let valid = if first_token.ends_with("cmd.exe") || first_token == "cmd" {
+                                    true // cmd.exe always exists, the batch file is the arg
+                                } else {
+                                    false
+                                };
+                                if !valid { continue; }
+                            }
+                            shells.push(ShellInfo {
+                                path: cmdline.to_string(),
+                                name: name.to_string(),
+                                is_default: false,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Visual Studio Developer shells — detected via vswhere.exe
+        // VS profiles are NOT registered as WT fragments; they use a built-in
+        // dynamic profile generator via COM ISetupConfiguration API.
+        // We replicate the same detection using vswhere.exe.
+        {
+            let vswhere = std::path::PathBuf::from(
+                std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".to_string())
+            ).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+
+            if vswhere.exists() {
+                let mut cmd = Command::new(&vswhere);
+                cmd.args(&["-all", "-prerelease", "-format", "json"]);
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x08000000);
+                }
+                if let Ok(out) = cmd.output() {
+                    if out.status.success() {
+                        if let Ok(text) = String::from_utf8(out.stdout) {
+                            if let Ok(instances) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
+                                for inst in &instances {
+                                    let Some(path) = inst.get("installationPath").and_then(|v| v.as_str()) else { continue };
+                                    let display = inst.get("displayName").and_then(|v| v.as_str()).unwrap_or("Visual Studio");
+
+                                    // Developer Command Prompt
+                                    let vsdevcmd = std::path::Path::new(path).join(r"Common7\Tools\VsDevCmd.bat");
+                                    if vsdevcmd.exists() {
+                                        shells.push(ShellInfo {
+                                            path: format!(r#"cmd.exe /k "{}""#, vsdevcmd.to_string_lossy()),
+                                            name: format!("Developer CMD - {}", display),
+                                            is_default: false,
+                                        });
+                                    }
+
+                                    // Developer PowerShell
+                                    let devshell_dll = std::path::Path::new(path)
+                                        .join(r"Common7\Tools\Microsoft.VisualStudio.DevShell.dll");
+                                    if devshell_dll.exists() {
+                                        shells.push(ShellInfo {
+                                            path: format!(
+                                                r#"powershell.exe -NoExit -Command "& {{Import-Module '{}'; Enter-VsDevShell -VsInstallPath '{}' -SkipAutomaticLocation}}""#,
+                                                devshell_dll.to_string_lossy(),
+                                                path
+                                            ),
+                                            name: format!("Developer PS - {}", display),
+                                            is_default: false,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // WSL — list all installed distros
+        {
+            let mut cmd = Command::new("wsl.exe");
+            cmd.args(&["--list", "--quiet"]);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+            }
+            if let Ok(out) = cmd.output() {
+                if out.status.success() {
+                    // wsl --list always outputs UTF-16LE on Windows.
+                    // UTF-16LE ASCII looks like 'U\x00b\x00...' which passes
+                    // String::from_utf8 but produces garbled text with \0 bytes.
+                    // Always decode as UTF-16LE first.
+                    let bytes = &out.stdout;
+                    let is_utf16 = bytes.len() >= 2
+                        && (bytes.len() % 2 == 0)
+                        && (bytes[0] == 0xFF && bytes[1] == 0xFE  // BOM
+                            || bytes.len() >= 4 && bytes[1] == 0x00);  // ASCII in UTF-16LE
+                    let text = if is_utf16 {
+                        let u16s: Vec<u16> = bytes
+                            .chunks_exact(2)
+                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                            .collect();
+                        String::from_utf16_lossy(&u16s)
+                    } else {
+                        String::from_utf8_lossy(bytes).into_owned()
+                    };
+                    for line in text.lines() {
+                        let distro = line.trim().trim_start_matches('\u{feff}');
+                        if distro.is_empty() || distro.contains('\0') {
+                            continue;
+                        }
+                        shells.push(ShellInfo {
+                            path: format!("wsl.exe -d {}", distro),
+                            name: format!("WSL: {}", distro),
+                            is_default: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    shells
 }
 
 #[tauri::command]

@@ -3,6 +3,7 @@ import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
+import { emit } from '@tauri-apps/api/event';
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage, t } from './i18n';
 
@@ -23,6 +24,48 @@ function escapeHtml(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/** Lightweight Markdown → HTML converter for release notes. */
+function markdownToHtml(md: string): string {
+  const lines = md.split('\n');
+  const out: string[] = [];
+  for (const raw of lines) {
+    let line = raw;
+    // Headings
+    if (/^### /.test(line)) {
+      out.push(`<h4>${escapeHtml(line.slice(4).trim())}</h4>`);
+      continue;
+    }
+    if (/^## /.test(line)) {
+      out.push(`<h3>${escapeHtml(line.slice(3).trim())}</h3>`);
+      continue;
+    }
+    if (/^# /.test(line)) {
+      out.push(`<h2>${escapeHtml(line.slice(2).trim())}</h2>`);
+      continue;
+    }
+    // List items
+    if (/^[-*] /.test(line)) {
+      const content = inlineMarkdown(line.slice(2).trim());
+      out.push(`<li>${content}</li>`);
+      continue;
+    }
+    // Blank line → paragraph break
+    if (line.trim() === '') {
+      out.push('<br>');
+      continue;
+    }
+    out.push(`<p>${inlineMarkdown(line)}</p>`);
+  }
+  return out.join('');
+}
+
+function inlineMarkdown(s: string): string {
+  return escapeHtml(s)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`(.+?)`/g, '<code>$1</code>');
 }
 
 function createCustomTitleBar(title: string, onClose?: () => void): HTMLElement {
@@ -173,8 +216,30 @@ function renderUpdaterWindow(container: HTMLElement): () => void {
   updateBtn.textContent = t('updateNow');
   updateBtn.disabled = true;
 
-  footer.appendChild(cancelBtn);
-  footer.appendChild(updateBtn);
+  // ── Hide title bar icon checkbox (left side of footer row) ──
+  const checkboxWrap = document.createElement('label');
+  checkboxWrap.className = 'updater-checkbox-wrap';
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'updater-checkbox';
+  checkbox.checked = !!localStorage.getItem('meterm-hide-update-icon');
+  checkbox.addEventListener('change', () => {
+    if (checkbox.checked) {
+      localStorage.setItem('meterm-hide-update-icon', '1');
+    } else {
+      localStorage.removeItem('meterm-hide-update-icon');
+    }
+    void emit('update-icon-pref-changed');
+  });
+  checkboxWrap.appendChild(checkbox);
+  checkboxWrap.appendChild(document.createTextNode(t('hideUpdateIcon')));
+  footer.appendChild(checkboxWrap);
+
+  const btnGroup = document.createElement('div');
+  btnGroup.className = 'updater-btn-group';
+  btnGroup.appendChild(cancelBtn);
+  btnGroup.appendChild(updateBtn);
+  footer.appendChild(btnGroup);
   root.appendChild(footer);
 
   container.appendChild(root);
@@ -258,15 +323,15 @@ function renderUpdaterWindow(container: HTMLElement): () => void {
         return;
       }
 
-      // Render release notes
+      // Render release notes (Markdown rendered as HTML)
       const hasNotes = update.body && update.body.trim().length > 0;
       if (hasNotes) {
         const notesLabel = document.createElement('p');
         notesLabel.className = 'updater-notes-label';
         notesLabel.textContent = t('updateReleaseNotes');
-        const notesBody = document.createElement('pre');
-        notesBody.className = 'updater-notes-body';
-        notesBody.textContent = update.body ?? '';
+        const notesBody = document.createElement('div');
+        notesBody.className = 'updater-notes-body updater-notes-md';
+        notesBody.innerHTML = markdownToHtml(update.body ?? '');
         notesWrap.appendChild(notesLabel);
         notesWrap.appendChild(notesBody);
         notesWrap.style.display = '';

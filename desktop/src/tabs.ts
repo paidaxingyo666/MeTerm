@@ -72,18 +72,22 @@ class TabManagerClass {
     }
   }
 
-  async addTab(port: number, token: string): Promise<void> {
-    const raw = await invoke<string>('create_session');
+  async addTab(port: number, token: string, shell?: string): Promise<void> {
+    const raw = await invoke<string>('create_session', { shell: shell || null });
     const parsed = JSON.parse(raw) as SessionCreateResponse;
     const sessionId = parsed.id;
     const paneId = generatePaneId();
     const tabId = generateTabId();
 
+    // Use shell name as initial tab title when a specific shell is provided
+    const shellName = shell ? shell.split('/').pop() || shell : '';
+    const initialTitle = shellName || `${t('responseSession')} ${this.tabs.length + 1}`;
+
     const tab: Tab = {
       id: tabId,
       splitRoot: { type: 'leaf', id: paneId, sessionId },
       focusedPaneId: paneId,
-      title: `${t('responseSession')} ${this.tabs.length + 1}`,
+      title: initialTitle,
       status: 'connecting',
     };
 
@@ -189,6 +193,7 @@ class TabManagerClass {
     port: number,
     authToken: string,
     sshConfig?: SSHConnectionConfig,
+    shell?: string,
   ): Promise<{ paneId: string; sessionId: string } | null> {
     const tab = this.tabs.find((t) => t.id === tabId);
     if (!tab) return null;
@@ -201,7 +206,7 @@ class TabManagerClass {
     if (sshConfig) {
       newSessionId = await createSSHSession(sshConfig);
     } else {
-      const raw = await invoke<string>('create_session');
+      const raw = await invoke<string>('create_session', { shell: shell || null });
       const parsed = JSON.parse(raw) as SessionCreateResponse;
       newSessionId = parsed.id;
     }

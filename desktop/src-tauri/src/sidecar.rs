@@ -26,6 +26,50 @@ fn wsl_cmd() -> Command {
     cmd
 }
 
+/// Run a `wsl` Command with a timeout to prevent hangs when WSL is partially installed.
+#[cfg(target_os = "windows")]
+fn wsl_output_with_timeout(mut cmd: Command, timeout_secs: u64) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn wsl: {}", e))?;
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_end(&mut stdout);
+                }
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_end(&mut stderr);
+                }
+                return Ok(std::process::Output { status, stdout, stderr });
+            }
+            Ok(None) => {
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("wsl command timed out (WSL may be partially installed or stuck)".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("wsl wait error: {}", e));
+            }
+        }
+    }
+}
+
 pub struct MeTermProcess {
     child: Mutex<Option<CommandChild>>,
     port: Mutex<u16>,
@@ -128,7 +172,21 @@ impl MeTermProcess {
                         native_err
                     );
 
-                    check_wsl_available()?;
+                    if let Err(wsl_err) = check_wsl_available() {
+                        return Err(format!(
+                            "Native Windows backend failed: {}\n\n\
+                             WSL fallback also failed: {}\n\n\
+                             Please try one of the following:\n\
+                             1. Reinstall MeTerm to restore the native Windows backend\n\
+                             2. Install WSL 2: wsl --install\n\n\
+                             原生 Windows 后端启动失败：{}\n\n\
+                             WSL 回退也失败了：{}\n\n\
+                             请尝试以下方法之一：\n\
+                             1. 重新安装 MeTerm 以恢复原生 Windows 后端\n\
+                             2. 安装 WSL 2：wsl --install",
+                            native_err, wsl_err, native_err, wsl_err
+                        ));
+                    }
                     let wsl_path = setup_wsl_binary(app)?;
 
                     // Verify the deployed binary can actually be executed inside WSL.
@@ -360,10 +418,12 @@ fn check_wsl_available() -> Result<(), String> {
                        5. 重新启动本应用";
 
     // Check that wsl.exe exists and the WSL subsystem is functional.
-    let status_output = wsl_cmd()
-        .arg("--status")
-        .output()
-        .map_err(|_| install_msg.to_string())?;
+    // Use timeout to prevent hangs when WSL feature is partially installed.
+    let status_output = wsl_output_with_timeout(
+        { let mut c = wsl_cmd(); c.arg("--status"); c },
+        10,
+    )
+    .map_err(|_| install_msg.to_string())?;
 
     if !status_output.status.success() {
         return Err(install_msg.to_string());
@@ -379,17 +439,19 @@ fn check_wsl_available() -> Result<(), String> {
     // the login shell and exec's the command directly, so `echo` should work.
     // If it still fails (e.g. WSL internally needs bash for init), fall back
     // to `sh -c "echo ok"` which is available on virtually every distro.
-    let test = wsl_cmd()
-        .args(["-e", "echo", "ok"])
-        .output()
-        .map_err(|_| install_msg.to_string())?;
+    let test = wsl_output_with_timeout(
+        { let mut c = wsl_cmd(); c.args(["-e", "echo", "ok"]); c },
+        10,
+    )
+    .map_err(|_| install_msg.to_string())?;
 
     if !test.status.success() {
         // `wsl -e echo ok` failed — try via POSIX sh as fallback.
-        let test_sh = wsl_cmd()
-            .args(["-e", "sh", "-c", "echo ok"])
-            .output()
-            .map_err(|_| install_msg.to_string())?;
+        let test_sh = wsl_output_with_timeout(
+            { let mut c = wsl_cmd(); c.args(["-e", "sh", "-c", "echo ok"]); c },
+            10,
+        )
+        .map_err(|_| install_msg.to_string())?;
 
         if !test_sh.status.success() {
             let stderr = String::from_utf8_lossy(&test.stderr);

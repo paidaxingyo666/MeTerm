@@ -121,6 +121,10 @@ export interface Translations {
   backgroundImageClear: string;
   homeNewLocalSession: string;
   homeNewSSHSession: string;
+  noShellsFound: string;
+  defaultShell: string;
+  defaultShellSetting: string;
+  systemDefault: string;
   homeSavedConnections: string;
   homeEditConnection: string;
   homeShowMore: string;
@@ -150,10 +154,16 @@ export interface Translations {
   aiTemperature: string;
   aiMaxTokens: string;
   aiContextLines: string;
+  aiAgentTrustLevel: string;
+  aiAgentTrustManual: string;
+  aiAgentTrustSemiAuto: string;
+  aiAgentTrustFullAuto: string;
+  aiAgentMaxIterations: string;
   aiTestConnection: string;
   aiTestSuccess: string;
   aiTestFailed: string;
   aiTesting: string;
+  aiNewChat: string;
   aiClearChat: string;
   aiRunCommand: string;
   aiCopyCode: string;
@@ -163,7 +173,13 @@ export interface Translations {
   aiDangerConfirmCancel: string;
   aiNoConfig: string;
   aiStreamError: string;
+  aiThinking: string;
+  aiWorking: string;
   aiStopGenerating: string;
+  aiCtxCopy: string;
+  aiCtxCopyResult: string;
+  aiCtxResend: string;
+  aiCtxDelete: string;
   aiModelAuto: string;
   aiModelAutoDesc: string;
   aiAddProvider: string;
@@ -178,6 +194,15 @@ export interface Translations {
   aiSelectModels: string;
   aiProviderLabel: string;
   aiCustomProvider: string;
+  aiSearxng: string;
+  aiSearxngUrl: string;
+  aiSearxngUrlPlaceholder: string;
+  aiSearxngUsername: string;
+  aiSearxngPassword: string;
+  aiSearxngEnable: string;
+  aiSearxngTest: string;
+  aiSearxngTestOk: string;
+  aiSearxngTestFail: string;
   tabMenuCloseTab: string;
   tabMenuCloseOthers: string;
   tabMenuCloseLeft: string;
@@ -355,6 +380,7 @@ export interface Translations {
   checkUpdatesUpToDate: string;
   checkUpdatesChecking: string;
   updateModalClose: string;
+  hideUpdateIcon: string;
 }
 
 const translations: Record<Language, Translations> = {
@@ -479,6 +505,10 @@ const translations: Record<Language, Translations> = {
     backgroundImageClear: 'Clear',
     homeNewLocalSession: 'New Local Session',
     homeNewSSHSession: 'New SSH Session',
+    noShellsFound: 'No shells found',
+    defaultShell: 'default',
+    defaultShellSetting: 'Default Shell',
+    systemDefault: 'System Default',
     homeSavedConnections: 'Saved Connections',
     homeEditConnection: 'Edit',
     homeShowMore: 'Show More',
@@ -508,10 +538,16 @@ const translations: Record<Language, Translations> = {
     aiTemperature: 'Temperature',
     aiMaxTokens: 'Max Tokens',
     aiContextLines: 'Context Lines',
+    aiAgentTrustLevel: 'Agent Trust Level',
+    aiAgentTrustManual: 'Manual — confirm all actions',
+    aiAgentTrustSemiAuto: 'Semi-Auto — confirm risky actions',
+    aiAgentTrustFullAuto: 'Full-Auto — only confirm destructive',
+    aiAgentMaxIterations: 'Max Agent Steps',
     aiTestConnection: 'Test Connection',
     aiTestSuccess: 'Connection successful!',
     aiTestFailed: 'Connection failed',
     aiTesting: 'Testing...',
+    aiNewChat: 'New Chat',
     aiClearChat: 'Clear Chat',
     aiRunCommand: 'Run',
     aiCopyCode: 'Copy',
@@ -521,7 +557,13 @@ const translations: Record<Language, Translations> = {
     aiDangerConfirmCancel: 'Cancel',
     aiNoConfig: 'AI not configured. Go to Settings > AI to set up.',
     aiStreamError: 'Request failed',
+    aiThinking: 'Thinking',
+    aiWorking: 'Working',
     aiStopGenerating: 'Stop',
+    aiCtxCopy: 'Copy',
+    aiCtxCopyResult: 'Copy Result',
+    aiCtxResend: 'Resend',
+    aiCtxDelete: 'Delete',
     aiModelAuto: 'Auto',
     aiModelAutoDesc: 'Use default model for current provider',
     aiAddProvider: 'Add Provider',
@@ -536,6 +578,15 @@ const translations: Record<Language, Translations> = {
     aiSelectModels: 'Select Models',
     aiProviderLabel: 'Name',
     aiCustomProvider: 'Custom',
+    aiSearxng: 'Web Search (SearXNG)',
+    aiSearxngUrl: 'SearXNG URL',
+    aiSearxngUrlPlaceholder: 'https://searx.example.org',
+    aiSearxngUsername: 'Username (optional)',
+    aiSearxngPassword: 'Password (optional)',
+    aiSearxngEnable: 'Enable web search tool for AI agent',
+    aiSearxngTest: 'Test',
+    aiSearxngTestOk: 'SearXNG connected!',
+    aiSearxngTestFail: 'SearXNG connection failed',
     tabMenuCloseTab: 'Close Tab',
     tabMenuCloseOthers: 'Close Other Tabs',
     tabMenuCloseLeft: 'Close Tabs to the Left',
@@ -713,6 +764,7 @@ const translations: Record<Language, Translations> = {
     checkUpdatesUpToDate: "You're up to date",
     checkUpdatesChecking: 'Checking for updates…',
     updateModalClose: 'Close',
+    hideUpdateIcon: 'Hide title bar update icon',
   },
   zh: {
     appName: 'MeTerm',
@@ -835,6 +887,10 @@ const translations: Record<Language, Translations> = {
     backgroundImageClear: '清除',
     homeNewLocalSession: '新建本地会话',
     homeNewSSHSession: '新建 SSH 会话',
+    noShellsFound: '未找到可用的 Shell',
+    defaultShell: '默认',
+    defaultShellSetting: '默认 Shell',
+    systemDefault: '跟随系统',
     homeSavedConnections: '已保存的连接',
     homeEditConnection: '编辑',
     homeShowMore: '展开更多',
@@ -864,10 +920,16 @@ const translations: Record<Language, Translations> = {
     aiTemperature: '温度',
     aiMaxTokens: '最大 Token',
     aiContextLines: '上下文行数',
+    aiAgentTrustLevel: 'Agent 信任级别',
+    aiAgentTrustManual: '手动 — 所有操作均需确认',
+    aiAgentTrustSemiAuto: '半自动 — 仅危险操作需确认',
+    aiAgentTrustFullAuto: '全自动 — 仅极端危险操作需确认',
+    aiAgentMaxIterations: '最大执行步数',
     aiTestConnection: '测试连接',
     aiTestSuccess: '连接成功！',
     aiTestFailed: '连接失败',
     aiTesting: '测试中...',
+    aiNewChat: '新对话',
     aiClearChat: '清空对话',
     aiRunCommand: '执行',
     aiCopyCode: '复制',
@@ -877,7 +939,13 @@ const translations: Record<Language, Translations> = {
     aiDangerConfirmCancel: '取消',
     aiNoConfig: 'AI 未配置，请前往 设置 > AI 进行配置。',
     aiStreamError: '请求失败',
+    aiThinking: '思考中',
+    aiWorking: '工作中',
     aiStopGenerating: '停止',
+    aiCtxCopy: '复制',
+    aiCtxCopyResult: '复制结果',
+    aiCtxResend: '重新发送',
+    aiCtxDelete: '删除',
     aiModelAuto: '自动',
     aiModelAutoDesc: '使用当前服务商的默认模型',
     aiAddProvider: '添加供应商',
@@ -892,6 +960,15 @@ const translations: Record<Language, Translations> = {
     aiSelectModels: '选择模型',
     aiProviderLabel: '名称',
     aiCustomProvider: '自定义',
+    aiSearxng: '网络搜索 (SearXNG)',
+    aiSearxngUrl: 'SearXNG 地址',
+    aiSearxngUrlPlaceholder: 'https://searx.example.org',
+    aiSearxngUsername: '用户名（可选）',
+    aiSearxngPassword: '密码（可选）',
+    aiSearxngEnable: '为 AI 助手启用网络搜索工具',
+    aiSearxngTest: '测试',
+    aiSearxngTestOk: 'SearXNG 连接成功！',
+    aiSearxngTestFail: 'SearXNG 连接失败',
     tabMenuCloseTab: '关闭此标签',
     tabMenuCloseOthers: '关闭其他标签',
     tabMenuCloseLeft: '关闭左侧标签',
@@ -1069,6 +1146,7 @@ const translations: Record<Language, Translations> = {
     checkUpdatesUpToDate: '当前已是最新版本',
     checkUpdatesChecking: '正在检查更新…',
     updateModalClose: '关闭',
+    hideUpdateIcon: '关闭标题栏更新按钮',
   },
 };
 

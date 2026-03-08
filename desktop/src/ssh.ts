@@ -857,6 +857,10 @@ export function createSSHHomeView(): HTMLDivElement {
   localBtn.onclick = () => {
     document.dispatchEvent(new CustomEvent('new-local-session'));
   };
+  localBtn.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    document.dispatchEvent(new CustomEvent('new-local-session-menu', { detail: { mouseEvent: e, anchor: localBtn } }));
+  });
 
   const sshBtn = document.createElement('button');
   sshBtn.className = 'home-action-btn home-btn-ssh';

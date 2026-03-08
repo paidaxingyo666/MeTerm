@@ -2,8 +2,9 @@ import './style.css';
 import { loadSettings, AppSettings, resolveIsDark, getEffectiveTheme, saveSettings } from './themes';
 import { createSettingsPanel } from './settings';
 import { initLanguage, setLanguage, t } from './i18n';
-import { emit } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { readText as clipboardReadText } from '@tauri-apps/plugin-clipboard-manager';
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
@@ -116,4 +117,44 @@ export function initSettingsWindow(): void {
   }
 
   renderPanel();
+
+  // macOS native menu accelerators emit Tauri events instead of performing
+  // native actions. Wire them to document.execCommand so Cmd+C/V/X/A work
+  // in the settings window's standard input fields.
+  const windowLabel = getCurrentWindow().label;
+  const isForThis = (p: { target_window: string }) => p.target_window === windowLabel;
+  void listen<{ target_window: string }>('menu-undo', (e) => { if (isForThis(e.payload)) document.execCommand('undo'); });
+  void listen<{ target_window: string }>('menu-redo', (e) => { if (isForThis(e.payload)) document.execCommand('redo'); });
+  void listen<{ target_window: string }>('menu-cut', (e) => { if (isForThis(e.payload)) document.execCommand('cut'); });
+  void listen<{ target_window: string }>('menu-copy', (e) => { if (isForThis(e.payload)) document.execCommand('copy'); });
+  void listen<{ target_window: string }>('menu-paste', (e) => {
+    if (!isForThis(e.payload)) return;
+    // document.execCommand('paste') is blocked in WKWebView — use clipboard API +
+    // insertText so the change goes through the browser's undo stack.
+    void clipboardReadText().then((text) => {
+      if (!text) return;
+      const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+        el.focus();
+        // insertText goes through the undo stack (unlike setting .value directly)
+        if (!document.execCommand('insertText', false, text)) {
+          // Fallback if insertText is unsupported
+          const s = el.selectionStart ?? el.value.length;
+          const end = el.selectionEnd ?? el.value.length;
+          el.value = el.value.slice(0, s) + text + el.value.slice(end);
+          el.selectionStart = el.selectionEnd = s + text.length;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+    });
+  });
+  void listen<{ target_window: string }>('menu-select-all', (e) => {
+    if (!isForThis(e.payload)) return;
+    const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+      el.select();
+    } else {
+      document.execCommand('selectAll');
+    }
+  });
 }

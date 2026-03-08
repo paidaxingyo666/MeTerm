@@ -223,6 +223,18 @@ export interface ManagedTerminal {
   kicked?: boolean;
   /** Last reported OSC background color — used to detect actual theme change */
   _lastOscBg?: string;
+  /** OSC 7766 marker resolvers — key is marker ID, value resolves with exit code */
+  _oscMarkerResolvers: Map<string, (exitCode: number) => void>;
+  /** Shell integration state — tracked via OSC 7768 prompt hook */
+  shellState: {
+    phase: 'unknown' | 'ready' | 'agent_executing' | 'user_active';
+    lastExitCode: number;
+    cwd: string;
+    hookInjected: boolean;
+    lastInputSource: 'none' | 'agent' | 'user';
+    lastUserInputAt: number;
+    agentCommandSeq: number;
+  };
 }
 
 class TerminalRegistryClass {
@@ -230,6 +242,10 @@ class TerminalRegistryClass {
   private resizeGeneration = new Map<string, number>();
   private settings: AppSettings | null = null;
   private inputListeners = new Map<string, Set<(data: string) => void>>();
+  /** Output listeners for event-driven output capture (used by AI agent) */
+  private outputListeners = new Map<string, Set<(data: string) => void>>();
+  /** Shell state listeners — called when shell transitions to idle (OSC 7768) */
+  private shellStateListeners = new Map<string, Set<() => void>>();
   private pingTimestamps = new Map<string, number>();
   /** Timestamp of last pong received per session — used for input-triggered health checks */
   private lastPongTime = new Map<string, number>();
@@ -929,7 +945,40 @@ class TerminalRegistryClass {
       _postResizeFilterTimer: null,
       _hasUserInput: false,
       _transferGrace: false,
+      _oscMarkerResolvers: new Map(),
+      shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0 },
     };
+
+    // Register OSC 7766 handler for agent command completion markers.
+    // The shell sends `printf '\033]7766;MARKER_ID;EXIT_CODE\007'` which
+    // xterm.js consumes silently (never written to terminal buffer).
+    terminal.parser.registerOscHandler(7766, (data: string) => {
+      const sep = data.indexOf(';');
+      if (sep === -1) return true;
+      const markerId = data.slice(0, sep);
+      const exitCode = parseInt(data.slice(sep + 1), 10);
+      const resolver = mt._oscMarkerResolvers.get(markerId);
+      if (resolver) {
+        mt._oscMarkerResolvers.delete(markerId);
+        resolver(isNaN(exitCode) ? -1 : exitCode);
+      }
+      return true;
+    });
+
+    // Register OSC 7768 handler for shell state machine (prompt hook).
+    // The injected __meterm_precmd sends `\033]7768;EXIT_CODE;CWD\007` before each prompt.
+    terminal.parser.registerOscHandler(7768, (data: string) => {
+      const sep = data.indexOf(';');
+      if (sep === -1) return true;
+      const exitCode = parseInt(data.slice(0, sep), 10);
+      const cwd = data.slice(sep + 1);
+      mt.shellState.lastExitCode = isNaN(exitCode) ? -1 : exitCode;
+      mt.shellState.cwd = cwd;
+      mt.shellState.phase = 'ready';
+      const listeners = this.shellStateListeners.get(mt.id);
+      if (listeners) listeners.forEach(cb => cb());
+      return true;
+    });
 
     terminal.attachCustomKeyEventHandler((event) => {
       const isMac = navigator.userAgent.includes('Mac');
@@ -961,6 +1010,10 @@ class TerminalRegistryClass {
 
     terminal.onData((data) => {
       mt._hasUserInput = true;
+      mt.shellState.lastUserInputAt = Date.now();
+      if (mt.shellState.phase === 'agent_executing') {
+        mt.shellState.lastInputSource = 'user';
+      }
       if (mt.ws?.readyState === WebSocket.OPEN) {
         mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode(data)));
         // For SSH sessions: if last pong is stale, send an immediate ping to detect dead connections
@@ -1093,8 +1146,19 @@ class TerminalRegistryClass {
           data = this.filterPostResizeNewlines(mt, data);
           if (!data) return;
         }
+
+        // Notify output listeners (event-driven capture for AI agent)
+        const outListeners = this.outputListeners.get(mt.id);
+        if (outListeners && outListeners.size > 0) {
+          const text = new TextDecoder().decode(data);
+          outListeners.forEach(cb => cb(text));
+        }
+
+        // Write to terminal — OSC 7766 markers are consumed by the parser
+        // and never appear in the terminal buffer, so no filtering needed.
         mt.terminal.write(data);
         mt.thumbnailTerminal.write(data);
+
         if (!mt.hasOscTitle) {
           this.updateShellTitle(mt);
         }
@@ -1349,6 +1413,64 @@ class TerminalRegistryClass {
     mt.ws.send(encodeMessage(MsgInput, payload));
   }
 
+  /**
+   * Send a command to the terminal for AI agent execution.
+   * Uses Ctrl+U to clear current line before injecting the command.
+   * Automatically transitions shellState to agent_executing.
+   */
+  sendAgentCommand(sessionId: string, command: string): void {
+    const mt = this.terminals.get(sessionId);
+    if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) return;
+    mt.shellState.phase = 'agent_executing';
+    mt.shellState.lastInputSource = 'agent';
+    mt.shellState.agentCommandSeq++;
+    const payload = new TextEncoder().encode('\x15' + command + '\n');
+    mt.ws.send(encodeMessage(MsgInput, payload));
+  }
+
+  /**
+   * Send raw input to the terminal (for responding to interactive prompts).
+   * Unlike sendAgentCommand, this does NOT change shell state or add Ctrl+U prefix.
+   */
+  sendInput(sessionId: string, text: string): void {
+    const mt = this.terminals.get(sessionId);
+    if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) return;
+    const payload = new TextEncoder().encode(text);
+    mt.ws.send(encodeMessage(MsgInput, payload));
+  }
+
+  /**
+   * Register a callback for when an OSC 7766 marker fires.
+   * Returns an unsubscribe function.
+   */
+  onOscMarker(sessionId: string, markerId: string, callback: (exitCode: number) => void): () => void {
+    const mt = this.terminals.get(sessionId);
+    if (!mt) return () => {};
+    mt._oscMarkerResolvers.set(markerId, callback);
+    return () => { mt._oscMarkerResolvers.delete(markerId); };
+  }
+
+  /** Subscribe to raw PTY output text for a session (event-driven capture). */
+  onOutput(sessionId: string, callback: (data: string) => void): () => void {
+    if (!this.outputListeners.has(sessionId)) {
+      this.outputListeners.set(sessionId, new Set());
+    }
+    this.outputListeners.get(sessionId)!.add(callback);
+    return () => { this.outputListeners.get(sessionId)?.delete(callback); };
+  }
+
+  /**
+   * Subscribe to shell idle events (OSC 7768 prompt hook fired).
+   * Returns an unsubscribe function.
+   */
+  onShellIdle(sessionId: string, callback: () => void): () => void {
+    if (!this.shellStateListeners.has(sessionId)) {
+      this.shellStateListeners.set(sessionId, new Set());
+    }
+    this.shellStateListeners.get(sessionId)!.add(callback);
+    return () => { this.shellStateListeners.get(sessionId)?.delete(callback); };
+  }
+
   get(sessionId: string): ManagedTerminal | undefined {
     return this.terminals.get(sessionId);
   }
@@ -1530,7 +1652,37 @@ class TerminalRegistryClass {
       _postResizeFilterTimer: null,
       _hasUserInput: false,
       _transferGrace: true,
+      _oscMarkerResolvers: new Map(),
+      shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0 },
     };
+
+    // Register OSC 7766 handler for agent command completion markers.
+    terminal.parser.registerOscHandler(7766, (data: string) => {
+      const sep = data.indexOf(';');
+      if (sep === -1) return true;
+      const markerId = data.slice(0, sep);
+      const exitCode = parseInt(data.slice(sep + 1), 10);
+      const resolver = mt._oscMarkerResolvers.get(markerId);
+      if (resolver) {
+        mt._oscMarkerResolvers.delete(markerId);
+        resolver(isNaN(exitCode) ? -1 : exitCode);
+      }
+      return true;
+    });
+
+    // Register OSC 7768 handler for shell state machine (prompt hook).
+    terminal.parser.registerOscHandler(7768, (data: string) => {
+      const sep = data.indexOf(';');
+      if (sep === -1) return true;
+      const exitCode = parseInt(data.slice(0, sep), 10);
+      const cwd = data.slice(sep + 1);
+      mt.shellState.lastExitCode = isNaN(exitCode) ? -1 : exitCode;
+      mt.shellState.cwd = cwd;
+      mt.shellState.phase = 'ready';
+      const listeners = this.shellStateListeners.get(mt.id);
+      if (listeners) listeners.forEach(cb => cb());
+      return true;
+    });
 
     // Register event handlers — these work before open()
     terminal.attachCustomKeyEventHandler((event) => {
@@ -1561,6 +1713,10 @@ class TerminalRegistryClass {
 
     terminal.onData((data) => {
       mt._hasUserInput = true;
+      mt.shellState.lastUserInputAt = Date.now();
+      if (mt.shellState.phase === 'agent_executing') {
+        mt.shellState.lastInputSource = 'user';
+      }
       if (mt.ws?.readyState === WebSocket.OPEN) {
         mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode(data)));
       }

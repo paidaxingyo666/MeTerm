@@ -270,8 +270,27 @@ fn get_quit_confirmation_window(app: &tauri::AppHandle) -> String {
 		.unwrap_or_else(|| "main".to_string())
 }
 
+/// For edit operations (undo/redo/cut/copy/paste/select_all), use the
+/// actually focused window — including utility windows like "settings".
+fn get_focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+	for window in app.webview_windows().values() {
+		if let Ok(true) = window.is_focused() {
+			return Some(window.clone());
+		}
+	}
+	None
+}
+
 fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
-	let Some(window) = get_target_window(app) else {
+	// Edit operations should target the actually focused window so they
+	// work correctly in utility windows (settings, etc.).
+	let is_edit_action = matches!(action, "undo" | "redo" | "cut" | "copy" | "paste" | "select_all");
+	let target = if is_edit_action {
+		get_focused_window(app).or_else(|| get_target_window(app))
+	} else {
+		get_target_window(app)
+	};
+	let Some(window) = target else {
 		debug_log!("[DEBUG] Failed to get any window");
 		return;
 	};
@@ -640,6 +659,7 @@ pub fn run() {
             commands::is_meterm_running,
             commands::get_pairing_info,
             commands::create_session,
+            commands::list_available_shells,
             commands::create_ssh_session,
             commands::test_ssh_connection,
             commands::list_sessions,

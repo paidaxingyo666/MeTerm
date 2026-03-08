@@ -28,7 +28,7 @@ import { LogicalSize } from '@tauri-apps/api/dpi';
 import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { createWindowAtPosition } from './window-utils';
 import { notifyUser } from './notify';
-import { initUpdater, checkUpdateNow } from './updater';
+import { initUpdater, checkUpdateNow, pendingUpdateVersion, openUpdaterWindow } from './updater';
 import appIconUrl from '../src-tauri/icons/icon.svg';
 
 // Prevent unhandled promise rejections from crashing the Tauri webview.
@@ -580,12 +580,14 @@ async function openSettings(tab?: string): Promise<void> {
   });
 }
 
-async function createNewSession(): Promise<void> {
+async function createNewSession(shell?: string): Promise<void> {
   const ready = await ensureMeTermReady();
   if (!ready) {
     return;
   }
-  await TabManager.addTab(port, authToken);
+  // Use configured default shell when no specific shell is requested
+  const effectiveShell = shell || settings.defaultShell || undefined;
+  await TabManager.addTab(port, authToken, effectiveShell);
   if (TabManager.activeTabId) {
     await activateTab(TabManager.activeTabId);
     StatusBar.setConnection('connected', 'Local');
@@ -1082,6 +1084,8 @@ function hideMasterApprovalOverlay(): void {
 
 /** Sync master approval overlay visibility when switching tabs */
 function syncMasterApprovalForActiveTab(): void {
+  // Never show overlay on top of home/gallery view — tab breathing animation alerts the user.
+  if (isHomeView || isGalleryView) { hideMasterApprovalOverlay(); return; }
   const activeTab = TabManager.getActiveTab();
   if (!activeTab) { hideMasterApprovalOverlay(); return; }
 
@@ -1119,15 +1123,9 @@ function showMasterApprovalDialog(sessionId: string, requesterId: string): void 
     body: t('masterRequestMessage') || 'A remote viewer wants to take control.',
   });
 
-  // If the requested session is on the active tab, show overlay immediately;
-  // otherwise the tab breathing animation (via renderTabs) will alert the user.
-  const activeTab = TabManager.getActiveTab();
-  if (activeTab) {
-    const leaves = getAllLeaves(activeTab.splitRoot);
-    if (leaves.some((l) => l.sessionId === sessionId)) {
-      showMasterApprovalOverlay(sessionId);
-    }
-  }
+  // Show overlay if the session is on the active tab and not in home/gallery view.
+  // syncMasterApprovalForActiveTab contains the home/gallery guard.
+  syncMasterApprovalForActiveTab();
   renderTabs(); // trigger breathing animation on the target tab
 }
 
@@ -1371,6 +1369,7 @@ function exitViewerMode(sessionId: string): void {
 
 /** Show or hide viewer overlay based on whether the active tab has a viewer session */
 function syncViewerOverlayForActiveTab(): void {
+  if (isHomeView || isGalleryView) { hideViewerOverlayDom(); return; }
   const activeTab = TabManager.getActiveTab();
   if (!activeTab) { hideViewerOverlayDom(); return; }
 
@@ -1389,6 +1388,8 @@ function syncViewerOverlayForActiveTab(): void {
 
 /** Show or hide reclaim overlay based on whether the active tab has a reclaim session */
 function syncReclaimOverlayForActiveTab(): void {
+  // Never show overlay on top of home/gallery view.
+  if (isHomeView || isGalleryView) { hideReclaimButton(); return; }
   const activeTab = TabManager.getActiveTab();
   if (!activeTab) { hideReclaimButton(); return; }
 
@@ -1803,6 +1804,9 @@ function renderToolbarActions(): void {
   newBtn.onclick = async () => {
     await createNewSession();
   };
+  newBtn.addEventListener('contextmenu', (e) => {
+    showShellContextMenu(e, newBtn);
+  });
   toolbarLeftEl.appendChild(newBtn);
 
   // Remote session list button — only visible when remote tabs exist
@@ -1823,6 +1827,17 @@ function renderToolbarActions(): void {
   shareBtn.innerHTML = `<span class="tab-icon">${icon('share')}</span>`;
   shareBtn.onclick = () => openSettings('sharing');
   toolbarRightEl.appendChild(shareBtn);
+
+  // Update available icon (shown only when update is pending and user hasn't hidden it)
+  if (pendingUpdateVersion && !localStorage.getItem('meterm-hide-update-icon')) {
+    const updateBtn = document.createElement('button');
+    updateBtn.className = 'toolbar-icon-btn toolbar-update-btn';
+    updateBtn.type = 'button';
+    updateBtn.title = t('updateAvailable').replace('{version}', pendingUpdateVersion);
+    updateBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10m0 0 3.5-3.5M12 12l-3.5-3.5"/><path d="M4.93 15A8 8 0 1 0 12 4"/></svg>`;
+    updateBtn.onclick = () => { void openUpdaterWindow(); };
+    toolbarRightEl.appendChild(updateBtn);
+  }
 
   const settingsBtn = document.createElement('button');
   settingsBtn.className = 'toolbar-icon-btn';
@@ -2086,10 +2101,139 @@ function showTabContextMenu(event: MouseEvent, tab: Tab, tabIndex: number): void
   window.addEventListener('blur', cleanup);
 }
 
+// ── Shell selection context menu ──
+
+interface ShellInfo {
+  path: string;
+  name: string;
+  is_default: boolean;
+}
+
+let cachedShells: ShellInfo[] | null = null;
+
+async function getAvailableShells(): Promise<ShellInfo[]> {
+  if (cachedShells) return cachedShells;
+  try {
+    cachedShells = await invoke<ShellInfo[]>('list_available_shells');
+  } catch {
+    cachedShells = [];
+  }
+  return cachedShells;
+}
+
+function showShellContextMenu(event: MouseEvent, anchor?: HTMLElement): void {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const existing = document.getElementById('shell-context-menu');
+  if (existing) { existing.remove(); return; }
+
+  const menu = document.createElement('div');
+  menu.id = 'shell-context-menu';
+  menu.className = 'custom-context-menu';
+
+  // Position near anchor or mouse
+  if (anchor) {
+    const rect = anchor.getBoundingClientRect();
+    menu.style.left = `${rect.left}px`;
+    menu.style.top = `${rect.bottom + 4}px`;
+  } else {
+    menu.style.left = `${event.clientX}px`;
+    menu.style.top = `${event.clientY}px`;
+  }
+
+  const cleanup = () => {
+    menu.remove();
+    document.removeEventListener('click', onClickOutside, true);
+    window.removeEventListener('blur', cleanup);
+  };
+  const onClickOutside = (e: MouseEvent) => {
+    if (!menu.contains(e.target as Node)) cleanup();
+  };
+
+  // Loading placeholder
+  const loading = document.createElement('div');
+  loading.className = 'custom-context-menu-item';
+  loading.textContent = '...';
+  loading.style.opacity = '0.5';
+  menu.appendChild(loading);
+
+  document.body.appendChild(menu);
+
+  // Ensure menu doesn't go off-screen
+  requestAnimationFrame(() => {
+    const mr = menu.getBoundingClientRect();
+    if (mr.right > window.innerWidth) menu.style.left = `${window.innerWidth - mr.width - 8}px`;
+    if (mr.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - mr.height - 8}px`;
+  });
+
+  setTimeout(() => {
+    document.addEventListener('click', onClickOutside, true);
+    window.addEventListener('blur', cleanup);
+  }, 0);
+
+  // Load shells and populate
+  void getAvailableShells().then((shells) => {
+    menu.innerHTML = '';
+    if (shells.length === 0) {
+      const item = document.createElement('div');
+      item.className = 'custom-context-menu-item';
+      item.textContent = t('noShellsFound');
+      item.style.opacity = '0.5';
+      menu.appendChild(item);
+      return;
+    }
+
+    // Determine effective default: user setting overrides system default
+    const userDefault = settings.defaultShell;
+    const isDefault = (s: ShellInfo) => userDefault ? s.path === userDefault : s.is_default;
+    const defaultShells = shells.filter(isDefault);
+    const otherShells = shells.filter((s) => !isDefault(s));
+
+    const addShellItem = (shell: ShellInfo, showBadge: boolean) => {
+      const item = document.createElement('button');
+      item.className = 'custom-context-menu-item';
+      item.type = 'button';
+      item.textContent = shell.name;
+      if (showBadge) {
+        const badge = document.createElement('span');
+        badge.className = 'shell-default-badge';
+        badge.textContent = t('defaultShell');
+        item.appendChild(badge);
+      }
+      item.onclick = () => {
+        cleanup();
+        void createNewSession(shell.path);
+      };
+      menu.appendChild(item);
+    };
+
+    for (const shell of defaultShells) addShellItem(shell, true);
+    if (defaultShells.length > 0 && otherShells.length > 0) {
+      const sep = document.createElement('div');
+      sep.className = 'custom-context-menu-divider';
+      menu.appendChild(sep);
+    }
+    for (const shell of otherShells) addShellItem(shell, false);
+
+    // Re-check position after content loaded
+    requestAnimationFrame(() => {
+      const mr = menu.getBoundingClientRect();
+      if (mr.right > window.innerWidth) menu.style.left = `${window.innerWidth - mr.width - 8}px`;
+      if (mr.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - mr.height - 8}px`;
+    });
+  });
+}
+
 function showCustomContextMenu(event: MouseEvent): void {
   const target = event.target as HTMLElement | null;
   // Allow native context menu for input fields (copy/paste/cut/select all)
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+    return;
+  }
+  // Let AI chat panel handle its own context menu (suppress system menu but don't show terminal menu)
+  if (target?.closest('.ai-chat-messages')) {
+    event.preventDefault();
     return;
   }
   event.preventDefault();
@@ -2588,6 +2732,11 @@ async function init(): Promise<void> {
   document.addEventListener('new-local-session', () => {
     void createNewSession();
   });
+
+  // Shell selection context menu from home page local button
+  document.addEventListener('new-local-session-menu', ((e: CustomEvent<{ mouseEvent: MouseEvent; anchor: HTMLElement }>) => {
+    showShellContextMenu(e.detail.mouseEvent, e.detail.anchor);
+  }) as EventListener);
 
   // Clone SSH session from tab context menu
   document.addEventListener('ssh-clone-session', ((e: CustomEvent<SSHConnectionConfig>) => {
@@ -3141,7 +3290,8 @@ async function init(): Promise<void> {
       enterViewerMode(sessionId);
     } else {
       reclaimSessionIds.add(sessionId);
-      showReclaimButton(sessionId);
+      // Route through sync so home/gallery view guard is respected.
+      syncReclaimOverlayForActiveTab();
     }
   }) as EventListener);
 
@@ -3470,6 +3620,10 @@ async function init(): Promise<void> {
   // Check for app updates in the background (8-second delay built in).
   // Only run in the main window to avoid duplicate update checks.
   if (currentWindowLabel === 'main') {
+    // Re-render toolbar when update is found (to show the update icon).
+    document.addEventListener('update-available', () => { renderToolbarActions(); });
+    // Re-render toolbar when user changes the hide-icon preference from updater window.
+    void listen('update-icon-pref-changed', () => { renderToolbarActions(); });
     void initUpdater();
   }
 

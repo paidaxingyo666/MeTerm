@@ -143,7 +143,10 @@ class DrawerManagerClass {
                   <path d="M10 13l-5-5 5-5"/>
                 </svg>
               </button>
-              <input class="path-input" value="/" placeholder="路径" />
+              <div class="path-input-wrapper">
+                <input class="path-input" value="/" placeholder="路径" />
+                <div class="path-autocomplete"></div>
+              </div>
               <button class="btn-go" title="进入目录">
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M6 13l5-5-5-5"/>
@@ -715,14 +718,22 @@ class DrawerManagerClass {
       }
     });
 
+    // 初始化路径自动补全
+    if (instance.fileManager) {
+      instance.fileManager.setupPathAutocomplete();
+    }
+
     // 路径输入框回车
     pathInput.addEventListener('keydown', async (e) => {
       if (e.key === 'Enter') {
+        // 自动补全选中项时由补全处理，不跳转
+        if (instance.fileManager?.isAutocompleteOpen()) return;
         if (instance.isHistoryView) { showFileList(); return; }
         if (!instance.fileManager) return;
         try {
           const targetPath = pathInput.value.trim();
           if (targetPath) {
+            instance.fileManager.hideAutocomplete();
             await instance.fileManager.loadDirectory(targetPath);
           }
         } catch (err) {

@@ -775,6 +775,19 @@ html[data-theme="light"] .win-close-btn:hover {
   width: 13px;
   height: 13px;
 }
+/* Update available icon in toolbar */
+.toolbar-update-btn {
+  color: var(--accent, #4c7eff) !important;
+  position: relative;
+}
+.toolbar-update-btn svg {
+  animation: update-spin-once 1.2s ease-out 0.5s 1 forwards;
+}
+@keyframes update-spin-once {
+  0% { transform: rotate(0deg); }
+  60% { transform: rotate(360deg); }
+  100% { transform: rotate(360deg); }
+}
 
 @keyframes title-marquee {
   0% {
@@ -2208,6 +2221,12 @@ html[data-theme="light"] .gallery-overlay-scrollbar-thumb:hover {
   margin: 3px 4px;
 }
 
+.shell-default-badge {
+  margin-left: 8px;
+  font-size: 10px;
+  opacity: 0.5;
+}
+
 .tray-tip {
   position: fixed;
   right: 16px;
@@ -2597,20 +2616,17 @@ html.platform-windows #settings-window-container {
 .updater-window-mode {
   background: rgb(var(--bg-settings)) !important;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
 }
 
 #updater-window-container {
+  flex: 1;
   width: 100%;
-  height: 100%;
+  min-height: 0;
   display: flex;
   align-items: stretch;
-}
-
-html.platform-windows .updater-window-mode {
-  overflow-y: hidden;
-}
-html.platform-windows #updater-window-container {
-  min-height: calc(100vh - 33px);
 }
 
 .updater-panel {
@@ -2709,6 +2725,33 @@ html.platform-windows #updater-window-container {
   min-height: 0;
   max-height: 160px;
 }
+/* Markdown-rendered release notes */
+.updater-notes-md {
+  white-space: normal;
+}
+.updater-notes-md h2,
+.updater-notes-md h3,
+.updater-notes-md h4 {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.updater-notes-md h2 { font-size: 13px; }
+.updater-notes-md p { margin: 2px 0; }
+.updater-notes-md li {
+  list-style: disc;
+  margin-left: 16px;
+  margin-bottom: 2px;
+}
+.updater-notes-md code {
+  background: rgba(128,128,128,0.15);
+  border-radius: 3px;
+  padding: 0 3px;
+  font-family: monospace;
+  font-size: 11px;
+}
+.updater-notes-md br { display: block; height: 4px; content: ''; }
 .updater-notes-body::-webkit-scrollbar {
   width: 4px;
 }
@@ -2757,10 +2800,16 @@ html.platform-windows #updater-window-container {
 /* Footer buttons */
 .updater-footer {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
   margin-top: auto;
   padding-top: 4px;
+}
+.updater-btn-group {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .updater-btn {
@@ -2788,6 +2837,21 @@ html.platform-windows #updater-window-container {
 }
 .updater-btn.primary:hover:not(:disabled) {
   filter: brightness(1.1);
+}
+
+/* Updater window checkbox (sits left side of footer row) */
+.updater-checkbox-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.updater-checkbox {
+  accent-color: var(--accent, #4c7eff);
+  cursor: pointer;
 }
 
 /* ── Tray Dialog Window ── */
@@ -3597,8 +3661,15 @@ body.drawer-splitting {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.path-input {
+.path-input-wrapper {
+  position: relative;
   flex: 1;
+  min-width: 0;
+}
+
+.path-input {
+  width: 100%;
+  box-sizing: border-box;
   height: calc(var(--file-manager-font-size, 12px) * 2);
   padding: 0 calc(var(--file-manager-font-size, 12px) * 0.67);
   background: rgba(var(--bg-secondary), 1);
@@ -3613,6 +3684,50 @@ body.drawer-splitting {
 .path-input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.path-autocomplete {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  max-height: 200px;
+  overflow-y: auto;
+  background: rgba(var(--bg-secondary), 1);
+  border: 1px solid var(--border-primary);
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.path-ac-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: 'Menlo', monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.path-ac-item:hover,
+.path-ac-item.selected {
+  background: rgba(var(--bg-tertiary), 1);
+}
+
+.path-ac-item.selected {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.path-ac-item svg {
+  flex-shrink: 0;
 }
 
 .file-toolbar button {
@@ -4669,6 +4784,14 @@ body.drawer-splitting {
   color: var(--accent);
 }
 
+.ai-bar-btn-llm.streaming-active {
+  color: var(--danger, #e74c3c);
+}
+
+.ai-bar-btn-llm.streaming-active:hover {
+  color: var(--danger-hover, #c0392b);
+}
+
 .ai-bar-btn.active {
   color: var(--accent);
 }
@@ -5059,7 +5182,7 @@ body.drawer-splitting {
   overflow: visible;
   background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
   border: 1px solid var(--border-primary);
-  order: 1;
+  order: 2;
 }
 
 /* Floating button to restore hidden AI bar */
@@ -5196,13 +5319,14 @@ body.drawer-splitting {
 }
 
 /* ─── AI Chat Panel ─── */
+/* Chat panel is a direct child of #terminal-panel (flex column layout).
+   When visible it takes flex space, pushing .terminal-area smaller. */
 .ai-chat-panel {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  right: 0;
-  max-height: 50vh;
-  min-height: 120px;
+  flex: 0 1 50vh;
+  min-height: 36px;
+  max-height: 80vh;
+  order: 1;
+  margin: 0 5px 4px;
   background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
   backdrop-filter: blur(20px) saturate(1.4);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);
@@ -5219,6 +5343,36 @@ body.drawer-splitting {
 @keyframes chat-slide-up {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Drag handle at the top of chat panel for resizing */
+.ai-chat-resize-handle {
+  flex: 0 0 6px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ai-chat-resize-handle::after {
+  content: '';
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--text-dim);
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.ai-chat-resize-handle:hover::after {
+  opacity: 1;
+}
+/* Prevent text selection and pointer events on other elements during resize */
+body.ai-chat-resizing {
+  cursor: ns-resize !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+body.ai-chat-resizing * {
+  cursor: ns-resize !important;
 }
 
 .ai-chat-header {
@@ -5277,6 +5431,47 @@ body.drawer-splitting {
   gap: 8px;
   scroll-behavior: smooth;
 }
+/* Agent running pulse indicator */
+.ai-agent-pulse {
+  align-self: flex-start;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  opacity: 0.85;
+  animation: msg-appear 0.15s ease-out;
+}
+.ai-agent-pulse svg { align-self: center; }
+.ai-pulse-label { white-space: pre; }
+.ai-pulse-dots { display: inline-flex; gap: 0; letter-spacing: 1px; }
+.ai-pulse-dot {
+  display: inline-block;
+  font-weight: bold;
+  font-size: 16px;
+  opacity: 0;
+  animation: dot-bounce 1.8s ease-in-out infinite;
+}
+@keyframes dot-bounce {
+  0%, 100% { opacity: 0; transform: translateY(0); }
+  20% { opacity: 1; transform: translateY(-2px); }
+  40% { opacity: 0.4; transform: translateY(0); }
+}
+
+/* Standalone thinking block — no bubble */
+.ai-thinking-block {
+  max-width: 95%;
+  align-self: flex-start;
+  animation: msg-appear 0.15s ease-out;
+}
+.ai-thinking-block.active .ai-reasoning summary span {
+  animation: thinking-pulse 1.5s ease-in-out infinite;
+}
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
 /* Message bubbles */
 .ai-msg {
   max-width: 95%;
@@ -5328,69 +5523,124 @@ body.drawer-splitting {
 @keyframes blink-cursor { 50% { opacity: 0; } }
 .ai-stream-text { white-space: pre-wrap; }
 
-/* Command blocks */
+/* ─── Command Block — CRT TV style ───────────────────────────────
+   .ai-cmd-block  = TV chassis (raised, outer frame)
+   .ai-cmd-screen = CRT screen (inset/recessed, darker)
+   .ai-cmd-actions = physical buttons on the chassis (protruding)
+   ─────────────────────────────────────────────────────────────── */
+
+/* Chassis */
 .ai-cmd-block {
-  margin: 6px 0;
-  background: rgba(0, 0, 0, 0.25);
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  margin: 8px 0;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(20, 22, 28, 0.95);
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
   overflow: hidden;
 }
+
+/* Screen — inset / recessed */
+.ai-cmd-screen {
+  background: rgba(0, 0, 0, 0.38);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.55);
+}
+
+/* Lang strip (stacked only) */
 .ai-cmd-lang {
   font-size: 10px;
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.22);
   padding: 3px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
+
+/* Code text */
 .ai-cmd-block pre {
   margin: 0;
-  padding: 8px 10px;
+  padding: 8px 12px;
   overflow-x: auto;
 }
 .ai-cmd-block code {
   font-family: var(--font-mono);
   font-size: 12px;
-  color: #e0e0e0;
+  color: #bfd3f0;
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* Buttons — raised / protruding (opposite of screen) */
 .ai-cmd-actions {
   display: flex;
-  gap: 4px;
-  padding: 4px 8px 6px;
-  justify-content: flex-end;
+  align-items: center;
+  gap: 5px;
 }
 .ai-cmd-run,
 .ai-cmd-copy {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
-  color: var(--text-secondary);
+  background: linear-gradient(180deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.04) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-bottom-color: rgba(0, 0, 0, 0.35);
+  border-radius: 5px;
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.52);
   font-size: 11px;
-  padding: 2px 10px;
+  padding: 3px 10px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background 0.12s, color 0.12s, box-shadow 0.12s, transform 0.08s;
+  white-space: nowrap;
 }
 .ai-cmd-run:hover {
-  background: rgba(106, 164, 255, 0.2);
+  background: linear-gradient(180deg, rgba(106,164,255,0.28) 0%, rgba(106,164,255,0.12) 100%);
   color: var(--accent);
-  border-color: rgba(106, 164, 255, 0.3);
+  border-color: rgba(106, 164, 255, 0.35);
+  box-shadow: 0 2px 6px rgba(106, 164, 255, 0.25), inset 0 1px 0 rgba(255,255,255,0.15);
 }
 .ai-cmd-copy:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text-primary);
+  background: linear-gradient(180deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.06) 100%);
+  color: rgba(255, 255, 255, 0.85);
+}
+.ai-cmd-run:active,
+.ai-cmd-copy:active {
+  transform: translateY(1px);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.55);
 }
 .ai-cmd-run.cmd-executed {
-  background: rgba(90, 247, 142, 0.2);
+  background: linear-gradient(180deg, rgba(90,247,142,0.24) 0%, rgba(90,247,142,0.09) 100%);
   color: #5af78e;
-  border-color: rgba(90, 247, 142, 0.3);
+  border-color: rgba(90, 247, 142, 0.32);
 }
 .ai-cmd-copy.cmd-copied {
-  background: rgba(90, 247, 142, 0.2);
+  background: linear-gradient(180deg, rgba(90,247,142,0.24) 0%, rgba(90,247,142,0.09) 100%);
   color: #5af78e;
-  border-color: rgba(90, 247, 142, 0.3);
+  border-color: rgba(90, 247, 142, 0.32);
+}
+
+/* ── Stacked layout (multi-line / long command) ──
+   screen fills top of chassis, buttons in bottom strip */
+.ai-cmd-stacked .ai-cmd-actions {
+  justify-content: flex-end;
+  padding: 5px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* ── Inline layout (single-line command) ──
+   screen on left (flex:1), buttons vertically centred on right */
+.ai-cmd-inline {
+  display: flex;
+  align-items: stretch;
+}
+.ai-cmd-inline .ai-cmd-screen {
+  flex: 1;
+  min-width: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+}
+.ai-cmd-inline .ai-cmd-actions {
+  padding: 0 10px;
+  flex-shrink: 0;
 }
 
 /* ─── Dangerous Command Confirm Dialog ─── */
@@ -5553,7 +5803,7 @@ body.drawer-splitting {
   color: var(--text-primary);
   background: rgba(255, 255, 255, 0.08);
 }
-.settings-test-btn { cursor: pointer; text-align: center; }
+.settings-test-btn { cursor: pointer; text-align: center; width: auto; flex: none; flex-shrink: 0; }
 .settings-test-btn:hover {
   background: rgba(106, 164, 255, 0.15);
   border-color: rgba(106, 164, 255, 0.3);
@@ -5563,6 +5813,7 @@ body.drawer-splitting {
   font-size: 11px;
   margin-left: 8px;
   color: var(--text-secondary);
+  word-break: break-word;
 }
 .settings-test-result.test-success { color: #5af78e; }
 .settings-test-result.test-failed { color: #ff6b6b; }
@@ -5577,15 +5828,15 @@ body.drawer-splitting {
 .ai-provider-card {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
 }
 
 .ai-provider-card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 6px;
+  padding: 5px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
@@ -5595,7 +5846,7 @@ body.drawer-splitting {
   border: 1px solid transparent;
   border-radius: 4px;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   padding: 2px 6px;
   outline: none;
@@ -5604,18 +5855,6 @@ body.drawer-splitting {
 .ai-provider-label-input:focus {
   border-color: var(--accent);
   background: rgba(255, 255, 255, 0.04);
-}
-
-.ai-provider-type-badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(106, 164, 255, 0.12);
-  color: var(--accent);
-  flex-shrink: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 500;
 }
 
 .ai-provider-delete-btn {
@@ -5637,10 +5876,10 @@ body.drawer-splitting {
 }
 
 .ai-provider-card-body {
-  padding: 8px 10px;
+  padding: 6px 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .ai-provider-row {
@@ -5651,6 +5890,55 @@ body.drawer-splitting {
 .ai-provider-row label {
   font-size: 11px;
   color: var(--text-secondary);
+}
+/* Inline variant: label + control on same row */
+.ai-provider-row.ai-row-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+.ai-provider-row.ai-row-inline > label {
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 100px;
+}
+.ai-provider-row.ai-row-inline > .settings-input,
+.ai-provider-row.ai-row-inline > .settings-input-group {
+  flex: 1;
+  min-width: 0;
+}
+/* Compact AI settings below provider cards */
+.ai-settings-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ai-settings-compact .settings-section {
+  margin-bottom: 0;
+}
+.ai-settings-compact .ai-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ai-settings-compact .ai-slider-row > label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 100px;
+  margin-bottom: 0;
+}
+.ai-settings-compact .ai-slider-row > .settings-slider {
+  flex: 1;
+  min-width: 0;
+}
+.ai-settings-compact .ai-slider-row > .ai-slider-value {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 36px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .ai-provider-fetch-row {
@@ -5811,6 +6099,386 @@ body.drawer-splitting {
 [data-theme="light"] .ai-danger-cmd,
 [data-theme="light"] .ai-bar-model-dropdown {
   scrollbar-color: rgba(0, 0, 0, 0.12) transparent;
+}
+
+/* ─── Agent Tool Call Cards ────────────────────────────────────── */
+
+.ai-tool-card {
+  max-width: 95%;
+  align-self: flex-start;
+  margin: 3px 0;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  border-left: 2px solid #6B7280;
+  font-size: 12px;
+  animation: msg-appear 0.1s ease-out;
+}
+.ai-tool-card + .ai-tool-card {
+  margin-top: 1px;
+}
+.ai-tool-card[data-tool="run_command"]  { border-left-color: #F59E0B; }
+.ai-tool-card[data-tool="read_terminal"]{ border-left-color: #3B82F6; }
+.ai-tool-card[data-tool="read_file"]    { border-left-color: #06B6D4; }
+.ai-tool-card[data-tool="write_file"]   { border-left-color: #8B5CF6; }
+.ai-tool-card[data-tool="list_files"]   { border-left-color: #10B981; }
+.ai-tool-card[data-tool="search_files"] { border-left-color: #EC4899; }
+
+.ai-tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+.ai-tool-card-header.clickable { cursor: pointer; }
+.ai-tool-card-header.clickable:hover { color: var(--text-primary); }
+
+.ai-tool-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.ai-tool-name {
+  font-weight: 500;
+  font-family: var(--mono-font);
+}
+
+.ai-tool-status {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.ai-tool-args-inline {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-tool-args-inline code {
+  font-size: 11px;
+  font-family: var(--mono-font);
+  color: var(--text-primary);
+  opacity: 0.7;
+}
+
+.ai-tool-result {
+  margin-top: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.ai-tool-result pre {
+  margin: 0;
+  padding: 4px 0;
+  font-size: 11px;
+  font-family: var(--mono-font);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ai-tool-result-error pre {
+  color: #EF4444;
+}
+
+.ai-tool-card.completed {
+  opacity: 0.85;
+}
+
+/* ─── Agent Confirm Cards ──────────────────────────────────────── */
+
+.ai-confirm-card {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: 8px;
+  border-left: 3px solid #EF4444;
+  font-size: 12px;
+}
+.ai-confirm-card[data-tool="run_command"]  { border-left-color: #F59E0B; background: rgba(245, 158, 11, 0.08); }
+.ai-confirm-card[data-tool="write_file"]   { border-left-color: #8B5CF6; background: rgba(139, 92, 246, 0.08); }
+
+.ai-confirm-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.ai-confirm-resolved {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  margin-left: auto;
+}
+
+.ai-confirm-preview {
+  margin-bottom: 8px;
+}
+.ai-confirm-preview code {
+  font-size: 12px;
+  font-family: var(--mono-font);
+  color: var(--text-primary);
+}
+
+.ai-confirm-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.ai-confirm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ai-confirm-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.ai-confirm-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.ai-confirm-approve { border-color: rgba(34, 197, 94, 0.3); }
+.ai-confirm-approve:hover { background: rgba(34, 197, 94, 0.15); }
+.ai-confirm-reject  { border-color: rgba(239, 68, 68, 0.3); }
+.ai-confirm-reject:hover  { background: rgba(239, 68, 68, 0.15); }
+
+.ai-confirm-editor {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.ai-confirm-edit-input {
+  flex: 1;
+  padding: 3px 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 5px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--mono-font);
+  outline: none;
+}
+.ai-confirm-edit-input:focus {
+  border-color: var(--accent);
+}
+
+.ai-confirm-card.resolved {
+  opacity: 0.6;
+}
+
+/* ─── System Notice ────────────────────────────────────────────── */
+
+.ai-system-notice {
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  opacity: 0.6;
+  letter-spacing: 0.3px;
+}
+
+/* ─── Reasoning / Thinking Block ──────────────────────────────── */
+
+.ai-reasoning {
+  margin: 0 0 6px 0;
+  padding: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+.ai-reasoning summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  user-select: none;
+  padding: 2px 0;
+  list-style: none;
+}
+.ai-reasoning summary::-webkit-details-marker { display: none; }
+.ai-reasoning summary::before {
+  content: '▸';
+  display: inline-block;
+  transition: transform 0.15s;
+  font-size: 10px;
+}
+.ai-reasoning[open] summary::before { transform: rotate(90deg); }
+.ai-reasoning summary svg { flex-shrink: 0; }
+.ai-reasoning-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 4px 0 4px 14px;
+  border-left: 2px solid rgba(139, 92, 246, 0.3);
+  margin: 2px 0 0 5px;
+  line-height: 1.5;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* ─── Trust Level Switcher ─────────────────────────────────────── */
+
+.ai-bar-trust-switcher {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.ai-bar-btn-trust {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+}
+
+.ai-trust-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 200px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  z-index: 9999;
+}
+
+.ai-trust-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-secondary);
+  transition: background 0.12s;
+}
+.ai-trust-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+.ai-trust-item.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* ─── Settings Radio Group ─────────────────────────────────────── */
+
+.settings-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.settings-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.settings-radio-label input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* ─── AI Trust Level Icon Buttons (Settings) ──────────────────── */
+.ai-trust-group {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+.ai-trust-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ai-trust-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.ai-trust-btn.active {
+  color: var(--accent);
+  background: rgba(106, 164, 255, 0.12);
+  border-color: rgba(106, 164, 255, 0.3);
+}
+[data-theme="light"] .ai-trust-btn {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme="light"] .ai-trust-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+[data-theme="light"] .ai-trust-btn.active {
+  background: rgba(106, 164, 255, 0.1);
+  border-color: rgba(106, 164, 255, 0.3);
+}
+
+/* ─── Light Theme Overrides for Agent UI ───────────────────────── */
+
+[data-theme="light"] .ai-tool-card {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .ai-confirm-card {
+  background: rgba(239, 68, 68, 0.06);
+}
+[data-theme="light"] .ai-confirm-card[data-tool="run_command"] {
+  background: rgba(245, 158, 11, 0.06);
+}
+[data-theme="light"] .ai-confirm-card[data-tool="write_file"] {
+  background: rgba(139, 92, 246, 0.06);
+}
+[data-theme="light"] .ai-confirm-btn {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .ai-confirm-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .ai-confirm-edit-input {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+[data-theme="light"] .ai-trust-dropdown {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+[data-theme="light"] .ai-trust-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .ai-trust-item.active {
+  background: rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .ai-reasoning {
+  opacity: 0.7;
+}
+[data-theme="light"] .ai-reasoning-text {
+  border-left-color: rgba(139, 92, 246, 0.25);
 }
 
 /* Resize handles */
@@ -7454,6 +8122,12 @@ body.split-resizing .split-resize-handle.split-resize-vertical ~ * {
 .toast-enter {
   transform: translateX(110%);
   opacity: 0;
+}
+.toast-clickable {
+  cursor: pointer;
+}
+.toast-clickable:hover {
+  background: rgba(var(--bg-tray-tip), 1);
 }
 .toast-exit {
   animation: toast-slide-out 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;

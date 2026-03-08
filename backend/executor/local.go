@@ -24,14 +24,22 @@ type LocalShellExecutor struct {
 var _ Executor = (*LocalShellExecutor)(nil)
 
 func NewLocalShellExecutor(cols, rows uint16) *LocalShellExecutor {
-	shell := os.Getenv("SHELL")
+	return NewLocalShellExecutorWithShell(cols, rows, "")
+}
+
+func NewLocalShellExecutorWithShell(cols, rows uint16, shell string) *LocalShellExecutor {
+	if shell == "" {
+		shell = os.Getenv("SHELL")
+	}
 	if shell == "" {
 		if runtime.GOOS == "windows" {
-			if c := os.Getenv("COMSPEC"); c != "" {
-				shell = c
-			} else {
-				shell = "powershell.exe"
-			}
+			// On Windows, prefer PowerShell over cmd.exe.
+			// resolveWindowsShell() in pty_windows.go handles the full
+			// priority chain (METERM_WINDOWS_SHELL → pwsh → powershell → cmd).
+			// Here we just need a reasonable default for the executor field;
+			// the actual resolution happens in PTYEngine. Pass empty to let
+			// PTYEngine's resolveWindowsShell() decide.
+			shell = ""
 		} else {
 			shell = "/bin/bash"
 		}
@@ -52,7 +60,7 @@ func (e *LocalShellExecutor) Start() (terminal.Terminal, error) {
 		return nil, fmt.Errorf("executor already started")
 	}
 
-	term, err := terminal.NewPTYEngine(e.cols, e.rows)
+	term, err := terminal.NewPTYEngineWithShell(e.cols, e.rows, e.shell)
 	if err != nil {
 		return nil, err
 	}

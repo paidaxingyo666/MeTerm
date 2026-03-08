@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,7 +30,15 @@ var _ Terminal = (*PTYEngine)(nil)
 
 // NewPTYEngine creates a PTY-backed shell using terminal size cols x rows.
 func NewPTYEngine(cols, rows uint16) (*PTYEngine, error) {
-	shell := os.Getenv("SHELL")
+	return NewPTYEngineWithShell(cols, rows, "")
+}
+
+// NewPTYEngineWithShell creates a PTY-backed shell with an explicit shell path.
+// If shell is empty, falls back to $SHELL or /bin/bash.
+func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) {
+	if shell == "" {
+		shell = os.Getenv("SHELL")
+	}
 	if shell == "" {
 		shell = "/bin/bash"
 	}
@@ -48,9 +57,15 @@ func NewPTYEngine(cols, rows uint16) (*PTYEngine, error) {
 	// the exec'd interactive shell sources zshenv + zshrc (plugins) — each
 	// file is sourced exactly once, matching normal terminal behaviour.
 	var cmd *exec.Cmd
+	shellBase := filepath.Base(shell)
 	if runtime.GOOS == "darwin" {
-		innerCmd := fmt.Sprintf("export TERM=xterm-256color; exec %s -i", shell)
-		cmd = exec.Command(shell, "-l", "-c", innerCmd)
+		// csh/tcsh don't support -l flag; launch them directly
+		if shellBase == "csh" || shellBase == "tcsh" {
+			cmd = exec.Command(shell)
+		} else {
+			innerCmd := fmt.Sprintf("export TERM=xterm-256color; exec %s -i", shell)
+			cmd = exec.Command(shell, "-l", "-c", innerCmd)
+		}
 	} else {
 		cmd = exec.Command(shell)
 	}
@@ -62,7 +77,7 @@ func NewPTYEngine(cols, rows uint16) (*PTYEngine, error) {
 			env = append(env, e)
 		}
 	}
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" && shellBase != "csh" && shellBase != "tcsh" {
 		// Login-phase sees TERM=dumb; the exec'd shell overrides to xterm-256color.
 		env = append(env, "TERM=dumb")
 	} else {

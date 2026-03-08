@@ -86,7 +86,7 @@ async function sendSystemNotification(title: string, body: string): Promise<void
 /**
  * Show an in-app toast notification.
  */
-export function showToast(opts: { title: string; body: string; source?: string }): void {
+export function showToast(opts: { title: string; body: string; source?: string; onClick?: () => void; duration?: number }): void {
   let container = document.querySelector('.toast-container') as HTMLDivElement;
   if (!container) {
     container = document.createElement('div');
@@ -102,6 +102,7 @@ export function showToast(opts: { title: string; body: string; source?: string }
 
   const toast = document.createElement('div');
   toast.className = 'toast-notification toast-enter';
+  if (opts.onClick) toast.classList.add('toast-clickable');
 
   const header = document.createElement('div');
   header.className = 'toast-header';
@@ -113,7 +114,7 @@ export function showToast(opts: { title: string; body: string; source?: string }
   const closeBtn = document.createElement('button');
   closeBtn.className = 'toast-close';
   closeBtn.innerHTML = '&times;';
-  closeBtn.onclick = () => dismissToast(toast);
+  closeBtn.onclick = (e) => { e.stopPropagation(); dismissToast(toast); };
 
   header.appendChild(titleEl);
   header.appendChild(closeBtn);
@@ -131,6 +132,10 @@ export function showToast(opts: { title: string; body: string; source?: string }
     toast.appendChild(sourceEl);
   }
 
+  if (opts.onClick) {
+    toast.addEventListener('click', () => { dismissToast(toast); opts.onClick!(); });
+  }
+
   container.appendChild(toast);
 
   // Trigger slide-in animation
@@ -138,8 +143,9 @@ export function showToast(opts: { title: string; body: string; source?: string }
     toast.classList.remove('toast-enter');
   });
 
-  // Auto-dismiss after 4 seconds
-  const timer = setTimeout(() => dismissToast(toast), 4000);
+  // Auto-dismiss (default 8s for update toasts, 4s otherwise)
+  const duration = opts.duration ?? 4000;
+  const timer = setTimeout(() => dismissToast(toast), duration);
   (toast as any)._dismissTimer = timer;
 }
 

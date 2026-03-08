@@ -263,6 +263,7 @@ export interface AppSettings {
   backgroundImage: string;
   backgroundImageOpacity: number;
   enableTerminalNotifications: boolean;
+  defaultShell: string;  // '' = system default, or shell path
   // AI configuration (multi-provider)
   aiProviders: AIProviderEntry[];
   aiActiveModel: string;  // 'auto' | 'providerId:modelName'
@@ -270,6 +271,14 @@ export interface AppSettings {
   aiMaxTokens: number;
   aiTemperature: number;
   aiContextLines: number;
+  // AI Agent configuration
+  aiAgentTrustLevel: number;       // 0 = manual, 1 = semi-auto, 2 = full-auto
+  aiAgentMaxIterations: number;    // max agentic loop steps (default 15)
+  // SearXNG web search
+  searxngUrl: string;
+  searxngUsername: string;
+  searxngPassword: string;
+  searxngEnabled: boolean;
 }
 
 const SETTINGS_KEY = 'meterm-settings';
@@ -295,6 +304,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   drawerSidebarWidth: 0,
   backgroundImage: '',
   backgroundImageOpacity: 30,
+  defaultShell: '',
   enableTerminalNotifications: true,
   aiProviders: [
     { id: 'openai',    type: 'openai',    label: 'OpenAI',    apiKey: '', baseUrl: 'https://api.openai.com',                    models: [], enabledModels: [] },
@@ -306,6 +316,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   aiMaxTokens: 4096,
   aiTemperature: 0.3,
   aiContextLines: 50,
+  aiAgentTrustLevel: 0,
+  aiAgentMaxIterations: 15,
+  searxngUrl: '',
+  searxngUsername: '',
+  searxngPassword: '',
+  searxngEnabled: false,
 };
 
 export function loadSettings(): AppSettings {
