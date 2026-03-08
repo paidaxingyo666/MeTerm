@@ -87,6 +87,9 @@ jobs:
           npm ci
           npm run build
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Build Tauri app (arm64)
         run: |
           cd desktop
@@ -194,6 +197,9 @@ jobs:
           cd desktop
           npm ci
           npm run build
+
+      - name: Install create-dmg
+        run: brew install create-dmg
 
       - name: Build Tauri app (x86_64)
         run: |
