@@ -572,6 +572,13 @@ export class FileManager {
     return this.currentPath;
   }
 
+  /** 返回当前目录的文件名→是否为目录映射（供终端文件链接使用） */
+  getFileNames(): Map<string, boolean> {
+    const names = new Map<string, boolean>();
+    for (const f of this.files) names.set(f.name, f.is_dir);
+    return names;
+  }
+
   // ===================== 路径自动补全 =====================
 
   private dirCachePut(path: string, files: FileInfo[]): void {

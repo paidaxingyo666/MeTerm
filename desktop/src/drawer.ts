@@ -1354,13 +1354,25 @@ class DrawerManagerClass {
     const instance = this.drawers.get(sessionId);
     if (instance?.fileManager) {
       instance.fileManager.setWebSocket(ws);
-      instance.fileManager.loadDirectory('/');
+      // SSH 会话加载 "."（SFTP 主目录），本地会话加载 "/"
+      const initialPath = instance.serverConnectionInfo ? '.' : '/';
+      instance.fileManager.loadDirectory(initialPath);
     }
   }
 
   getServerInfo(sessionId: string): { host: string; username: string; port: number } | null {
     const instance = this.drawers.get(sessionId);
     return instance?.serverConnectionInfo || null;
+  }
+
+  /** 获取 SSH 会话的文件管理器当前路径和文件名列表（供终端文件链接使用） */
+  getRemoteDirEntries(sessionId: string): { cwd: string; names: Map<string, boolean> } | null {
+    const instance = this.drawers.get(sessionId);
+    if (!instance?.fileManager) return null;
+    const cwd = instance.fileManager.getCurrentPath();
+    const names = instance.fileManager.getFileNames();
+    if (names.size === 0) return null;
+    return { cwd, names };
   }
 
   updateServerInfo(sessionId: string, info: { host: string; username: string; port?: number }): void {
@@ -1385,6 +1397,29 @@ class DrawerManagerClass {
       `;
     }
   }
+
+  /**
+   * 导航到指定路径（用于终端文件链接点击）。
+   * 如果抽屉已打开，直接跳转；如果未打开，弹窗询问用户是否打开。
+   */
+  async navigateToPath(sessionId: string, dirPath: string): Promise<void> {
+    const instance = this.drawers.get(sessionId);
+    if (!instance) return;
+
+    if (instance.isOpen) {
+      // 抽屉已打开，直接导航
+      instance.fileManager?.loadDirectory(dirPath);
+    } else {
+      // 确认已在 openFileLink 中完成，此处直接打开抽屉
+      this.toggle(sessionId);
+      const filesTab = instance.element.querySelector('[data-tab="files"]') as HTMLElement;
+      if (filesTab) filesTab.click();
+      setTimeout(() => {
+        instance.fileManager?.loadDirectory(dirPath);
+      }, 200);
+    }
+  }
+
 }
 
 export const DrawerManager = new DrawerManagerClass();

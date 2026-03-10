@@ -279,6 +279,7 @@ export interface AppSettings {
   searxngUsername: string;
   searxngPassword: string;
   searxngEnabled: boolean;
+  fileLinkSkipConfirm: boolean;
 }
 
 const SETTINGS_KEY = 'meterm-settings';
@@ -322,6 +323,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   searxngUsername: '',
   searxngPassword: '',
   searxngEnabled: false,
+  fileLinkSkipConfirm: false,
 };
 
 export function loadSettings(): AppSettings {

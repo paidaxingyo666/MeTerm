@@ -581,11 +581,53 @@ func (s *Session) Run() {
 					log.Printf("[session:%s] Run: child exited after Read error", s.ID[:8])
 					continue // let Done case handle restart
 				case <-time.After(5 * time.Second):
-					log.Printf("[session:%s] Run: child still alive 5s after Read error — closing", s.ID[:8])
+					log.Printf("[session:%s] Run: child still alive 5s after Read error", s.ID[:8])
 				case <-s.ctx.Done():
 					log.Printf("[session:%s] Run: ctx done while waiting after Read error", s.ID[:8])
 					return
 				}
+
+				// The child process is still alive but the pipe is broken.
+				// This can happen after system hibernate on Windows (ConPTY pipe
+				// becomes invalid while the process handle remains valid).
+				// Try to restart the PTY via factory instead of closing the session.
+				s.mu.RLock()
+				pipeFactory := s.TermFactory
+				pipeConnected := s.connectedClientCountLocked()
+				pipeCols, pipeRows := s.LastCols, s.LastRows
+				pipeState := s.State
+				s.mu.RUnlock()
+
+				if pipeFactory != nil && pipeConnected > 0 && pipeState == StateRunning && restartCount < maxRestarts {
+					if pipeCols == 0 {
+						pipeCols = 80
+					}
+					if pipeRows == 0 {
+						pipeRows = 24
+					}
+					newTerm, fErr := pipeFactory(pipeCols, pipeRows)
+					if fErr != nil {
+						log.Printf("[session:%s] Run: pipe-break PTY restart failed: %v", s.ID[:8], fErr)
+					} else {
+						restartCount++
+						log.Printf("[session:%s] Run: pipe-break PTY restarted (%d/%d)", s.ID[:8], restartCount, maxRestarts)
+						oldTerm := s.Term
+						s.mu.Lock()
+						s.Term = newTerm
+						s.ringLen = 0
+						s.ringStart = 0
+						s.mu.Unlock()
+						_ = oldTerm.Close()
+						startReader(newTerm)
+						var seq string
+						seq += "\x1b[?1049l"
+						seq += "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
+						seq += strings.Repeat("\n", int(pipeRows))
+						s.Broadcast(protocol.EncodeMessage(protocol.MsgOutput, []byte(seq)))
+						continue
+					}
+				}
+
 				s.Broadcast(protocol.EncodeMessage(protocol.MsgSessionEnd, nil))
 				time.Sleep(100 * time.Millisecond)
 				s.Close()

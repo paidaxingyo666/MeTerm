@@ -27,12 +27,15 @@ import {
   MsgMasterReclaim,
   MsgPairNotify,
   MsgPairApproval,
+  MsgFileList,
+  MsgFileListResp,
 } from './protocol';
 import { buildWsProtocols, buildWsUrl } from './connection';
 import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { AppSettings, getTheme, getColorSchemeBg, hexToRgba, hexToOscRgb } from './themes';
 import { loadFont, getFontFamily } from './fonts';
 import { DrawerManager } from './drawer';
+import { registerFileLinkProvider, prefetchDirCache, setSSHDirProbe, getSSHDirProbe, clearSSHDirProbe } from './terminal-file-link';
 
 const isWindowsPlatform = navigator.userAgent.toLowerCase().includes('windows');
 
@@ -199,6 +202,10 @@ export interface ManagedTerminal {
   ended: boolean;
   reconnectAttempt: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
+  /** Port used for local WebSocket connection (updated on sidecar restart) */
+  _port: number;
+  /** Auth token for local WebSocket connection (updated on sidecar restart) */
+  _token: string;
   resizeDebounce: ReturnType<typeof setTimeout> | null;
   settleTimers: ReturnType<typeof setTimeout>[];
   lastSentCols: number;
@@ -350,13 +357,13 @@ class TerminalRegistryClass {
     // text floats over the image+overlay stack. The container itself is also made
     // transparent so padding areas don't show a mismatched solid color.
     // Without an image, set container background = canvas background so the
-    // padding areas (15 px left/right) always match the terminal color.
+    // padding areas always match the terminal color.
     const needsTransparency = isWindowsPlatform || opacity < 1 || hasBackgroundImage;
     const bgColor = hasBackgroundImage ? 'rgba(0,0,0,0)' : (opacity < 1 ? hexToRgba(bgHex, opacity) : bgHex);
     mt.terminal.options.allowTransparency = needsTransparency;
     mt.terminal.options.theme = { ...theme, background: bgColor };
-    // Padding color fix: match container background to the canvas color so the 15px
-    // left/right padding areas don't show a mismatched color from the parent.
+    // Padding color fix: match container background to the canvas color so the
+    // padding areas don't show a mismatched color from the parent.
     // When bg image is active, keep transparent so image shows through padding areas.
     // When opacity < 1, leave transparent to avoid double-stacking (container rgba
     // on top of canvas rgba makes the terminal appear darker than intended).
@@ -772,9 +779,12 @@ class TerminalRegistryClass {
         mt.resizeDebounce = null;
       }, 80);
 
-      // One settle pass in case the container size is still unstable at 80 ms
+      // Settle passes in case the container size is still unstable.
+      // The extra 400 ms pass catches slower layout engines (e.g. x86 WKWebView)
+      // where flex siblings (AI bar, drawers) finish layout after 160 ms.
       mt.settleTimers = [
         setTimeout(() => this.doResize(mt, generation), 160),
+        setTimeout(() => this.doResize(mt, generation), 400),
       ];
     }
   }
@@ -934,6 +944,8 @@ class TerminalRegistryClass {
       ended: false,
       reconnectAttempt: 0,
       reconnectTimer: null,
+      _port: port,
+      _token: token,
       resizeDebounce: null,
       settleTimers: [],
       lastSentCols: 0,
@@ -965,6 +977,35 @@ class TerminalRegistryClass {
       return true;
     });
 
+    // Register OSC 7 handler for CWD tracking.
+    // macOS zsh emits this by default (via /etc/zshrc update_terminal_cwd).
+    // SSH sessions receive OSC 7 from injected hook.
+    // Format: file://hostname/path/to/dir  or  file:///path/to/dir
+    terminal.parser.registerOscHandler(7, (data: string) => {
+      try {
+        const url = new URL(data);
+        if (url.protocol === 'file:') {
+          const cwd = decodeURIComponent(url.pathname);
+          if (cwd && cwd !== mt.shellState.cwd) {
+            mt.shellState.cwd = cwd;
+            // 本地会话：预取本地目录缓存
+            // SSH 会话：通过 SFTP 请求远程目录列表
+            if (DrawerManager.getServerInfo(mt.id)) {
+              if (mt.ws?.readyState === WebSocket.OPEN) {
+                try {
+                  const req = JSON.stringify({ path: cwd });
+                  mt.ws.send(encodeMessage(MsgFileList, new TextEncoder().encode(req)));
+                } catch { /* ignore */ }
+              }
+            } else {
+              prefetchDirCache(cwd);
+            }
+          }
+        }
+      } catch { /* ignore malformed URLs */ }
+      return true;
+    });
+
     // Register OSC 7768 handler for shell state machine (prompt hook).
     // The injected __meterm_precmd sends `\033]7768;EXIT_CODE;CWD\007` before each prompt.
     terminal.parser.registerOscHandler(7768, (data: string) => {
@@ -975,12 +1016,71 @@ class TerminalRegistryClass {
       mt.shellState.lastExitCode = isNaN(exitCode) ? -1 : exitCode;
       mt.shellState.cwd = cwd;
       mt.shellState.phase = 'ready';
+      prefetchDirCache(cwd);
       const listeners = this.shellStateListeners.get(mt.id);
       if (listeners) listeners.forEach(cb => cb());
       return true;
     });
 
+    // ═══ IME 修复（WebKit Bug #165004 + WKWebView compositionend 不触发） ═══
+    //
+    // WKWebView 有两个 IME 问题：
+    //   1. compositionend 事件顺序颠倒（Bug #165004）→ 残留字符被误发送
+    //   2. 删除最后组合字符时 compositionend 可能完全不触发 → composition 卡死
+    //
+    // 卡死检测原理（flag-based，不依赖事件顺序）：
+    //   正常 composition 中，每次 keydown(229) 周围必有 compositionupdate。
+    //   在 keydown(229) 时设 flag，compositionupdate 时清 flag。
+    //   下一次 keydown(229) 时若 flag 仍在 → 上一轮无 compositionupdate → 卡死。
+    let blockPostCompKeydown229 = false;
+    let compStartValueLen = 0;
+    let pendingCompEnd: { startPos: number } | null = null;
+    let kd229WithoutCompUpdate = false;
+
+    // 重置卡死的 composition 状态
+    const resetStuckComposition = () => {
+      const ch = (terminal as any)._core?._compositionHelper;
+      if (!ch?.isComposing) return;
+      ch._compositionView.classList.remove('active');
+      ch._compositionView.textContent = '';
+      ch._isComposing = false;
+      ch._isSendingComposition = false;
+      if (terminal.textarea) {
+        terminal.textarea.value = terminal.textarea.value.substring(0, compStartValueLen);
+      }
+    };
+
     terminal.attachCustomKeyEventHandler((event) => {
+      // WebKit Bug #165004 防护：compositionend 后的 keydown(229) 走旁路发送残留字符
+      if (event.type === 'keydown' && event.keyCode === 229 && blockPostCompKeydown229) {
+        return false;
+      }
+
+      // IME 卡死修复 A：浏览器已结束 composition（isComposing=false）但 xterm 仍认为在组合中
+      if (event.type === 'keydown' && !event.isComposing) {
+        const compositionHelper = (terminal as any)._core?._compositionHelper;
+        if (compositionHelper?.isComposing) {
+          if (terminal.textarea) terminal.textarea.value = '';
+          compositionHelper.compositionend();
+        }
+      }
+
+      // IME 卡死修复 B（flag-based）：上一轮 keydown(229) 没有伴随 compositionupdate → 卡死
+      if (event.type === 'keydown' && event.keyCode === 229) {
+        const ch = (terminal as any)._core?._compositionHelper;
+        if (ch?.isComposing) {
+          if (kd229WithoutCompUpdate) {
+            kd229WithoutCompUpdate = false;
+            resetStuckComposition();
+            return true;
+          }
+          kd229WithoutCompUpdate = true;
+        }
+      }
+
+      // 阻止单独按下修饰键时 xterm.js 自动滚到底部（影响 Ctrl/Cmd+Click 文件链接）
+      if (event.key === 'Meta' || event.key === 'Control') return false;
+
       const isMac = navigator.userAgent.includes('Mac');
       const mod = isMac ? event.metaKey : event.ctrlKey;
       if (!mod) return true;
@@ -990,23 +1090,86 @@ class TerminalRegistryClass {
         return false;
       }
       if (event.type === 'keydown' && event.key === 'v') {
-        // Prevent the native paste event from firing (would cause double-paste on Windows)
         event.preventDefault();
         clipboardReadText().then((text) => {
           if (text) terminal.paste(text);
         });
         return false;
       }
-      // Cmd+Backspace (macOS) / Ctrl+Backspace (Windows): clear current input line
       if (event.type === 'keydown' && event.key === 'Backspace') {
         if (mt.ws?.readyState === WebSocket.OPEN) {
-          // Send Ctrl+U (kill line) to shell
           mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode('\x15')));
         }
         return false;
       }
       return true;
     });
+
+    // compositionend 处理 + compositionupdate 卡死计时器取消
+    if (terminal.textarea) {
+      const textarea = terminal.textarea;
+
+      textarea.addEventListener('compositionstart', () => {
+        compStartValueLen = textarea.value.length;
+        blockPostCompKeydown229 = false;
+        pendingCompEnd = null;
+        kd229WithoutCompUpdate = false;
+      });
+
+      // compositionupdate 表明 composition 仍在正常进行 → 清除卡死 flag
+      textarea.addEventListener('compositionupdate', () => {
+        kd229WithoutCompUpdate = false;
+      });
+
+      // input 事件：处理 compositionend 后的提交/取消确认
+      textarea.addEventListener('input', (e: Event) => {
+        if (!pendingCompEnd) return;
+        const { inputType } = e as InputEvent;
+        if (!inputType) return;
+
+        const saved = pendingCompEnd;
+        pendingCompEnd = null;
+        blockPostCompKeydown229 = false;
+
+        if (inputType.startsWith('delete')) return;
+
+        const ch = (terminal as any)._core?._compositionHelper;
+        if (!ch || ch._isComposing) return;
+
+        const input = textarea.value.substring(saved.startPos);
+        if (input.length > 0) {
+          ch._coreService.triggerDataEvent(input, true);
+        }
+      });
+
+      textarea.addEventListener('compositionend', () => {
+        const ch = (terminal as any)._core?._compositionHelper;
+        if (!ch) return;
+        kd229WithoutCompUpdate = false;
+
+        ch._isSendingComposition = false;
+        blockPostCompKeydown229 = true;
+
+        const startPos = ch._compositionPosition.start + ch._dataAlreadySent.length;
+        pendingCompEnd = { startPos };
+
+        requestAnimationFrame(() => {
+          if (!pendingCompEnd) return;
+          const saved = pendingCompEnd;
+          pendingCompEnd = null;
+          blockPostCompKeydown229 = false;
+
+          if (ch._isComposing) return;
+
+          const curValue = textarea.value;
+          const input = curValue.substring(saved.startPos);
+
+          if (input.length > 0 && curValue.length > compStartValueLen) {
+            ch._coreService.triggerDataEvent(input, true);
+          }
+        });
+      });
+    }
 
     terminal.onData((data) => {
       mt._hasUserInput = true;
@@ -1081,10 +1244,18 @@ class TerminalRegistryClass {
     observer.observe(container);
     mt.observer = observer;
 
+    // Register file link provider for clickable paths in terminal output
+    registerFileLinkProvider(terminal, {
+      getCwd: () => mt.shellState.cwd,
+      isSSH: () => !!DrawerManager.getServerInfo(sessionId),
+      onSSHNavigate: (dirPath) => DrawerManager.navigateToPath(sessionId, dirPath),
+      getRemoteDirEntries: () => DrawerManager.getRemoteDirEntries(sessionId) || getSSHDirProbe(sessionId),
+    });
+
     this.terminals.set(sessionId, mt);
     // port=-1 means skip auto-connect (used by createRemote)
     if (port >= 0) {
-      this.connect(mt, port, token);
+      this.connect(mt);
     }
     return mt;
   }
@@ -1102,14 +1273,14 @@ class TerminalRegistryClass {
     mt.remoteToken = remoteToken;
     mt.isRemote = true;
     // Now connect with remote URL
-    this.connect(mt, 0, '');
+    this.connect(mt);
     return mt;
   }
 
-  private connect(mt: ManagedTerminal, port: number, token: string): void {
+  private connect(mt: ManagedTerminal): void {
     mt.onStatus('connecting');
-    const wsUrl = mt.remoteWsUrl || buildWsUrl(port, mt.id, mt.clientId);
-    const wsToken = mt.remoteToken || token;
+    const wsUrl = mt.remoteWsUrl || buildWsUrl(mt._port, mt.id, mt.clientId);
+    const wsToken = mt.remoteToken || mt._token;
     const socket = new WebSocket(wsUrl, buildWsProtocols(wsToken));
     socket.binaryType = 'arraybuffer';
     mt.ws = socket;
@@ -1126,6 +1297,26 @@ class TerminalRegistryClass {
 
       // 通知 DrawerManager WebSocket 已就绪
       DrawerManager.setWebSocket(mt.id, socket);
+
+      // SSH 会话：CWD 追踪 + 远程目录缓存
+      if (DrawerManager.getServerInfo(mt.id)) {
+        // 监听 MsgFileListResp 更新远程目录缓存
+        socket.addEventListener('message', (ev) => {
+          try {
+            const buf = ev.data as ArrayBuffer;
+            if (buf.byteLength < 2) return;
+            const msgType = new DataView(buf).getUint8(0);
+            if (msgType === MsgFileListResp) {
+              const payload = new Uint8Array(buf, 1);
+              const resp = JSON.parse(new TextDecoder().decode(payload));
+              if (resp.path && Array.isArray(resp.files)) {
+                setSSHDirProbe(mt.id, resp.path, resp.files);
+              }
+            }
+          } catch { /* ignore */ }
+        });
+
+      }
     };
 
     socket.onmessage = (event) => {
@@ -1251,6 +1442,7 @@ class TerminalRegistryClass {
         } else if (code === ErrNotMaster) {
           document.dispatchEvent(new CustomEvent('master-request-denied', { detail: { sessionId: mt.id } }));
         }
+        return;
       }
     };
 
@@ -1258,7 +1450,7 @@ class TerminalRegistryClass {
       if (mt.ws === socket) {
         mt.ws = null;
         if (!mt.ended) {
-          this.scheduleReconnect(mt, port, token);
+          this.scheduleReconnect(mt);
         }
       }
     };
@@ -1270,7 +1462,7 @@ class TerminalRegistryClass {
     };
   }
 
-  private scheduleReconnect(mt: ManagedTerminal, port: number, token: string): void {
+  private scheduleReconnect(mt: ManagedTerminal): void {
     if (mt.reconnectAttempt >= 10 || mt.ended) {
       mt.onStatus('disconnected');
       return;
@@ -1279,7 +1471,7 @@ class TerminalRegistryClass {
     const delay = Math.min(1000 * Math.pow(2, mt.reconnectAttempt), 16000);
     mt.reconnectAttempt += 1;
     mt.onStatus('reconnecting');
-    mt.reconnectTimer = setTimeout(() => this.connect(mt, port, token), delay);
+    mt.reconnectTimer = setTimeout(() => this.connect(mt), delay);
   }
 
   mountTo(sessionId: string, panel: HTMLElement): void {
@@ -1641,6 +1833,8 @@ class TerminalRegistryClass {
       ended: false,
       reconnectAttempt: 0,
       reconnectTimer: null,
+      _port: 0,
+      _token: '',
       resizeDebounce: null,
       settleTimers: [],
       lastSentCols: 0,
@@ -1684,8 +1878,54 @@ class TerminalRegistryClass {
       return true;
     });
 
+    // IME 共享状态存储在 mt 上，供 attachFromTransfer + openAndConnect 跨方法访问
+    (mt as any)._imeBlockKd229 = false;
+    (mt as any)._imeCompStartLen = 0;
+    (mt as any)._imePendingEnd = null;
+    (mt as any)._imeKd229NoUpdate = false;
+
+    const resetStuckComp_t = () => {
+      const ch = (terminal as any)._core?._compositionHelper;
+      if (!ch?.isComposing) return;
+      ch._compositionView.classList.remove('active');
+      ch._compositionView.textContent = '';
+      ch._isComposing = false;
+      ch._isSendingComposition = false;
+      if (terminal.textarea) {
+        terminal.textarea.value = terminal.textarea.value.substring(0, (mt as any)._imeCompStartLen);
+      }
+    };
+
     // Register event handlers — these work before open()
     terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type === 'keydown' && event.keyCode === 229 && (mt as any)._imeBlockKd229) {
+        return false;
+      }
+
+      // IME 卡死修复 A
+      if (event.type === 'keydown' && !event.isComposing) {
+        const compositionHelper = (terminal as any)._core?._compositionHelper;
+        if (compositionHelper?.isComposing) {
+          if (terminal.textarea) terminal.textarea.value = '';
+          compositionHelper.compositionend();
+        }
+      }
+
+      // IME 卡死修复 B（flag-based）：上一轮 keydown(229) 没有伴随 compositionupdate → 卡死
+      if (event.type === 'keydown' && event.keyCode === 229) {
+        const ch = (terminal as any)._core?._compositionHelper;
+        if (ch?.isComposing) {
+          if ((mt as any)._imeKd229NoUpdate) {
+            (mt as any)._imeKd229NoUpdate = false;
+            resetStuckComp_t();
+            return true;
+          }
+          (mt as any)._imeKd229NoUpdate = true;
+        }
+      }
+
+      if (event.key === 'Meta' || event.key === 'Control') return false;
+
       const isMac = navigator.userAgent.includes('Mac');
       const mod = isMac ? event.metaKey : event.ctrlKey;
       if (!mod) return true;
@@ -1695,7 +1935,6 @@ class TerminalRegistryClass {
         return false;
       }
       if (event.type === 'keydown' && event.key === 'v') {
-        // Prevent the native paste event from firing (would cause double-paste on Windows)
         event.preventDefault();
         clipboardReadText().then((text) => {
           if (text) terminal.paste(text);
@@ -1799,6 +2038,70 @@ class TerminalRegistryClass {
     patchOverlayScrollbar(mt.terminal, mt.container);
     // patchConPtyAlternateScreen removed — see note above
 
+    // IME 修复（同 create()，含卡死检测 + compositionend 接管）
+    if (mt.terminal.textarea) {
+      const textarea = mt.terminal.textarea;
+
+      textarea.addEventListener('compositionstart', () => {
+        (mt as any)._imeCompStartLen = textarea.value.length;
+        (mt as any)._imeBlockKd229 = false;
+        (mt as any)._imePendingEnd = null;
+        (mt as any)._imeKd229NoUpdate = false;
+      });
+
+      textarea.addEventListener('compositionupdate', () => {
+        (mt as any)._imeKd229NoUpdate = false;
+      });
+
+      textarea.addEventListener('input', (e: Event) => {
+        if (!(mt as any)._imePendingEnd) return;
+        const { inputType } = e as InputEvent;
+        if (!inputType) return;
+
+        const saved = (mt as any)._imePendingEnd;
+        (mt as any)._imePendingEnd = null;
+        (mt as any)._imeBlockKd229 = false;
+
+        if (inputType.startsWith('delete')) return;
+
+        const ch = (mt.terminal as any)._core?._compositionHelper;
+        if (!ch || ch._isComposing) return;
+
+        const input = textarea.value.substring(saved.startPos);
+        if (input.length > 0) {
+          ch._coreService.triggerDataEvent(input, true);
+        }
+      });
+
+      textarea.addEventListener('compositionend', () => {
+        const ch = (mt.terminal as any)._core?._compositionHelper;
+        if (!ch) return;
+        (mt as any)._imeKd229NoUpdate = false;
+
+        ch._isSendingComposition = false;
+        (mt as any)._imeBlockKd229 = true;
+
+        const startPos = ch._compositionPosition.start + ch._dataAlreadySent.length;
+        (mt as any)._imePendingEnd = { startPos };
+
+        requestAnimationFrame(() => {
+          if (!(mt as any)._imePendingEnd) return;
+          const saved = (mt as any)._imePendingEnd;
+          (mt as any)._imePendingEnd = null;
+          (mt as any)._imeBlockKd229 = false;
+
+          if (ch._isComposing) return;
+
+          const curValue = textarea.value;
+          const input = curValue.substring(saved.startPos);
+
+          if (input.length > 0 && curValue.length > (mt as any)._imeCompStartLen) {
+            ch._coreService.triggerDataEvent(input, true);
+          }
+        });
+      });
+    }
+
     // Load WebGL addon after open (needs rendering context from DOM)
     // Skip WebGL when transparency is active — canvas renderer handles alpha better
     const opacityVal = this.settings ? Math.max(20, Math.min(100, this.settings.opacity)) / 100 : 1;
@@ -1827,8 +2130,10 @@ class TerminalRegistryClass {
     mt.fitAddon.fit();
     mt.terminal.focus();
 
-    // Start WebSocket connection
-    this.connect(mt, port, token);
+    // Update port/token and start WebSocket connection
+    mt._port = port;
+    mt._token = token;
+    this.connect(mt);
 
     // Clear transfer grace period after connection settles.
     // During this window, MsgRoleChange events are suppressed to prevent
@@ -1836,6 +2141,39 @@ class TerminalRegistryClass {
     // being active when the new one connects.
     if (mt._transferGrace) {
       setTimeout(() => { mt._transferGrace = false; }, 3000);
+    }
+  }
+
+  /**
+   * Force reconnect all local (non-remote) sessions.
+   * Called after system wake from sleep/hibernate or after sidecar restart.
+   * If port/token are provided, updates stored values first (sidecar restarted on new port).
+   */
+  reconnectAll(port?: number, token?: string): void {
+    for (const mt of this.terminals.values()) {
+      if (mt.isRemote || mt.ended) continue;
+
+      // Update port/token if sidecar restarted on a new port
+      if (port !== undefined && port > 0) mt._port = port;
+      if (token !== undefined && token !== '') mt._token = token;
+
+      // Cancel any pending reconnect timer
+      if (mt.reconnectTimer) {
+        clearTimeout(mt.reconnectTimer);
+        mt.reconnectTimer = null;
+      }
+
+      // Reset reconnect counter
+      mt.reconnectAttempt = 0;
+
+      // Close existing WebSocket if still open/connecting
+      if (mt.ws) {
+        try { mt.ws.close(); } catch { /* ignore */ }
+        mt.ws = null;
+      }
+
+      // Reconnect
+      this.connect(mt);
     }
   }
 
@@ -1875,6 +2213,7 @@ class TerminalRegistryClass {
     this.pingTimestamps.delete(sessionId);
     this.lastPongTime.delete(sessionId);
     this.lastInputPingTime.delete(sessionId);
+    clearSSHDirProbe(sessionId);
   }
 }
 

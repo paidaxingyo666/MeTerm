@@ -145,7 +145,10 @@ function applyBackgroundImage(s: AppSettings): void {
       overlayEl.className = 'terminal-bg-overlay';
       terminalPanelEl.insertBefore(overlayEl, terminalPanelEl.firstChild);
     }
-    const url = convertFileSrc(s.backgroundImage);
+    // Normalize backslashes to forward slashes for Windows paths — convertFileSrc
+    // percent-encodes backslashes which some WebView2 builds fail to resolve.
+    const imgPath = s.backgroundImage.replace(/\\/g, '/');
+    const url = convertFileSrc(imgPath);
     bgEl.style.backgroundImage = `url("${url}")`;
     // Opacity slider controls the image visibility when a bg image is set
     bgEl.style.opacity = String(Math.max(20, Math.min(100, s.opacity)) / 100);
@@ -3586,6 +3589,8 @@ async function init(): Promise<void> {
       metermReady = true;
       StatusBar.setConnection('connected', 'Local');
       startPairPoller(port, authToken);
+      // Reconnect all existing local sessions with new port/token
+      TerminalRegistry.reconnectAll(port, authToken);
       console.log('[meterm] backend restarted successfully');
       return;
     } catch (restartErr) {
@@ -3595,6 +3600,25 @@ async function init(): Promise<void> {
     // Restart failed — quit the app gracefully.
     StatusBar.setError('Backend failed to restart');
     await invoke('request_app_quit');
+  });
+
+  // Detect system wake from sleep/hibernate.
+  // After hibernate, WebSocket connections may break (especially on Windows with ConPTY).
+  // Track the last time the page was visible so we can detect long sleep gaps.
+  let lastVisibleAt = Date.now();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      const elapsed = Date.now() - lastVisibleAt;
+      // If more than 30s have passed since last visible, system likely slept.
+      // Force reconnect all local sessions to recover broken WebSocket connections.
+      if (elapsed > 30_000 && metermReady) {
+        console.log(`[meterm] system wake detected (gap=${Math.round(elapsed / 1000)}s), reconnecting sessions`);
+        TerminalRegistry.reconnectAll(port, authToken);
+      }
+      lastVisibleAt = Date.now();
+    } else {
+      lastVisibleAt = Date.now();
+    }
   });
 
   // Mark this window as initialized AFTER close handler is registered.

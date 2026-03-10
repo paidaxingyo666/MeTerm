@@ -100,9 +100,10 @@ func NewSSHTerminal(cfg SSHConfig, cols, rows uint16) (*SSHTerminal, error) {
 		return nil, fmt.Errorf("ssh session failed: %w", err)
 	}
 
-	// Request PTY
+	// Request PTY — start with ECHO off so we can inject the shell hook invisibly.
+	// The hook command ends with "stty echo" to re-enable echo before the first prompt.
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,
+		ssh.ECHO:          0,
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
@@ -152,6 +153,17 @@ func NewSSHTerminal(cfg SSHConfig, cols, rows uint16) (*SSHTerminal, error) {
 		client.Close()
 		return nil, fmt.Errorf("ssh shell start failed: %w", err)
 	}
+
+	// Inject OSC 7 CWD-tracking hook invisibly (ECHO is off).
+	// The hook makes bash/zsh emit OSC 7 on every prompt, enabling CWD tracking.
+	// Leading space prevents it from being saved in shell history (HISTCONTROL=ignorespace).
+	// "stty echo" at the end re-enables echo before the first interactive prompt.
+	hook := " if [ -n \"$ZSH_VERSION\" ]; then" +
+		" precmd(){ printf '\\033]7;file://%s%s\\007' \"$(hostname)\" \"$PWD\"; };" +
+		" elif [ -n \"$BASH_VERSION\" ]; then" +
+		" PROMPT_COMMAND='printf \"\\033]7;file://%s%s\\007\" \"$(hostname)\" \"$PWD\"'${PROMPT_COMMAND:+\";$PROMPT_COMMAND\"};" +
+		" fi; printf '\\033[A\\033[2K\\r'; stty echo\n"
+	_, _ = stdin.Write([]byte(hook))
 
 	t := &SSHTerminal{
 		client:  client,

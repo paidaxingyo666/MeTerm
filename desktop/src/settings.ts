@@ -429,14 +429,17 @@ export function createSettingsPanel(options: SettingsPanelOptions): HTMLDivEleme
     <label><input type="checkbox" id="remember-window-size" ${current.rememberWindowSize ? 'checked' : ''}> ${t('rememberWindowSize')}</label>
     <label><input type="checkbox" id="remember-drawer-layout" ${current.rememberDrawerLayout ? 'checked' : ''}> ${t('rememberDrawerLayout')}</label>
     <label><input type="checkbox" id="terminal-notifications-toggle" ${current.enableTerminalNotifications ? 'checked' : ''}> ${t('enableTerminalNotifications')}</label>
+    <label><input type="checkbox" id="file-link-confirm-toggle" ${!current.fileLinkSkipConfirm ? 'checked' : ''}> ${t('fileLinkSkipConfirmSetting')}</label>
   `;
   rememberSection.appendChild(rememberGroup);
   const windowSizeCheckbox = rememberGroup.querySelector('#remember-window-size') as HTMLInputElement;
   const drawerLayoutCheckbox = rememberGroup.querySelector('#remember-drawer-layout') as HTMLInputElement;
   const termNotifToggle = rememberGroup.querySelector('#terminal-notifications-toggle') as HTMLInputElement;
+  const fileLinkConfirmToggle = rememberGroup.querySelector('#file-link-confirm-toggle') as HTMLInputElement;
   windowSizeCheckbox.onchange = () => { update({ rememberWindowSize: windowSizeCheckbox.checked }); };
   drawerLayoutCheckbox.onchange = () => { update({ rememberDrawerLayout: drawerLayoutCheckbox.checked }); };
   termNotifToggle.onchange = () => { update({ enableTerminalNotifications: termNotifToggle.checked }); };
+  fileLinkConfirmToggle.onchange = () => { update({ fileLinkSkipConfirm: !fileLinkConfirmToggle.checked }); };
   tabGeneral.appendChild(rememberSection);
 
   // SSH Connections import/export

@@ -1392,7 +1392,7 @@ html[data-theme="light"] .win-close-btn:hover {
 
 .terminal-container {
   position: absolute;
-  inset: 0 0 5px 0;
+  inset: 0;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -1454,8 +1454,12 @@ html[data-theme="light"] .win-close-btn:hover {
 .terminal-container .xterm {
   height: 100%;
   width: 100%;
-  padding: 0 15px 0;
+  padding: 0 4px;
   box-sizing: border-box;
+}
+
+.terminal-container .xterm-screen {
+  min-height: 100% !important;
 }
 
 .terminal-container .xterm-viewport {
@@ -5254,12 +5258,6 @@ body.drawer-splitting {
   transform: scale(1.05);
 }
 
-/* AI bar hidden — terminal fills to bottom */
-#terminal-panel.ai-bar-hidden .terminal-container,
-#terminal-panel.ai-bar-hidden .split-root {
-  inset: 0;
-}
-
 /* ─── AI Model Selector ─── */
 .ai-bar-model-select {
   display: flex;
@@ -8225,4 +8223,130 @@ body.split-resizing .split-resize-handle.split-resize-vertical ~ * {
   color: var(--text-dim);
   border-top: 1px solid var(--border-tray-tip-footer);
   background: rgba(var(--bg-tray-tip-footer), 0.6);
+}
+
+/* ── Navigate Confirm Dialog ──────────────────────── */
+.navigate-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: rgba(0, 0, 0, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.navigate-confirm-dialog {
+  background: rgba(var(--bg-primary, 30, 30, 30), 0.65);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--border-primary, rgba(128, 128, 128, 0.3));
+  border-radius: 10px;
+  padding: 20px 24px;
+  min-width: 320px;
+  max-width: 420px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+.navigate-confirm-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #cdd6f4);
+  margin-bottom: 10px;
+}
+.navigate-confirm-msg {
+  font-size: 12.5px;
+  color: var(--text-secondary, #a6adc8);
+  line-height: 1.5;
+  margin-bottom: 16px;
+  word-break: break-all;
+}
+.navigate-confirm-msg code {
+  background: rgba(128, 128, 128, 0.15);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.navigate-confirm-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: var(--text-secondary, #a6adc8);
+  cursor: pointer;
+  user-select: none;
+}
+.navigate-confirm-checkbox input {
+  margin: 0;
+  cursor: pointer;
+}
+.navigate-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.navigate-confirm-cancel,
+.navigate-confirm-ok {
+  padding: 5px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary, rgba(128, 128, 128, 0.3));
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.navigate-confirm-cancel {
+  background: transparent;
+  color: var(--text-secondary, #a6adc8);
+}
+.navigate-confirm-cancel:hover {
+  background: rgba(128, 128, 128, 0.1);
+}
+.navigate-confirm-ok {
+  background: var(--accent-primary, #89b4fa);
+  color: #1e1e2e;
+  border-color: transparent;
+  font-weight: 500;
+}
+.navigate-confirm-ok:hover {
+  opacity: 0.85;
+}
+
+/* ── File Link Tooltip ────────────────────────────── */
+.file-link-tooltip {
+  position: fixed;
+  z-index: 99999;
+  display: none;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-secondary, #a6adc8);
+  background: var(--bg-primary, #1e1e2e);
+  border: 1px solid var(--border-primary, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── File Link Context Menu ───────────────────────── */
+.file-link-context-menu {
+  position: fixed;
+  z-index: 99999;
+  background: var(--bg-primary, #1e1e2e);
+  border: 1px solid var(--border-primary, rgba(128, 128, 128, 0.3));
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 3px 0;
+  min-width: 160px;
+}
+.file-link-context-menu-item {
+  padding: 6px 14px;
+  font-size: 12.5px;
+  color: var(--text-primary, #cdd6f4);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.file-link-context-menu-item:hover {
+  background: rgba(128, 128, 128, 0.15);
 }

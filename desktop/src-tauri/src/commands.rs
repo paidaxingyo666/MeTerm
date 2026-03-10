@@ -1677,3 +1677,106 @@ pub fn restart_app_via_open(app: AppHandle) {
     // Fallback: use Tauri's default restart
     app.restart();
 }
+
+/// Expand `~` prefix and on Windows convert WSL/MSYS paths to native paths.
+fn normalize_path(path: &str) -> String {
+    let mut s = path.to_string();
+
+    // Expand ~ to home directory
+    if s.starts_with("~/") || s == "~" {
+        if let Some(home) = dirs::home_dir() {
+            s = if s == "~" {
+                home.display().to_string()
+            } else {
+                format!("{}{}", home.display(), &s[1..])
+            };
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Convert MSYS/Git Bash paths: /c/Users/... → C:\Users\...
+        if let Some(rest) = s.strip_prefix('/') {
+            if rest.len() >= 2 && rest.as_bytes()[0].is_ascii_alphabetic() && rest.as_bytes()[1] == b'/' {
+                let drive = rest.as_bytes()[0].to_ascii_uppercase() as char;
+                s = format!("{}:{}", drive, rest[1..].replace('/', "\\"));
+                return s;
+            }
+        }
+
+        // Convert WSL Linux paths: /home/... → \\wsl.localhost\<distro>\home\...
+        if s.starts_with('/') {
+            if let Ok(out) = std::process::Command::new("wsl.exe")
+                .args(["-e", "wslpath", "-w", &s])
+                .output()
+            {
+                if out.status.success() {
+                    let win_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !win_path.is_empty() {
+                        return win_path;
+                    }
+                }
+            }
+        }
+    }
+
+    s
+}
+
+/// Check whether a local path is a file, directory, or does not exist.
+/// Returns "file", "dir", or "none".
+#[tauri::command]
+pub fn stat_path(path: String) -> String {
+    let resolved = normalize_path(&path);
+    let p = std::path::Path::new(&resolved);
+    if p.is_dir() {
+        "dir".to_string()
+    } else if p.is_file() {
+        "file".to_string()
+    } else {
+        "none".to_string()
+    }
+}
+
+/// Open a local file or folder using the OS default handler.
+#[tauri::command]
+pub fn open_path(path: String) -> Result<(), String> {
+    let resolved = normalize_path(&path);
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&resolved)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &resolved])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&resolved)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// List file/directory names in a directory. Returns Vec<(name, is_dir)>.
+#[tauri::command]
+pub fn list_dir_names(path: String) -> Result<Vec<(String, bool)>, String> {
+    let resolved = normalize_path(&path);
+    let entries = std::fs::read_dir(&resolved).map_err(|e| e.to_string())?;
+    let mut result = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        result.push((name, is_dir));
+    }
+    Ok(result)
+}

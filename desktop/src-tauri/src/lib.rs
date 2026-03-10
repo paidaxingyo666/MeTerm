@@ -697,6 +697,9 @@ pub fn run() {
             commands::fetch_ai_stream,
             commands::set_update_badge,
             commands::restart_app_via_open,
+            commands::stat_path,
+            commands::open_path,
+            commands::list_dir_names,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application")

@@ -386,6 +386,17 @@ export interface Translations {
   checkUpdatesChecking: string;
   updateModalClose: string;
   hideUpdateIcon: string;
+  openFileManager: string;
+  navigateConfirmMsg: string;
+  navigateCancel: string;
+  navigateConfirm: string;
+  fileLinkHint: string;
+  fileLinkOpenLocal: string;
+  fileLinkOpenInDrawer: string;
+  fileLinkDontAskAgain: string;
+  fileLinkLocalConfirmMsg: string;
+  fileLinkConfirmOpen: string;
+  fileLinkSkipConfirmSetting: string;
 }
 
 const translations: Record<Language, Translations> = {
@@ -775,6 +786,17 @@ const translations: Record<Language, Translations> = {
     checkUpdatesChecking: 'Checking for updates…',
     updateModalClose: 'Close',
     hideUpdateIcon: 'Hide title bar update icon',
+    openFileManager: 'Open File Manager',
+    navigateConfirmMsg: 'Open file manager and navigate to {path}?',
+    navigateCancel: 'Cancel',
+    navigateConfirm: 'Open',
+    fileLinkHint: '{mod}+Click to open {name}',
+    fileLinkOpenLocal: 'Open with Default App',
+    fileLinkOpenInDrawer: 'Open in File Manager',
+    fileLinkDontAskAgain: "Don't ask again",
+    fileLinkLocalConfirmMsg: 'Open <code>{path}</code> with system default application?',
+    fileLinkConfirmOpen: 'Open',
+    fileLinkSkipConfirmSetting: 'Show file link open confirmation',
   },
   zh: {
     appName: 'MeTerm',
@@ -1162,6 +1184,17 @@ const translations: Record<Language, Translations> = {
     checkUpdatesChecking: '正在检查更新…',
     updateModalClose: '关闭',
     hideUpdateIcon: '关闭标题栏更新按钮',
+    openFileManager: '打开文件管理器',
+    navigateConfirmMsg: '是否打开文件管理器并跳转到 {path}？',
+    navigateCancel: '取消',
+    navigateConfirm: '打开',
+    fileLinkHint: '{mod}+点击打开 {name}',
+    fileLinkOpenLocal: '用本机关联程序打开',
+    fileLinkOpenInDrawer: '在文件管理器中打开',
+    fileLinkDontAskAgain: '不再提示',
+    fileLinkLocalConfirmMsg: '是否使用系统默认程序打开 <code>{path}</code>？',
+    fileLinkConfirmOpen: '打开',
+    fileLinkSkipConfirmSetting: '显示文件链接打开确认弹窗',
   },
 };
 
