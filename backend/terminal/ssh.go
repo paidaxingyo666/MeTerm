@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -29,6 +30,9 @@ type SSHConfig struct {
 	// If set, the host key is accepted when it matches, and appended to known_hosts.
 	// If empty and the host is unknown, HostKeyUnknownError is returned.
 	TrustedFingerprint string
+	// SkipShellHook disables the OSC 7 CWD-tracking hook injection.
+	// Used for JumpServer Koko sessions where shell integration is not needed.
+	SkipShellHook bool
 }
 
 // HostKeyUnknownError is returned when a host is not in known_hosts and no
@@ -71,6 +75,7 @@ var _ Terminal = (*SSHTerminal)(nil)
 
 // NewSSHTerminal establishes an SSH connection and starts a shell session.
 func NewSSHTerminal(cfg SSHConfig, cols, rows uint16) (*SSHTerminal, error) {
+	log.Printf("[ssh] connecting to %s@%s:%d method=%s passwordLen=%d", cfg.Username, cfg.Host, cfg.Port, cfg.AuthMethod, len(cfg.Password))
 	authMethods, err := buildAuthMethods(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("ssh auth setup failed: %w", err)
@@ -100,10 +105,15 @@ func NewSSHTerminal(cfg SSHConfig, cols, rows uint16) (*SSHTerminal, error) {
 		return nil, fmt.Errorf("ssh session failed: %w", err)
 	}
 
-	// Request PTY — start with ECHO off so we can inject the shell hook invisibly.
-	// The hook command ends with "stty echo" to re-enable echo before the first prompt.
+	// Request PTY. For normal sessions, start with ECHO off so we can inject
+	// the shell hook invisibly (re-enabled by "stty echo" at the end of the hook).
+	// For JumpServer (SkipShellHook), keep ECHO on since no hook is injected.
+	echoMode := uint32(0)
+	if cfg.SkipShellHook {
+		echoMode = 1
+	}
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          0,
+		ssh.ECHO:          echoMode,
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
@@ -154,16 +164,21 @@ func NewSSHTerminal(cfg SSHConfig, cols, rows uint16) (*SSHTerminal, error) {
 		return nil, fmt.Errorf("ssh shell start failed: %w", err)
 	}
 
-	// Inject OSC 7 CWD-tracking hook invisibly (ECHO is off).
-	// The hook makes bash/zsh emit OSC 7 on every prompt, enabling CWD tracking.
-	// Leading space prevents it from being saved in shell history (HISTCONTROL=ignorespace).
-	// "stty echo" at the end re-enables echo before the first interactive prompt.
-	hook := " if [ -n \"$ZSH_VERSION\" ]; then" +
-		" precmd(){ printf '\\033]7;file://%s%s\\007' \"$(hostname)\" \"$PWD\"; };" +
-		" elif [ -n \"$BASH_VERSION\" ]; then" +
-		" PROMPT_COMMAND='printf \"\\033]7;file://%s%s\\007\" \"$(hostname)\" \"$PWD\"'${PROMPT_COMMAND:+\";$PROMPT_COMMAND\"};" +
-		" fi; printf '\\033[A\\033[2K\\r'; stty echo\n"
-	_, _ = stdin.Write([]byte(hook))
+	if cfg.SkipShellHook {
+		// JumpServer Koko: skip all shell hook injection.
+		// Koko manages its own terminal and doesn't need CWD tracking.
+	} else {
+		// Inject OSC 7 CWD-tracking hook invisibly (ECHO is off).
+		// The hook makes bash/zsh emit OSC 7 on every prompt, enabling CWD tracking.
+		// Leading space prevents it from being saved in shell history (HISTCONTROL=ignorespace).
+		// "stty echo" at the end re-enables echo before the first interactive prompt.
+		hook := " if [ -n \"$ZSH_VERSION\" ]; then" +
+			" precmd(){ printf '\\033]7;file://%s%s\\007' \"$(hostname)\" \"$PWD\"; };" +
+			" elif [ -n \"$BASH_VERSION\" ]; then" +
+			" PROMPT_COMMAND='printf \"\\033]7;file://%s%s\\007\" \"$(hostname)\" \"$PWD\"'${PROMPT_COMMAND:+\";$PROMPT_COMMAND\"};" +
+			" fi; printf '\\033[A\\033[2K\\r'; stty echo\n"
+		_, _ = stdin.Write([]byte(hook))
+	}
 
 	t := &SSHTerminal{
 		client:  client,
@@ -234,11 +249,44 @@ func buildAuthMethods(cfg SSHConfig) ([]ssh.AuthMethod, error) {
 
 	case "password":
 		methods = append(methods, ssh.Password(cfg.Password))
+		// Also add keyboard-interactive as fallback (some servers like JumpServer Koko
+		// only support keyboard-interactive, not plain password auth)
+		if cfg.Password != "" {
+			pw := cfg.Password
+			methods = append(methods, ssh.KeyboardInteractive(
+				func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+					log.Printf("[ssh] keyboard-interactive: user=%q instruction=%q questions=%v echos=%v", user, instruction, questions, echos)
+					// If no questions, server might just want an empty response
+					if len(questions) == 0 {
+						return nil, nil
+					}
+					answers := make([]string, len(questions))
+					for i := range questions {
+						answers[i] = pw
+					}
+					return answers, nil
+				},
+			))
+		}
 
 	default:
-		// Try password first, then key
+		// Try password first, then keyboard-interactive, then key
 		if cfg.Password != "" {
-			methods = append(methods, ssh.Password(cfg.Password))
+			pw := cfg.Password
+			methods = append(methods, ssh.Password(pw))
+			methods = append(methods, ssh.KeyboardInteractive(
+				func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+					log.Printf("[ssh] keyboard-interactive: user=%q instruction=%q questions=%v echos=%v", user, instruction, questions, echos)
+					if len(questions) == 0 {
+						return nil, nil
+					}
+					answers := make([]string, len(questions))
+					for i := range questions {
+						answers[i] = pw
+					}
+					return answers, nil
+				},
+			))
 		}
 		home, _ := os.UserHomeDir()
 		for _, keyFile := range []string{

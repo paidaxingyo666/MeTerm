@@ -18,6 +18,24 @@ import (
 	"github.com/paidaxingyo666/meterm/internal/conpty"
 )
 
+// psOSC7Hook is a PowerShell startup command that wraps the prompt function
+// to emit OSC 7 (file:///path) before each prompt, enabling CWD tracking.
+// Uses [char]N and .Replace() to avoid double-quotes and C-runtime quoting issues.
+const psOSC7Hook = `& { $global:__mtOrig = $function:prompt; function global:prompt { [Console]::Write([string][char]27 + ']7;file:///' + (Get-Location).ProviderPath.Replace('\','/') + [char]7); if($global:__mtOrig){ & $global:__mtOrig }else{ (Get-Location).Path+'>' } } }`
+
+// cmdOSC7Prompt is a cmd.exe PROMPT string with an OSC 7 CWD prefix.
+// $e = ESC, $e\ = ST (String Terminator), $p = current path, $g = '>'.
+const cmdOSC7Prompt = `prompt $e]7;file:///$p$e\$p$g`
+
+// wslOSC7Hook is written to ConPTY stdin for WSL sessions.
+// Installs an OSC 7 CWD hook in bash/zsh (same approach as SSH sessions).
+// Leading space prevents history entry; cleanup sequence erases the echo.
+const wslOSC7Hook = " if [ -n \"$ZSH_VERSION\" ]; then" +
+	" precmd(){ printf '\\033]7;file://%s%s\\007' \"$(hostname)\" \"$PWD\"; };" +
+	" elif [ -n \"$BASH_VERSION\" ]; then" +
+	" PROMPT_COMMAND='printf \"\\033]7;file://%s%s\\007\" \"$(hostname)\" \"$PWD\"'${PROMPT_COMMAND:+\";$PROMPT_COMMAND\"};" +
+	" fi; printf '\\033[A\\033[2K\\r'\n"
+
 // PTYEngine manages a ConPTY-backed shell subprocess on Windows.
 type PTYEngine struct {
 	cpty     *conpty.ConPty
@@ -48,6 +66,7 @@ func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) 
 	var shellArgs []string
 	var err error
 	var commandLine string
+	var injectWSLHook bool
 	if shell != "" {
 		// Shell may be a simple exe ("powershell.exe") or a complex command
 		// line from Windows Terminal fragments ("cmd.exe /k \"...\\VsDevCmd.bat\"").
@@ -63,9 +82,12 @@ func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) 
 			base := strings.ToLower(filepath.Base(shellPath))
 			switch {
 			case base == "pwsh.exe" || base == "powershell.exe":
-				shellArgs = append(extraArgs, "-NoLogo", "-NoExit")
+				shellArgs = append(extraArgs, "-NoLogo", "-NoExit", "-Command", psOSC7Hook)
 			case base == "cmd.exe":
-				shellArgs = append(extraArgs, "/Q")
+				shellArgs = append(extraArgs, "/Q", "/k", cmdOSC7Prompt)
+			case base == "wsl.exe" || base == "wsl":
+				shellArgs = extraArgs
+				injectWSLHook = true
 			default:
 				shellArgs = extraArgs
 			}
@@ -105,6 +127,13 @@ func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) 
 		done:     make(chan struct{}),
 	}
 
+	// WSL runs a Linux shell (bash/zsh) — inject OSC 7 CWD hook via stdin.
+	// Data is buffered in ConPTY pipe and consumed after the first prompt.
+	// The cleanup sequence (\033[A\033[2K\r) erases the command echo.
+	if injectWSLHook {
+		cpty.Write([]byte(wslOSC7Hook)) //nolint:errcheck
+	}
+
 	go func() {
 		defer close(engine.done)
 		exitCode, waitErr := cpty.Wait(context.Background())
@@ -141,9 +170,9 @@ func resolveWindowsShell() (string, []string, error) {
 		args []string
 	}
 	for _, c := range []candidate{
-		{exe: "pwsh.exe", args: []string{"-NoLogo", "-NoExit"}},
-		{exe: "powershell.exe", args: []string{"-NoLogo", "-NoExit"}},
-		{exe: "cmd.exe", args: []string{"/Q"}},
+		{exe: "pwsh.exe", args: []string{"-NoLogo", "-NoExit", "-Command", psOSC7Hook}},
+		{exe: "powershell.exe", args: []string{"-NoLogo", "-NoExit", "-Command", psOSC7Hook}},
+		{exe: "cmd.exe", args: []string{"/Q", "/k", cmdOSC7Prompt}},
 	} {
 		if path, err := exec.LookPath(c.exe); err == nil {
 			return path, c.args, nil

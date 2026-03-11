@@ -1,0 +1,282 @@
+html,
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+}
+
+:root {
+  --app-window-opacity: 1;
+  --ai-bar-opacity: 0.8;
+}
+
+/* ============================================================================
+   Dark Theme
+   ============================================================================ */
+[data-theme="dark"] {
+  --bg-primary: 30, 30, 30;
+  --bg-toolbar: 33, 33, 35;
+  --bg-button: 50, 50, 52;
+  --bg-button-hover: 64, 64, 66;
+  --bg-status: 43, 43, 43;
+  --bg-card: 37, 37, 38;
+  --bg-card-hover: 42, 42, 43;
+  --bg-input: 30, 30, 30;
+  --bg-settings: 45, 45, 45;
+  --bg-context-menu: 36, 36, 38;
+  --bg-tray-tip: 35, 35, 37;
+  --bg-tray-tip-footer: 24, 24, 26;
+  --bg-tab: 45, 45, 45;
+  --bg-home-btn-hover: 61, 61, 61;
+
+  --text-primary: #d0d0d0;
+  --text-heading: #fff;
+  --text-secondary: #a8a8a8;
+  --text-muted: #888;
+  --text-dim: #666;
+  --text-faint: #555;
+  --text-button: #ddd;
+  --text-card-title: #ddd;
+  --text-disabled: #777;
+
+  --border-primary: #444;
+  --border-subtle: #333;
+  --border-toolbar: #2f2f2f;
+  --border-context-menu: #4a4a4a;
+  --border-tray-tip-footer: #454545;
+  --border-home-btn-hover: #555;
+
+  --accent: #6aa4ff;
+  --accent-bg: rgba(106, 164, 255, 0.18);
+  --accent-tray-btn-bg: rgba(64, 104, 169, 0.24);
+  --accent-tray-btn-bg-hover: rgba(64, 104, 169, 0.34);
+  --accent-tray-btn-border: #5b6e91;
+  --accent-tray-btn-text: #e7efff;
+
+  --status-connected-bg: #1a4d1a;
+  --status-connected-text: #4ade80;
+  --status-disconnected-bg: #4d1a1a;
+  --status-disconnected-text: #f87171;
+  --status-default-bg: #333;
+  --status-default-text: #888;
+
+  --error-text: #ff7b7b;
+  --close-btn-text: #999;
+  --empty-icon: #7a7a7a;
+  --kbd-bg: #333;
+  --preview-placeholder: #666;
+
+  --shadow-panel: rgba(0, 0, 0, 0.5);
+  --shadow-context-menu: rgba(0, 0, 0, 0.35);
+  --shadow-tray-tip: rgba(0, 0, 0, 0.4);
+
+  --slider-thumb: #6aa4ff;
+  --tray-tip-body: #c9c9c9;
+  --tray-tip-check: #b9b9b9;
+}
+
+/* ============================================================================
+   Darker Theme (Midnight)
+   ============================================================================ */
+[data-theme="darker"] {
+  --bg-primary: 0, 0, 0;
+  --bg-toolbar: 10, 10, 12;
+  --bg-button: 28, 28, 30;
+  --bg-button-hover: 40, 40, 42;
+  --bg-status: 16, 16, 16;
+  --bg-card: 14, 14, 16;
+  --bg-card-hover: 22, 22, 24;
+  --bg-input: 8, 8, 8;
+  --bg-settings: 18, 18, 20;
+  --bg-context-menu: 14, 14, 16;
+  --bg-tray-tip: 12, 12, 14;
+  --bg-tray-tip-footer: 6, 6, 8;
+  --bg-tab: 20, 20, 22;
+  --bg-home-btn-hover: 32, 32, 34;
+
+  --text-primary: #c8c8c8;
+  --text-heading: #f0f0f0;
+  --text-secondary: #999;
+  --text-muted: #777;
+  --text-dim: #555;
+  --text-faint: #444;
+  --text-button: #ccc;
+  --text-card-title: #ccc;
+  --text-disabled: #666;
+
+  --border-primary: #2a2a2a;
+  --border-subtle: #1a1a1a;
+  --border-toolbar: #151515;
+  --border-context-menu: #333;
+  --border-tray-tip-footer: #2a2a2a;
+  --border-home-btn-hover: #3a3a3a;
+
+  --accent: #57c7ff;
+  --accent-bg: rgba(87, 199, 255, 0.15);
+  --accent-tray-btn-bg: rgba(50, 90, 140, 0.24);
+  --accent-tray-btn-bg-hover: rgba(50, 90, 140, 0.34);
+  --accent-tray-btn-border: #4a5e7a;
+  --accent-tray-btn-text: #d8eaff;
+
+  --status-connected-bg: #0a300a;
+  --status-connected-text: #4ade80;
+  --status-disconnected-bg: #300a0a;
+  --status-disconnected-text: #f87171;
+  --status-default-bg: #1a1a1a;
+  --status-default-text: #777;
+
+  --error-text: #ff6b6b;
+  --close-btn-text: #888;
+  --empty-icon: #555;
+  --kbd-bg: #1a1a1a;
+  --preview-placeholder: #555;
+
+  --shadow-panel: rgba(0, 0, 0, 0.7);
+  --shadow-context-menu: rgba(0, 0, 0, 0.5);
+  --shadow-tray-tip: rgba(0, 0, 0, 0.6);
+
+  --slider-thumb: #57c7ff;
+  --tray-tip-body: #b0b0b0;
+  --tray-tip-check: #a0a0a0;
+}
+
+/* ============================================================================
+   Navy Theme (Deep Blue)
+   ============================================================================ */
+[data-theme="navy"] {
+  --bg-primary: 1, 3, 9;
+  --bg-toolbar: 4, 8, 20;
+  --bg-button: 12, 18, 38;
+  --bg-button-hover: 20, 28, 52;
+  --bg-status: 6, 10, 24;
+  --bg-card: 5, 9, 22;
+  --bg-card-hover: 10, 16, 34;
+  --bg-input: 2, 4, 12;
+  --bg-settings: 8, 12, 28;
+  --bg-context-menu: 5, 9, 22;
+  --bg-tray-tip: 4, 8, 20;
+  --bg-tray-tip-footer: 2, 4, 12;
+  --bg-tab: 10, 16, 34;
+  --bg-home-btn-hover: 16, 24, 46;
+
+  --text-primary: #b0bcd0;
+  --text-heading: #e4ecf8;
+  --text-secondary: #8094b0;
+  --text-muted: #5a7090;
+  --text-dim: #3d5575;
+  --text-faint: #2c4060;
+  --text-button: #b8c8e0;
+  --text-card-title: #c0d0e8;
+  --text-disabled: #4a6080;
+
+  --border-primary: #162040;
+  --border-subtle: #0e1630;
+  --border-toolbar: #0a1228;
+  --border-context-menu: #1e2e50;
+  --border-tray-tip-footer: #182848;
+  --border-home-btn-hover: #243658;
+
+  --accent: #5b9cf5;
+  --accent-bg: rgba(91, 156, 245, 0.16);
+  --accent-tray-btn-bg: rgba(50, 100, 180, 0.24);
+  --accent-tray-btn-bg-hover: rgba(50, 100, 180, 0.36);
+  --accent-tray-btn-border: #3a5a90;
+  --accent-tray-btn-text: #d0e0ff;
+
+  --status-connected-bg: #082808;
+  --status-connected-text: #4ade80;
+  --status-disconnected-bg: #280808;
+  --status-disconnected-text: #f87171;
+  --status-default-bg: #0a1428;
+  --status-default-text: #5a7090;
+
+  --error-text: #ff6b6b;
+  --close-btn-text: #5a7090;
+  --empty-icon: #3d5575;
+  --kbd-bg: #0e1630;
+  --preview-placeholder: #3d5575;
+
+  --shadow-panel: rgba(0, 0, 0, 0.7);
+  --shadow-context-menu: rgba(0, 0, 0, 0.5);
+  --shadow-tray-tip: rgba(0, 0, 0, 0.6);
+
+  --slider-thumb: #5b9cf5;
+  --tray-tip-body: #8094b0;
+  --tray-tip-check: #7088a8;
+}
+
+/* ============================================================================
+   Light Theme
+   ============================================================================ */
+[data-theme="light"] {
+  --bg-primary: 248, 248, 248;
+  --bg-toolbar: 238, 238, 240;
+  --bg-button: 225, 225, 228;
+  --bg-button-hover: 212, 212, 216;
+  --bg-status: 232, 232, 234;
+  --bg-card: 242, 242, 243;
+  --bg-card-hover: 235, 235, 237;
+  --bg-input: 248, 248, 248;
+  --bg-settings: 245, 245, 245;
+  --bg-context-menu: 248, 248, 250;
+  --bg-tray-tip: 250, 250, 252;
+  --bg-tray-tip-footer: 238, 238, 240;
+  --bg-tab: 235, 235, 237;
+  --bg-home-btn-hover: 212, 212, 216;
+
+  --text-primary: #333;
+  --text-heading: #111;
+  --text-secondary: #666;
+  --text-muted: #999;
+  --text-dim: #aaa;
+  --text-faint: #bbb;
+  --text-button: #333;
+  --text-card-title: #333;
+  --text-disabled: #aaa;
+
+  --border-primary: #ccc;
+  --border-subtle: #ddd;
+  --border-toolbar: #d0d0d0;
+  --border-context-menu: #ccc;
+  --border-tray-tip-footer: #d0d0d0;
+  --border-home-btn-hover: #bbb;
+
+  --accent: #0066cc;
+  --accent-bg: rgba(0, 102, 204, 0.12);
+  --accent-tray-btn-bg: rgba(0, 102, 204, 0.12);
+  --accent-tray-btn-bg-hover: rgba(0, 102, 204, 0.2);
+  --accent-tray-btn-border: #88aed0;
+  --accent-tray-btn-text: #003366;
+
+  --status-connected-bg: #d4edda;
+  --status-connected-text: #155724;
+  --status-disconnected-bg: #f8d7da;
+  --status-disconnected-text: #721c24;
+  --status-default-bg: #e2e3e5;
+  --status-default-text: #666;
+
+  --error-text: #dc3545;
+  --close-btn-text: #999;
+  --empty-icon: #aaa;
+  --kbd-bg: #e2e3e5;
+  --preview-placeholder: #aaa;
+
+  --shadow-panel: rgba(0, 0, 0, 0.15);
+  --shadow-context-menu: rgba(0, 0, 0, 0.12);
+  --shadow-tray-tip: rgba(0, 0, 0, 0.12);
+
+  --slider-thumb: #0066cc;
+  --tray-tip-body: #444;
+  --tray-tip-check: #555;
+}
+
+/* On Windows, applyWindowOpacity() removes the anti-flash inline background-color
+   from <html>. We need a CSS fallback so the theme background is always visible
+   instead of the white WebView2 default.  Use rgba with --app-window-opacity so
+   the user's opacity setting is honoured. */
+html.platform-windows {
+  background-color: rgba(var(--bg-primary, 30, 30, 30), var(--app-window-opacity, 1));
+}

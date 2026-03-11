@@ -2,6 +2,9 @@ import { invoke } from '@tauri-apps/api/core';
 import QRCode from 'qrcode';
 import { t } from './i18n';
 import { escapeHtml } from './status-bar';
+import { TerminalRegistry } from './terminal';
+import { notifyUser } from './notify';
+import { port, authToken, handledPairIds, pairPollTimer, setPairPollTimer } from './app-state';
 
 export interface PairingData {
   v: number;
@@ -149,4 +152,123 @@ export async function showPairingDialog(): Promise<void> {
   const data = await getPairingInfo();
   const overlay = createPairingDialog(data);
   document.body.appendChild(overlay);
+}
+
+// ── Pair Request Approval (extracted from main.ts) ──
+
+/** Send pair approval via WebSocket (preferred) or HTTP fallback. */
+export function respondPairApproval(approved: boolean, pairId: string): void {
+  const sent = TerminalRegistry.sendPairApproval(approved, pairId);
+  if (!sent && port > 0 && authToken) {
+    // HTTP fallback when no active WebSocket connection
+    void fetch(`http://127.0.0.1:${port}/api/pair/${pairId}/respond`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ approved }),
+    }).catch(() => { /* ignore network errors */ });
+  }
+}
+
+export function showPairApprovalDialog(pairId: string, deviceInfo: string, remoteAddr: string): void {
+  const existing = document.getElementById('pair-approval-dialog');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'pair-approval-dialog';
+  overlay.className = 'master-approval-overlay';
+
+  const dialog = document.createElement('div');
+  dialog.className = 'master-approval-dialog';
+
+  dialog.innerHTML = `
+    <div class="master-approval-icon">
+      <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+        <line x1="12" y1="18" x2="12.01" y2="18"/>
+      </svg>
+    </div>
+    <h3>${t('pairApprovalTitle')}</h3>
+    <p>${t('pairApprovalMessage')}</p>
+    <div class="pair-approval-info">
+      <div class="pair-approval-row"><span class="pair-approval-label">${t('pairApprovalDevice')}:</span> ${escapeHtml(deviceInfo)}</div>
+      <div class="pair-approval-row"><span class="pair-approval-label">${t('pairApprovalAddress')}:</span> ${escapeHtml(remoteAddr)}</div>
+    </div>
+  `;
+
+  const buttons = document.createElement('div');
+  buttons.className = 'master-approval-buttons';
+
+  const denyBtn = document.createElement('button');
+  denyBtn.className = 'master-approval-btn deny';
+  denyBtn.textContent = t('pairApprovalDeny');
+  denyBtn.onclick = () => {
+    respondPairApproval(false, pairId);
+    overlay.remove();
+    clearTimeout(timer);
+  };
+
+  const approveBtn = document.createElement('button');
+  approveBtn.className = 'master-approval-btn approve';
+  approveBtn.textContent = t('pairApprovalApprove');
+  approveBtn.onclick = () => {
+    respondPairApproval(true, pairId);
+    overlay.remove();
+    clearTimeout(timer);
+  };
+
+  buttons.appendChild(denyBtn);
+  buttons.appendChild(approveBtn);
+  dialog.appendChild(buttons);
+  overlay.appendChild(dialog);
+
+  // Auto-deny after 30 seconds
+  const timer = setTimeout(() => {
+    if (document.body.contains(overlay)) {
+      respondPairApproval(false, pairId);
+      overlay.remove();
+    }
+  }, 30000);
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      clearTimeout(timer);
+      respondPairApproval(false, pairId);
+      overlay.remove();
+    }
+  });
+
+  // System notification (dock bounce / taskbar flash)
+  void notifyUser({
+    id: pairId,
+    type: 'pair-request',
+    title: t('pairApprovalTitle'),
+    body: `${deviceInfo} (${remoteAddr})`,
+  });
+
+  document.body.appendChild(overlay);
+}
+
+/** Start polling for pending pair requests — covers no-session scenario. */
+export function startPairPoller(pollPort: number, pollToken: string): void {
+  if (pairPollTimer) return;
+  // Periodically clear stale dedup entries (pair requests expire after 90s on backend)
+  setInterval(() => handledPairIds.clear(), 5 * 60 * 1000);
+  setPairPollTimer(setInterval(async () => {
+    try {
+      const resp = await fetch(`http://127.0.0.1:${pollPort}/api/pair/pending`, {
+        headers: { 'Authorization': `Bearer ${pollToken}` },
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      for (const req of data.requests || []) {
+        if (!handledPairIds.has(req.pair_id)) {
+          handledPairIds.add(req.pair_id);
+          showPairApprovalDialog(req.pair_id, req.device_info, req.remote_addr);
+        }
+      }
+    } catch { /* ignore network errors */ }
+  }, 3000));
 }

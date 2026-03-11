@@ -148,6 +148,96 @@ ${terminalSection}
 ${toolInstructions}`;
 }
 
+// ─── Error Classification ───────────────────────────────────────
+
+type ErrorCategory =
+  | 'rate_limit'
+  | 'server_error'
+  | 'context_overflow'
+  | 'auth'
+  | 'tool_unsupported'
+  | 'abort'
+  | 'unknown';
+
+interface RetryConfig {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  backoffFactor: number;
+}
+
+const RETRY_CONFIGS: Record<string, RetryConfig> = {
+  rate_limit:       { maxAttempts: 10, baseDelayMs: 2000,  maxDelayMs: 30000, backoffFactor: 2 },
+  server_error:     { maxAttempts: 10, baseDelayMs: 5000,  maxDelayMs: 60000, backoffFactor: 2 },
+  context_overflow: { maxAttempts: 2,  baseDelayMs: 500,   maxDelayMs: 500,   backoffFactor: 1 },
+};
+
+function classifyError(err: Error): { category: ErrorCategory; statusCode: number } {
+  const msg = err.message;
+  const lowerMsg = msg.toLowerCase();
+
+  if (err.name === 'AbortError') {
+    return { category: 'abort', statusCode: 0 };
+  }
+
+  // Parse HTTP status from Rust error format: "HTTP 429: ..."
+  const httpMatch = msg.match(/HTTP (\d{3})/);
+  const statusCode = httpMatch ? parseInt(httpMatch[1]) : 0;
+
+  // Context overflow — various provider error formats
+  if (
+    lowerMsg.includes('context_length') ||
+    lowerMsg.includes('context length') ||
+    lowerMsg.includes('maximum context') ||
+    lowerMsg.includes('too many tokens') ||
+    lowerMsg.includes('token limit') ||
+    lowerMsg.includes('prompt is too long') ||
+    lowerMsg.includes('payload size exceeds') ||
+    lowerMsg.includes('request too large') ||
+    (lowerMsg.includes('max_tokens') && lowerMsg.includes('exceed')) ||
+    (statusCode === 400 && (
+      lowerMsg.includes('length') ||
+      lowerMsg.includes('tokens') ||
+      lowerMsg.includes('too long') ||
+      lowerMsg.includes('too large')
+    ))
+  ) {
+    return { category: 'context_overflow', statusCode };
+  }
+
+  // Rate limit
+  if (statusCode === 429 || lowerMsg.includes('rate limit') || lowerMsg.includes('too many requests')) {
+    return { category: 'rate_limit', statusCode: 429 };
+  }
+
+  // Auth errors (non-retryable)
+  if (statusCode === 401 || statusCode === 403) {
+    return { category: 'auth', statusCode };
+  }
+
+  // Server errors (5xx)
+  if (statusCode >= 500 && statusCode < 600) {
+    return { category: 'server_error', statusCode };
+  }
+
+  // Tool unsupported
+  if (
+    lowerMsg.includes('tools') ||
+    lowerMsg.includes('function') ||
+    lowerMsg.includes('tool_use') ||
+    lowerMsg.includes('not supported') ||
+    lowerMsg.includes('unrecognized request argument')
+  ) {
+    return { category: 'tool_unsupported', statusCode };
+  }
+
+  return { category: 'unknown', statusCode };
+}
+
+function calculateRetryDelay(config: RetryConfig, attempt: number): number {
+  return Math.min(config.baseDelayMs * Math.pow(config.backoffFactor, attempt), config.maxDelayMs);
+}
+
 // ─── Agent Callbacks ────────────────────────────────────────────
 // All fields except onToken/onComplete/onError are optional so that
 // legacy callers (passing StreamCallbacks) still type-check.
@@ -192,12 +282,20 @@ export interface AgentCallbacks {
   onAborted?: (stepsCompleted: number) => void;
   /** Model degraded to chat mode (tools not supported). */
   onDegraded?: (reason: string) => void;
+
+  // ── Error recovery (optional) ──
+
+  /** LLM request failed, retrying after delay. */
+  onRetrying?: (attempt: number, maxAttempts: number, delayMs: number, reason: string) => void;
+  /** Context was compressed to fit within model limits. */
+  onContextCompressed?: () => void;
 }
 
 // ─── Constants ──────────────────────────────────────────────────
 
 const DEFAULT_MAX_ITERATIONS = 15;
 const MAX_CONSECUTIVE_ERRORS = 3;
+const MAX_CONTEXT_COMPRESSIONS = 2;
 
 // ─── ToolAgent (exported as AIAgent for backward compat) ────────
 
@@ -209,6 +307,9 @@ export class ToolAgent {
   /** Once set to false (e.g. after a 400 from a non-tool model),
    *  all subsequent turns use chat-only mode. */
   private toolsSupported = true;
+  /** Messages injected by the user while the agent is working.
+   *  Flushed into this.messages at the next iteration checkpoint. */
+  private pendingUserMessages: string[] = [];
 
   constructor() {
     this.toolRegistry = initializeTools();
@@ -229,9 +330,53 @@ export class ToolAgent {
     this.abort();
     this.aborted = false;
 
-    this.run(userMessage, sessionId, callbacks).catch((e) => {
+    // Flush any pending injected messages to history first
+    this.flushPendingMessages();
+
+    // Remove all trailing orphaned user messages (from failed requests / injections)
+    while (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
+      this.messages.pop();
+    }
+
+    this.messages.push({ role: 'user', content: userMessage });
+    this.trimHistory();
+
+    this.runLoop(sessionId, callbacks).catch((e) => {
       callbacks.onError(e instanceof Error ? e : new Error(String(e)));
     });
+  }
+
+  /**
+   * Inject a user message while the agent is actively working.
+   * The message will be seen by the LLM at the next iteration checkpoint,
+   * allowing the model to decide whether to incorporate it into the
+   * current workflow or defer it.
+   */
+  injectMessage(message: string): void {
+    this.pendingUserMessages.push(message);
+  }
+
+  /**
+   * Resume the agent after an error or interruption.
+   * Re-enters the agentic loop without adding a new user message,
+   * picking up from the current conversation state.
+   */
+  resume(
+    sessionId: string,
+    callbacks: AgentCallbacks,
+  ): void {
+    if (this.messages.length === 0) return;
+    this.abort();
+    this.aborted = false;
+
+    this.runLoop(sessionId, callbacks).catch((e) => {
+      callbacks.onError(e instanceof Error ? e : new Error(String(e)));
+    });
+  }
+
+  /** Whether the agent has conversation state that can be resumed. */
+  get canResume(): boolean {
+    return this.messages.length > 0 && !this.isStreaming;
   }
 
   /** Cancel the current request / tool execution. */
@@ -247,6 +392,7 @@ export class ToolAgent {
   clear(): void {
     this.abort();
     this.messages = [];
+    this.pendingUserMessages = [];
     this.toolsSupported = true;
   }
 
@@ -262,8 +408,7 @@ export class ToolAgent {
 
   // ─── Core Agentic Loop ─────────────────────────────────────
 
-  private async run(
-    userMessage: string,
+  private async runLoop(
     sessionId: string,
     callbacks: AgentCallbacks,
   ): Promise<void> {
@@ -288,7 +433,7 @@ export class ToolAgent {
     // Sync web_search tool with current settings (user may have toggled SearXNG)
     syncWebSearchTool(this.toolRegistry);
 
-    // Build tool specs only when tools are supported and agent callbacks provide confirmation
+    // Build tool specs only when tools are supported
     const useTools = this.toolsSupported;
     const toolSpecs: ToolSpec[] = useTools
       ? this.toolRegistry.getDefinitions().map((d) => ({
@@ -306,12 +451,10 @@ export class ToolAgent {
       }
     }
 
-    // Append user message to persistent history
-    this.messages.push({ role: 'user', content: userMessage });
-    this.trimHistory();
-
     let iteration = 0;
     let consecutiveErrors = 0;
+    let llmRetryCount = 0;
+    let contextCompressions = 0;
 
     // ── Loop (wrapped in try/finally to ensure agent mode cleanup) ──
     try {
@@ -322,6 +465,9 @@ export class ToolAgent {
         return;
       }
       iteration++;
+
+      // Flush any user messages injected during previous iteration
+      this.flushPendingMessages();
 
       // Signal UI: new iteration → prepare a fresh message bubble
       if (iteration > 1) {
@@ -351,6 +497,9 @@ export class ToolAgent {
           this.abortController.signal,
         );
 
+        // Reset retry counter on success
+        llmRetryCount = 0;
+
         if (this.aborted) {
           this.abortController = null;
           callbacks.onAborted?.(iteration);
@@ -361,6 +510,15 @@ export class ToolAgent {
         if (!response.toolCalls || response.toolCalls.length === 0) {
           const fixed = fixCodeBlocks(response.text);
           this.messages.push({ role: 'assistant', content: fixed });
+
+          // If user injected messages while we were streaming,
+          // finalize this response and continue the loop so the LLM
+          // can perceive and react to the new messages.
+          if (this.pendingUserMessages.length > 0) {
+            callbacks.onComplete(fixed);
+            continue;
+          }
+
           this.abortController = null;
           callbacks.onComplete(fixed);
           return;
@@ -430,41 +588,92 @@ export class ToolAgent {
         }
 
         // Tool calls handled — loop back to call LLM again with results
+
       } catch (e) {
         const err = e as Error;
-
-        // ── Tool-use unsupported → degrade to chat mode ──
-        if (this.isToolUnsupportedError(err) && toolSpecs.length > 0) {
-          this.toolsSupported = false;
-          // Remove the user message (will be re-added in recursive call)
-          if (
-            this.messages.length > 0 &&
-            this.messages[this.messages.length - 1].role === 'user'
-          ) {
-            this.messages.pop();
-          }
-          callbacks.onDegraded?.(
-            'Current model does not support tool use. Falling back to chat mode.',
-          );
-          this.abortController = null;
-          return this.run(userMessage, sessionId, callbacks);
-        }
+        const errorInfo = classifyError(err);
 
         // ── AbortError ──
-        if (err.name === 'AbortError') {
+        if (errorInfo.category === 'abort') {
           this.abortController = null;
           callbacks.onAborted?.(iteration);
           return;
         }
 
-        // ── Other errors ──
-        // Remove trailing user message if nothing was produced
-        if (
-          this.messages.length > 0 &&
-          this.messages[this.messages.length - 1].role === 'user'
-        ) {
-          this.messages.pop();
+        // ── Tool-use unsupported → degrade to chat mode ──
+        if (errorInfo.category === 'tool_unsupported' && toolSpecs.length > 0) {
+          this.toolsSupported = false;
+          callbacks.onDegraded?.(
+            'Current model does not support tool use. Falling back to chat mode.',
+          );
+          this.abortController = null;
+          // Restart loop — user message is still in this.messages
+          return this.runLoop(sessionId, callbacks);
         }
+
+        // ── Context overflow → compress and retry ──
+        if (errorInfo.category === 'context_overflow') {
+          if (contextCompressions < MAX_CONTEXT_COMPRESSIONS) {
+            const compressed = this.compressContext();
+            if (compressed) {
+              contextCompressions++;
+              callbacks.onContextCompressed?.();
+              iteration--; // Retry same iteration
+              continue;
+            }
+          }
+          // Compression exhausted or nothing to compress
+          this.abortController = null;
+          callbacks.onError(err);
+          return;
+        }
+
+        // ── Rate limit (4xx) → exponential backoff retry ──
+        if (errorInfo.category === 'rate_limit') {
+          const config = RETRY_CONFIGS.rate_limit;
+          if (llmRetryCount < config.maxAttempts) {
+            const delay = calculateRetryDelay(config, llmRetryCount);
+            callbacks.onRetrying?.(llmRetryCount + 1, config.maxAttempts, delay, 'rate_limit');
+            const ok = await this.sleepWithAbortCheck(delay);
+            if (!ok) {
+              this.abortController = null;
+              callbacks.onAborted?.(iteration);
+              return;
+            }
+            llmRetryCount++;
+            iteration--; // Retry same iteration
+            continue;
+          }
+          // Max retries exceeded
+          this.abortController = null;
+          callbacks.onError(err);
+          return;
+        }
+
+        // ── Server error (5xx) → pause + auto-retry with longer intervals ──
+        if (errorInfo.category === 'server_error') {
+          const config = RETRY_CONFIGS.server_error;
+          if (llmRetryCount < config.maxAttempts) {
+            const delay = calculateRetryDelay(config, llmRetryCount);
+            callbacks.onRetrying?.(llmRetryCount + 1, config.maxAttempts, delay, 'server_error');
+            const ok = await this.sleepWithAbortCheck(delay);
+            if (!ok) {
+              this.abortController = null;
+              callbacks.onAborted?.(iteration);
+              return;
+            }
+            llmRetryCount++;
+            iteration--; // Retry same iteration
+            continue;
+          }
+          // Max retries exceeded — keep conversation state for manual resume
+          this.abortController = null;
+          callbacks.onError(err);
+          return;
+        }
+
+        // ── Non-retryable errors (auth, unknown) ──
+        // Keep user message in history for potential resume
         this.abortController = null;
         callbacks.onError(err);
         return;
@@ -586,17 +795,94 @@ export class ToolAgent {
     });
   }
 
-  // ─── Tool-support error detection ─────────────────────────
+  // ─── Pending Message Flush ──────────────────────────────
 
-  private isToolUnsupportedError(err: Error): boolean {
-    const msg = err.message.toLowerCase();
-    return (
-      msg.includes('tools') ||
-      msg.includes('function') ||
-      msg.includes('tool_use') ||
-      msg.includes('not supported') ||
-      msg.includes('unrecognized request argument')
-    );
+  /**
+   * Move user-injected messages from the pending queue into the
+   * conversation history. Called at the start of each iteration so
+   * the LLM can perceive messages sent while the agent was working.
+   */
+  private flushPendingMessages(): void {
+    if (this.pendingUserMessages.length === 0) return;
+    const combined = this.pendingUserMessages.join('\n\n');
+    this.pendingUserMessages = [];
+
+    // If the last message is already a user message, merge to avoid
+    // consecutive user messages (which break Anthropic).
+    const last = this.messages[this.messages.length - 1];
+    if (last && last.role === 'user') {
+      last.content += `\n\n${combined}`;
+    } else {
+      this.messages.push({ role: 'user', content: combined });
+    }
+  }
+
+  // ─── Context Compression ─────────────────────────────────
+  //
+  // When the model reports context overflow, aggressively compress
+  // old messages to fit within limits:
+  //   Phase 1: Truncate long tool outputs and assistant messages
+  //   Phase 2: Remove oldest message turns (keeping tool pairs intact)
+
+  private compressContext(): boolean {
+    if (this.messages.length <= 4) return false;
+
+    let compressed = false;
+    const TOOL_MAX = 200;
+    const ASSISTANT_MAX = 500;
+
+    // Phase 1: Truncate long content
+    for (const msg of this.messages) {
+      if (msg.role === 'tool' && msg.content.length > TOOL_MAX) {
+        msg.content = msg.content.slice(0, TOOL_MAX) + '\n...(output truncated)';
+        compressed = true;
+      }
+      if (msg.role === 'assistant' && msg.content.length > ASSISTANT_MAX) {
+        msg.content = msg.content.slice(0, ASSISTANT_MAX) + '...(truncated)';
+        compressed = true;
+      }
+    }
+
+    // Phase 2: Remove oldest messages until count halved
+    // Keeps tool_call/tool_result pairs together
+    const targetCount = Math.max(4, Math.ceil(this.messages.length * 0.5));
+
+    while (this.messages.length > targetCount) {
+      const first = this.messages.shift()!;
+      compressed = true;
+
+      // If we removed an assistant with tool_calls, also remove its tool results
+      if (first.role === 'assistant' && first.tool_calls) {
+        const tcIds = new Set(first.tool_calls.map((tc) => tc.id));
+        while (
+          this.messages.length > 0 &&
+          this.messages[0].role === 'tool' &&
+          tcIds.has(this.messages[0].tool_call_id!)
+        ) {
+          this.messages.shift();
+        }
+      }
+
+      // Clean up any orphaned tool results at the start
+      while (this.messages.length > 0 && this.messages[0].role === 'tool') {
+        this.messages.shift();
+      }
+    }
+
+    return compressed;
+  }
+
+  // ─── Sleep with Abort Check ────────────────────────────────
+
+  /** Sleep for the given duration. Returns false if aborted during sleep. */
+  private async sleepWithAbortCheck(ms: number): Promise<boolean> {
+    const step = 500;
+    let remaining = ms;
+    while (remaining > 0 && !this.aborted) {
+      await new Promise((r) => setTimeout(r, Math.min(step, remaining)));
+      remaining -= step;
+    }
+    return !this.aborted;
   }
 
   // ─── History Management ───────────────────────────────────

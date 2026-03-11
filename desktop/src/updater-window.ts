@@ -1,4 +1,3 @@
-import './style.css';
 import { check } from '@tauri-apps/plugin-updater';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -140,7 +139,17 @@ export function initUpdaterWindow(): void {
 
   if (isWindowsPlatform) {
     document.body.insertBefore(createCustomTitleBar(t('checkUpdates'), safeClose), container);
+  } else {
+    const dragRegion = document.createElement('div');
+    dragRegion.className = 'overlay-drag-region';
+    dragRegion.setAttribute('data-tauri-drag-region', '');
+    document.body.insertBefore(dragRegion, container);
   }
+
+  // Show window after first paint (created with visible: false to prevent flash)
+  requestAnimationFrame(() => {
+    void getCurrentWindow().show().then(() => getCurrentWindow().setFocus());
+  });
 }
 
 // ── States ─────────────────────────────────────────────────────────────────────

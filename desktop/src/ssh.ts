@@ -11,6 +11,12 @@ import {
   showRemoteEditDialog,
   showRemoteCardSessionPopup,
 } from './remote';
+import {
+  type JumpServerConfig,
+  loadJumpServerConfigs,
+  removeJumpServerConfig,
+  loadJSSecrets,
+} from './jumpserver-api';
 export interface SSHConnectionConfig {
   name: string;
   host: string;
@@ -20,6 +26,7 @@ export interface SSHConnectionConfig {
   password?: string;
   privateKey?: string;
   passphrase?: string;
+  skipShellHook?: boolean;
 }
 
 type SSHSessionCreateResponse = {
@@ -319,6 +326,7 @@ export async function createSSHSession(config: SSHConnectionConfig, trustedFinge
     privateKey: config.privateKey || null,
     passphrase: passphrase || null,
     trustedFingerprint: trustedFingerprint || null,
+    skipShellHook: config.skipShellHook || null,
   });
   const parsed = JSON.parse(raw);
 
@@ -580,10 +588,33 @@ function createConnectionForm(
   portLabel.textContent = t('sshPort');
   portLabel.setAttribute('for', 'ssh-port');
   const portInput = document.createElement('input');
-  portInput.type = 'number';
+  portInput.type = 'text';
+  portInput.inputMode = 'numeric';
+  portInput.pattern = '[0-9]*';
   portInput.id = 'ssh-port';
   portInput.className = 'ssh-input';
   portInput.value = String(prefill?.port || 22);
+  // Select all on focus so paste replaces the default value
+  portInput.addEventListener('focus', () => portInput.select());
+  // Filter non-digits and clamp to valid port range on input
+  portInput.addEventListener('input', () => {
+    const digits = portInput.value.replace(/\D/g, '');
+    const num = parseInt(digits, 10);
+    if (!digits || isNaN(num)) {
+      portInput.value = '';
+    } else if (num > 65535) {
+      portInput.value = '65535';
+    } else {
+      portInput.value = String(num);
+    }
+  });
+  // Restore default on blur if empty
+  portInput.addEventListener('blur', () => {
+    const num = parseInt(portInput.value, 10);
+    if (!portInput.value || isNaN(num) || num < 1) {
+      portInput.value = '22';
+    }
+  });
   portGroup.appendChild(portLabel);
   portGroup.appendChild(portInput);
 
@@ -745,14 +776,36 @@ function createConnectionForm(
   const btnRow = document.createElement('div');
   btnRow.className = 'ssh-form-actions';
 
+  // Shared pre-connect test: returns true if connection test passes
+  const preConnectTest = async (config: SSHConnectionConfig): Promise<boolean> => {
+    connectBtn.disabled = true;
+    connectSaveBtn.disabled = true;
+    showStatus(t('sshTesting'), 'info');
+    try {
+      const result = await testSSHConnection(config);
+      if (!result.ok) {
+        showStatus(`${t('sshTestFailed')}: ${result.error || 'Unknown error'}`, 'error');
+        return false;
+      }
+      return true;
+    } catch (err) {
+      showStatus(`${t('sshTestFailed')}: ${String(err)}`, 'error');
+      return false;
+    } finally {
+      connectBtn.disabled = false;
+      connectSaveBtn.disabled = false;
+    }
+  };
+
   const connectBtn = document.createElement('button');
   connectBtn.className = 'ssh-btn ssh-btn-primary';
   connectBtn.textContent = t('sshConnectBtn');
-  connectBtn.onclick = () => {
+  connectBtn.onclick = async () => {
     const config = readFormConfig();
-    console.log('[ssh] connect button clicked, config:', { host: config.host, port: config.port, username: config.username, authMethod: config.authMethod, hasPassword: !!config.password, hasPrivateKey: !!config.privateKey });
     if (!config.host || !config.username) return;
     clearStatus();
+
+    if (!(await preConnectTest(config))) return;
 
     if (onSubmit) {
       onSubmit(config);
@@ -791,10 +844,13 @@ function createConnectionForm(
   const connectSaveBtn = document.createElement('button');
   connectSaveBtn.className = 'ssh-btn ssh-btn-primary ssh-btn-connect-save';
   connectSaveBtn.textContent = t('sshConnectAndSave');
-  connectSaveBtn.onclick = () => {
+  connectSaveBtn.onclick = async () => {
     const config = readFormConfig();
     if (!config.host || !config.username) return;
     clearStatus();
+
+    if (!(await preConnectTest(config))) return;
+
     addConnection(config);
     document.dispatchEvent(new CustomEvent('ssh-connections-changed'));
     if (onSubmit) {
@@ -1007,9 +1063,22 @@ export function createSSHHomeView(): HTMLDivElement {
     document.dispatchEvent(new CustomEvent('remote-connect-request'));
   };
 
+  const jsBtn = document.createElement('button');
+  jsBtn.className = 'home-action-btn home-btn-jumpserver';
+  jsBtn.innerHTML = `<span class="home-btn-icon">${icon('jumpserver')}</span><span>${t('homeNewJumpServer')}</span>`;
+  jsBtn.onclick = async () => {
+    const { showJumpServerConfigDialog } = await import('./jumpserver-ui');
+    const result = await showJumpServerConfigDialog();
+    if (result?.connect) {
+      const { handleJumpServerConnect } = await import('./jumpserver-handler');
+      handleJumpServerConnect(result.config);
+    }
+  };
+
   btnRow.appendChild(localBtn);
   btnRow.appendChild(sshBtn);
   btnRow.appendChild(remoteBtn);
+  btnRow.appendChild(jsBtn);
   content.appendChild(btnRow);
 
   // Saved connections area
@@ -1098,6 +1167,88 @@ function createRemoteConnectionCard(info: RemoteServerInfo, isRecent: boolean): 
   return card;
 }
 
+function createJumpServerCard(config: JumpServerConfig): HTMLDivElement {
+  const card = document.createElement('div');
+  card.className = 'home-connection-card jumpserver-card';
+
+  const name = document.createElement('div');
+  name.className = 'home-card-name';
+  name.textContent = config.name;
+
+  const detail = document.createElement('div');
+  detail.className = 'home-card-detail';
+  detail.textContent = `${config.username}@${config.sshHost}:${config.sshPort}`;
+
+  card.appendChild(name);
+  card.appendChild(detail);
+
+  card.onclick = async () => {
+    const secrets = await loadJSSecrets(config.name);
+    const fullConfig: JumpServerConfig = {
+      ...config,
+      password: secrets.password,
+      apiToken: secrets.apiToken,
+    };
+    const { handleJumpServerConnect } = await import('./jumpserver-handler');
+    handleJumpServerConnect(fullConfig);
+  };
+
+  card.oncontextmenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showJumpServerCardContextMenu(e, config);
+  };
+
+  return card;
+}
+
+function showJumpServerCardContextMenu(event: MouseEvent, config: JumpServerConfig): void {
+  document.querySelector('.home-card-menu')?.remove();
+
+  const menu = document.createElement('div');
+  menu.className = 'home-card-menu';
+  menu.style.left = `${event.clientX}px`;
+  menu.style.top = `${event.clientY}px`;
+
+  const editItem = document.createElement('button');
+  editItem.className = 'home-card-menu-item';
+  editItem.textContent = t('homeEditConnection');
+  editItem.onclick = async () => {
+    menu.remove();
+    const secrets = await loadJSSecrets(config.name);
+    const prefill: JumpServerConfig = { ...config, password: secrets.password, apiToken: secrets.apiToken };
+    const { showJumpServerConfigDialog } = await import('./jumpserver-ui');
+    const result = await showJumpServerConfigDialog(prefill);
+    if (result) {
+      updateSSHHomeView();
+      if (result.connect) {
+        const { handleJumpServerConnect } = await import('./jumpserver-handler');
+        handleJumpServerConnect(result.config);
+      }
+    }
+  };
+
+  const deleteItem = document.createElement('button');
+  deleteItem.className = 'home-card-menu-item danger';
+  deleteItem.textContent = t('sshDeleteConnection');
+  deleteItem.onclick = async () => {
+    menu.remove();
+    await removeJumpServerConfig(config.name);
+    updateSSHHomeView();
+  };
+
+  menu.appendChild(editItem);
+  menu.appendChild(deleteItem);
+  document.body.appendChild(menu);
+
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - rect.width - 4)}px`;
+  if (rect.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - rect.height - 4)}px`;
+
+  const cleanup = () => { menu.remove(); document.removeEventListener('click', cleanup, true); };
+  document.addEventListener('click', cleanup, true);
+}
+
 function createConnectionCard(conn: SSHConnectionConfig, withContextMenu: boolean): HTMLDivElement {
   const card = document.createElement('div');
   card.className = 'home-connection-card';
@@ -1136,9 +1287,10 @@ export function updateSSHHomeView(): void {
   if (savedSection) {
     const sshConnections = loadSavedConnections();
     const remoteConnections = loadSavedRemoteConnections();
+    const jsConnections = loadJumpServerConfigs();
     savedSection.innerHTML = '';
 
-    const totalSaved = sshConnections.length + remoteConnections.length;
+    const totalSaved = sshConnections.length + remoteConnections.length + jsConnections.length;
     if (totalSaved > 0) {
       const title = document.createElement('div');
       title.className = 'home-saved-title';
@@ -1163,6 +1315,15 @@ export function updateSSHHomeView(): void {
 
       remoteConnections.forEach((info) => {
         const card = createRemoteConnectionCard(info, false);
+        if (hasMore && cardIndex >= maxVisible) {
+          card.classList.add('home-card-overflow');
+        }
+        grid.appendChild(card);
+        cardIndex++;
+      });
+
+      jsConnections.forEach((jsConfig) => {
+        const card = createJumpServerCard(jsConfig);
         if (hasMore && cardIndex >= maxVisible) {
           card.classList.add('home-card-overflow');
         }

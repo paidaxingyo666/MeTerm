@@ -1,0 +1,684 @@
+/* Home View */
+.home-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--bg-primary), var(--app-window-opacity));
+  padding: 24px;
+  overflow: hidden;
+  z-index: 20;
+}
+
+.home-view.has-overflow {
+  overflow: auto;
+}
+
+.home-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.home-header h1 {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-heading);
+  margin: 0;
+}
+
+.home-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.home-btn {
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  background: rgba(var(--bg-tab), var(--app-window-opacity));
+  color: var(--text-button);
+  height: 36px;
+  padding: 0 16px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.15s ease;
+}
+
+.home-btn:hover {
+  background: rgba(var(--bg-home-btn-hover), var(--app-window-opacity));
+  border-color: var(--border-home-btn-hover);
+}
+
+/* Gallery view uses block layout for reliable padding on all sides when scrolling */
+.gallery-view {
+  display: block;
+  overflow: hidden; /* clip overflow; scroll handled by .gallery-scroll-area */
+  padding: 0;       /* padding moved into .gallery-scroll-area */
+}
+
+/* Inner scroll container — hides native bar, shows custom overlay instead */
+.gallery-scroll-area {
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 24px;
+  box-sizing: border-box;
+}
+.gallery-scroll-area::-webkit-scrollbar {
+  display: none;
+}
+
+/* Custom overlay scrollbar — same visual style as terminal scrollbar */
+.gallery-overlay-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  z-index: 100;
+  pointer-events: none;
+  display: none; /* JS shows when content overflows */
+}
+.gallery-overlay-scrollbar-track {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 4px;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: width 0.15s ease, background 0.15s ease;
+  border-radius: 999px;
+}
+.gallery-overlay-scrollbar:hover .gallery-overlay-scrollbar-track,
+.gallery-overlay-scrollbar.dragging .gallery-overlay-scrollbar-track {
+  width: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.gallery-overlay-scrollbar-thumb {
+  position: absolute;
+  right: 0;
+  width: 100%;
+  min-height: 24px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  transition: background 0.15s ease;
+}
+.gallery-overlay-scrollbar:hover .gallery-overlay-scrollbar-thumb,
+.gallery-overlay-scrollbar.dragging .gallery-overlay-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.30);
+}
+.gallery-overlay-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.42) !important;
+}
+/* Light theme */
+html[data-theme="light"] .gallery-overlay-scrollbar:hover .gallery-overlay-scrollbar-track,
+html[data-theme="light"] .gallery-overlay-scrollbar.dragging .gallery-overlay-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+}
+html[data-theme="light"] .gallery-overlay-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+}
+html[data-theme="light"] .gallery-overlay-scrollbar:hover .gallery-overlay-scrollbar-thumb,
+html[data-theme="light"] .gallery-overlay-scrollbar.dragging .gallery-overlay-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.28);
+}
+html[data-theme="light"] .gallery-overlay-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.40) !important;
+}
+
+.sessions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-auto-rows: min-content;
+  gap: 16px;
+  width: 100%;
+}
+
+.empty-state {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  color: var(--text-dim);
+}
+
+.empty-icon {
+  width: 52px;
+  height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--empty-icon);
+  margin-bottom: 16px;
+}
+
+.empty-icon svg {
+  width: 48px;
+  height: 48px;
+  display: block;
+}
+
+.empty-state p {
+  margin: 4px 0;
+}
+
+.empty-hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.empty-hint kbd {
+  background: var(--kbd-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: inherit;
+}
+
+.session-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(var(--bg-card), var(--app-window-opacity));
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.session-card:hover {
+  border-color: var(--border-primary);
+  background: rgba(var(--bg-card-hover), var(--app-window-opacity));
+}
+
+.session-preview {
+  position: relative;
+  flex: 1 1 auto;
+  aspect-ratio: var(--window-aspect-ratio, 16 / 9);
+  background: rgba(var(--bg-primary), var(--app-window-opacity));
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.session-preview-layer {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: 0;
+  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity;
+}
+
+.session-preview-layer.visible {
+  opacity: 1;
+}
+
+.session-preview.has-thumbnail .session-preview-placeholder {
+  display: none;
+}
+
+.session-preview-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--preview-placeholder);
+  font-size: 12px;
+}
+
+.session-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  flex-shrink: 0;
+  height: 38px;
+  box-sizing: border-box;
+}
+
+.session-title-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.session-title-track {
+  display: inline-flex;
+  align-items: center;
+  gap: 20px;
+  min-width: max-content;
+}
+
+.session-title-text {
+  display: inline-block;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-card-title);
+}
+
+.session-title-text.duplicate {
+  display: none;
+}
+
+.session-title-wrap.is-overflowing .session-title-track {
+  animation: session-title-marquee 12s linear infinite;
+}
+
+.session-title-wrap.is-overflowing .session-title-text.duplicate {
+  display: inline-block;
+}
+
+.session-title-wrap.is-overflowing:hover .session-title-track {
+  animation-play-state: paused;
+}
+
+.session-status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--status-default-bg);
+  color: var(--status-default-text);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.session-status.connected {
+  background: var(--status-connected-bg);
+  color: var(--status-connected-text);
+}
+
+.session-status.disconnected {
+  background: var(--status-disconnected-bg);
+  color: var(--status-disconnected-text);
+}
+
+@keyframes session-title-marquee {
+  0% {
+    transform: translateX(0);
+  }
+  35% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(calc(-1 * var(--session-title-shift, 100%)));
+  }
+}
+
+.custom-context-menu {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  background: rgba(var(--bg-context-menu), 0.98);
+  border: 1px solid var(--border-context-menu);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px var(--shadow-context-menu);
+  padding: 3px;
+  z-index: 99999;
+}
+
+.custom-context-menu-item {
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-button);
+  text-align: left;
+  padding: 0 8px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.custom-context-menu-item:hover:not(:disabled) {
+  background: var(--accent-bg);
+}
+
+.custom-context-menu-item:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.custom-context-menu-divider {
+  height: 1px;
+  background: var(--border-context-menu);
+  margin: 3px 4px;
+}
+
+.shell-default-badge {
+  margin-left: 8px;
+  font-size: 10px;
+  opacity: 0.5;
+}
+
+.tray-tip {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: min(380px, calc(100vw - 32px));
+  border: 1px solid var(--border-context-menu);
+  border-radius: 10px;
+  background: rgba(var(--bg-tray-tip), 0.98);
+  color: var(--text-button);
+  box-shadow: 0 14px 36px var(--shadow-tray-tip);
+  z-index: 4000;
+  overflow: hidden;
+}
+
+.tray-tip-header {
+  padding: 10px 12px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-heading);
+}
+
+.tray-tip-body {
+  padding: 0 12px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tray-tip-body);
+}
+
+.tray-tip-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-tray-tip-footer);
+  background: rgba(var(--bg-tray-tip-footer), 0.9);
+}
+
+.tray-tip-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--tray-tip-check);
+  cursor: pointer;
+}
+
+.tray-tip-check input {
+  margin: 0;
+}
+
+.tray-tip-ok {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--accent-tray-btn-border);
+  border-radius: 6px;
+  background: var(--accent-tray-btn-bg);
+  color: var(--accent-tray-btn-text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.tray-tip-ok:hover {
+  background: var(--accent-tray-btn-bg-hover);
+}
+
+/* ============================================================================
+   Home Center Layout
+   ============================================================================ */
+.home-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 24px;
+  max-width: 600px;
+  width: 100%;
+}
+
+.home-app-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-heading);
+  margin: 0 0 10px;
+  letter-spacing: -0.3px;
+}
+
+.home-btn-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  max-width: 720px;
+}
+
+.home-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1;
+  height: 40px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.home-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+
+.home-btn-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.home-btn-local {
+  background: rgba(var(--bg-button), var(--app-window-opacity));
+  color: var(--text-primary);
+  border-color: var(--border-primary);
+}
+
+.home-btn-local:hover {
+  background: rgba(var(--bg-button-hover), var(--app-window-opacity));
+}
+
+.home-btn-ssh {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.home-btn-ssh:hover {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+.home-btn-remote {
+  background: rgba(22, 163, 74, 0.15);
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.3);
+}
+
+.home-btn-remote:hover {
+  background: rgba(22, 163, 74, 0.25);
+  border-color: rgba(74, 222, 128, 0.45);
+}
+
+/* Saved / Recent Connections Cards */
+.home-saved-section {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.home-saved-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.home-saved-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* Overflow cards hidden by default, shown when grid is expanded */
+.home-card-overflow {
+  display: none;
+}
+
+.home-saved-grid.expanded .home-card-overflow {
+  display: block;
+}
+
+.home-show-more-btn {
+  display: block;
+  margin: 8px auto 0;
+  padding: 4px 14px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.home-show-more-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.home-connection-card {
+  flex: 0 0 calc((100% - 32px) / 5);
+  background: rgba(var(--bg-card), var(--app-window-opacity));
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: all 0.12s;
+  min-width: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  position: relative;
+}
+
+.home-connection-card:hover {
+  border-color: var(--accent);
+}
+
+.home-card-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.home-card-detail {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Card Context Menu */
+.home-card-menu {
+  position: fixed;
+  z-index: 3000;
+  background: rgba(var(--bg-context-menu), 1);
+  border: 1px solid var(--border-context-menu);
+  border-radius: 6px;
+  padding: 4px;
+  min-width: 100px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.home-card-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.home-card-menu-item:hover {
+  background: rgba(var(--bg-button-hover), var(--app-window-opacity));
+}
+
+.home-card-menu-item.danger {
+  color: var(--error-text);
+}
+
+.home-card-menu-item.danger:hover {
+  background: var(--status-disconnected-bg);
+}
+
+/* Remote card green triangle badge */
+.home-connection-card.remote-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-style: solid;
+  border-width: 0 14px 14px 0;
+  border-color: transparent #22c55e transparent transparent;
+  border-radius: 0 7px 0 0;
+}
+
+/* Remote card popup positioning override */
+.remote-card-popup {
+  position: fixed;
+}
+
+/* Save hint in remote connect dialog */
+.remote-saved-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #22c55e;
+}
+
+/* Save connection row in session list */
+.remote-save-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.remote-save-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+/* Remote edit modal sizing */
+.remote-edit-modal {
+  max-width: 400px;
+}
+

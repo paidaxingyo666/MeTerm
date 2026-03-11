@@ -1,0 +1,453 @@
+/* ============================================================================
+   JumpServer — Asset Browser & related styles
+   ============================================================================ */
+
+/* Asset browser overlay */
+.js-asset-browser-overlay {
+  z-index: 2100;
+}
+
+/* Asset browser panel */
+.js-asset-browser {
+  background: rgba(var(--bg-toolbar), 0.92);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  width: 820px;
+  max-width: 90vw;
+  height: 520px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+/* Header */
+.js-asset-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.js-asset-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-heading);
+}
+
+.js-asset-close {
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 20px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.js-asset-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Search bar */
+.js-asset-search {
+  padding: 8px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.js-asset-search .ssh-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Content area: sidebar + main */
+.js-asset-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Sidebar (node tree) */
+.js-asset-sidebar {
+  width: 200px;
+  min-width: 160px;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.js-node-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.js-node-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.js-node-selected {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-heading);
+  font-weight: 500;
+}
+
+.js-node-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  cursor: pointer;
+  opacity: 0.6;
+  margin-right: 2px;
+}
+
+.js-node-chevron:hover {
+  opacity: 1;
+}
+
+.js-node-chevron-spacer {
+  display: inline-block;
+  width: 14px;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
+.js-node-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.js-node-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.js-node-count {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* Main area (asset table) */
+.js-asset-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+
+/* Asset table */
+.js-asset-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.js-asset-table thead th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  position: sticky;
+  top: 0;
+  background: rgba(var(--bg-toolbar), 0.95);
+  backdrop-filter: blur(8px);
+  z-index: 1;
+}
+
+.js-asset-table tbody td {
+  padding: 7px 12px;
+  color: var(--text-primary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.js-asset-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.js-asset-inactive {
+  opacity: 0.5;
+}
+
+.js-asset-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.js-platform-icon {
+  font-size: 14px;
+}
+
+.js-protocols {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.js-connect-btn {
+  padding: 3px 10px !important;
+  font-size: 11px !important;
+}
+
+/* Pagination */
+.js-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Status bar */
+.js-asset-status {
+  padding: 6px 18px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Loading / empty / error states */
+.js-loading,
+.js-empty,
+.js-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.js-error {
+  color: var(--status-red);
+}
+
+/* Account selection list */
+.js-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.js-account-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.js-account-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.js-account-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.js-account-username {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-heading);
+}
+
+.js-account-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.js-account-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 150, 50, 0.2);
+  color: rgb(255, 180, 100);
+  font-weight: 600;
+}
+
+/* Home page JumpServer button — amber/orange tone */
+.home-btn-jumpserver {
+  background: rgba(217, 119, 6, 0.15);
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+.home-btn-jumpserver:hover {
+  background: rgba(217, 119, 6, 0.25);
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+/* JumpServer card yellow triangle badge (same as remote-card green badge) */
+.home-connection-card.jumpserver-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-style: solid;
+  border-width: 0 14px 14px 0;
+  border-color: transparent #f59e0b transparent transparent;
+  border-radius: 0 7px 0 0;
+}
+
+/* ── Standalone browser window mode ── */
+.js-browser-window-mode {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: rgb(var(--bg-primary));
+  color: var(--text-primary);
+}
+
+html:not(.platform-windows) .js-browser-window-mode {
+  padding-top: 28px;
+}
+
+.js-browser-container {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 28px);
+  padding: 0 12px;
+}
+
+html.platform-windows .js-browser-container {
+  height: calc(100vh - 33px);
+}
+
+/* macOS overlay drag region (same as settings) */
+.js-browser-window-mode .overlay-drag-region {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  -webkit-app-region: drag;
+  z-index: 10;
+}
+
+.js-browser-container .js-asset-search {
+  flex-shrink: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.js-browser-container .js-asset-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.js-browser-container .js-asset-sidebar {
+  background: rgba(var(--bg-toolbar), 0.5);
+}
+
+.js-browser-container .js-asset-main {
+  background: rgba(var(--bg-toolbar), 0.3);
+}
+
+.js-browser-container .js-asset-table thead th {
+  background: rgba(var(--bg-toolbar), 0.9);
+}
+
+.js-browser-container .js-asset-status {
+  flex-shrink: 0;
+  padding: 6px 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: none;
+}
+
+/* Resizable split handle */
+.js-split-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 2;
+}
+.js-split-handle:hover,
+.js-split-handle:active {
+  background: var(--accent-primary, rgba(59, 130, 246, 0.5));
+}
+
+/* Compact rows and ellipsis in browser window */
+.js-browser-container .js-asset-table {
+  table-layout: fixed;
+}
+.js-browser-container .js-asset-table thead th:nth-child(1) { width: 30%; }
+.js-browser-container .js-asset-table thead th:nth-child(2) { width: 22%; }
+.js-browser-container .js-asset-table thead th:nth-child(3) { width: 12%; }
+.js-browser-container .js-asset-table thead th:nth-child(4) { width: 20%; }
+.js-browser-container .js-asset-table thead th:nth-child(5) { width: 16%; }
+.js-browser-container .js-asset-table tbody td {
+  padding: 5px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.js-cell-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.js-connect-cell {
+  white-space: nowrap;
+  text-align: right;
+  overflow: visible !important;
+}
+.js-browser-container .js-connect-btn {
+  padding: 0 7px !important;
+  font-size: 10px !important;
+  line-height: 1.2;
+  height: 18px;
+  min-height: unset;
+}
+.js-browser-container .js-asset-table thead th {
+  padding: 4px 8px;
+  position: relative;
+}
+
+/* Column resize handle */
+.js-col-resize {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+.js-col-resize:hover,
+.js-col-resize.active {
+  background: var(--accent-primary, rgba(59, 130, 246, 0.5));
+}

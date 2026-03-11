@@ -1,0 +1,480 @@
+#terminal-panel {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: rgba(var(--bg-primary), var(--app-window-opacity));
+}
+
+.terminal-area {
+  flex: 1 1 0;
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* SSH connecting placeholder */
+.ssh-connecting-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+  color: #aaa;
+  font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 13px;
+}
+.ssh-connecting-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(255,255,255,0.15);
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: ssh-spin 0.8s linear infinite;
+}
+@keyframes ssh-spin {
+  to { transform: rotate(360deg); }
+}
+.ssh-connecting-label {
+  opacity: 0.7;
+}
+[data-theme="light"] .ssh-connecting-placeholder {
+  color: #666;
+}
+[data-theme="light"] .ssh-connecting-spinner {
+  border-color: rgba(0,0,0,0.1);
+  border-top-color: #3b82f6;
+}
+
+/* SSH reconnect overlay */
+.ssh-reconnect-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  animation: reconnect-fade-in 0.3s ease-out forwards;
+  border-radius: 0 0 8px 8px;
+}
+.ssh-reconnect-overlay.reconnecting {
+  pointer-events: none;
+}
+.ssh-reconnect-overlay.fade-out {
+  animation: reconnect-fade-out 0.4s ease-in forwards;
+}
+.ssh-reconnect-icon svg {
+  width: 32px;
+  height: 32px;
+  color: #6b7280;
+}
+.ssh-reconnect-msg {
+  font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 13px;
+  color: #9ca3af;
+}
+.ssh-reconnect-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.08);
+  color: #e5e7eb;
+  font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.ssh-reconnect-btn:hover {
+  background: rgba(255,255,255,0.14);
+  border-color: rgba(255,255,255,0.25);
+}
+.ssh-reconnect-btn:active {
+  transform: scale(0.97);
+}
+.ssh-reconnect-btn svg {
+  width: 14px;
+  height: 14px;
+}
+.ssh-reconnect-btn.is-reconnecting {
+  pointer-events: none;
+  opacity: 0.6;
+}
+.ssh-reconnect-btn.is-reconnecting svg {
+  animation: ssh-spin 0.8s linear infinite;
+}
+.ssh-reconnect-error {
+  font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 11px;
+  color: #f87171;
+  max-width: 300px;
+  text-align: center;
+}
+@keyframes reconnect-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes reconnect-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+[data-theme="light"] .ssh-reconnect-overlay {
+  background: rgba(255, 255, 255, 0.75);
+}
+[data-theme="light"] .ssh-reconnect-msg {
+  color: #6b7280;
+}
+[data-theme="light"] .ssh-reconnect-btn {
+  border-color: rgba(0,0,0,0.15);
+  background: rgba(0,0,0,0.06);
+  color: #374151;
+}
+[data-theme="light"] .ssh-reconnect-btn:hover {
+  background: rgba(0,0,0,0.1);
+  border-color: rgba(0,0,0,0.25);
+}
+
+/* Kicked overlay */
+.kicked-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  animation: reconnect-fade-in 0.3s ease-out forwards;
+  border-radius: 0 0 8px 8px;
+}
+.kicked-overlay-icon svg {
+  width: 32px;
+  height: 32px;
+}
+.kicked-overlay-msg {
+  font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 13px;
+  color: #f87171;
+}
+.kicked-overlay-close-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.kicked-overlay-close-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+.kicked-overlay-close-btn:active {
+  transform: scale(0.97);
+}
+[data-theme="light"] .kicked-overlay {
+  background: rgba(255, 255, 255, 0.75);
+}
+[data-theme="light"] .kicked-overlay-msg {
+  color: #dc2626;
+}
+[data-theme="light"] .kicked-overlay-close-btn {
+  border-color: rgba(220, 38, 38, 0.3);
+  background: rgba(220, 38, 38, 0.08);
+  color: #b91c1c;
+}
+[data-theme="light"] .kicked-overlay-close-btn:hover {
+  background: rgba(220, 38, 38, 0.14);
+  border-color: rgba(220, 38, 38, 0.4);
+}
+
+/* Tab kicked red X on globe */
+.tab-remote-icon-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.tab-remote-icon-wrap .tab-kicked-x {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.terminal-bg-image {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+
+/* Readability overlay drawn above the bg image; hides when no image is set */
+.terminal-bg-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  background: rgba(var(--bg-primary), 0.7);
+  pointer-events: none;
+}
+
+.terminal-container {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  z-index: 1;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.terminal-container.active {
+  z-index: 10;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.terminal-thumbnail-source {
+  position: fixed;
+  inset: auto;
+  left: 0;
+  top: 0;
+  width: 1280px;
+  height: 720px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+  /* Scale the container to ~1.28×0.72 px (0.001 × 1280×720).
+   * This keeps the element geometrically inside the viewport so xterm.js's
+   * IntersectionObserver reports isIntersecting=true and canvas rendering is
+   * never paused — live thumbnails work in both Chrome and WKWebView.
+   * The composited GPU layer covers only ~2 pixels on screen (top-left corner,
+   * behind the macOS traffic-light buttons), so any stale-pixel artifact during
+   * a window resize is completely invisible. */
+  transform: scale(0.001);
+  transform-origin: 0 0;
+  -webkit-transform: scale(0.001);
+  -webkit-transform-origin: 0 0;
+}
+
+.terminal-thumbnail-source .xterm {
+  width: 100%;
+  height: 100%;
+}
+
+.terminal-container.capturing {
+  visibility: visible;
+  pointer-events: none;
+  position: fixed;
+  inset: auto;
+  left: -9999px;
+  top: -9999px;
+  right: auto;
+  bottom: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  z-index: -1;
+}
+
+.terminal-container .xterm {
+  height: 100%;
+  width: 100%;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.terminal-container .xterm-screen {
+  min-height: 100% !important;
+}
+
+.terminal-container .xterm-viewport {
+  overflow-y: auto !important;
+}
+
+/* Windows-specific terminal layout/alpha tuning */
+html.platform-windows .terminal-container,
+html.platform-windows .split-root,
+html.platform-windows .terminal-bg-image {
+  inset: 0;
+  border-radius: 0;
+}
+
+html.platform-windows .terminal-container .xterm {
+  padding: 0;
+}
+
+/* Force xterm-viewport transparent on all platforms and on the thumbnail terminal.
+ *
+ * Main terminals (.terminal-container):
+ *   xterm.js default CSS sets .xterm-viewport { background-color: #000 }.
+ *   JS _handleThemeChange() overrides it with the RGBA theme color, but this
+ *   override can be lost/delayed in WKWebView during resize, causing the viewport
+ *   to show as opaque — making the terminal appear less transparent.
+ *
+ * Thumbnail terminal (.terminal-thumbnail-source):
+ *   The thumbnail uses allowTransparency:true (clearRect for blank cells) but
+ *   _handleThemeChange() still sets the viewport background to the theme color
+ *   (solid or semi-transparent). WKWebView's Metal compositor may incorrectly
+ *   include the off-screen thumbnail's viewport GPU layer in compositing during
+ *   window resize, causing an opaque rectangle to bleed through the main terminal.
+ *   Making the thumbnail viewport fully transparent eliminates this interference.
+ *
+ * By forcing transparent here, the panel's CSS background is the sole source of
+ * the terminal background color at every window size and compositing state. */
+html.platform-windows .terminal-container .xterm-viewport,
+html.platform-windows .terminal-container .xterm .xterm-viewport,
+html.platform-macos   .terminal-container .xterm-viewport,
+html.platform-macos   .terminal-container .xterm .xterm-viewport,
+html.platform-linux   .terminal-container .xterm-viewport,
+html.platform-linux   .terminal-container .xterm .xterm-viewport,
+.terminal-thumbnail-source .xterm-viewport,
+.terminal-thumbnail-source .xterm .xterm-viewport {
+  background: transparent !important;
+}
+
+html.platform-windows .terminal-container .xterm,
+html.platform-windows .terminal-container .xterm-screen,
+html.platform-windows .terminal-container .xterm-rows,
+html.platform-windows .terminal-container .xterm-helper-textarea {
+  background: transparent !important;
+}
+
+html.platform-windows .split-pane .xterm-screen {
+  min-width: 100% !important;
+}
+
+/* hide native scrollbar completely — replaced by custom overlay (all platforms) */
+html.platform-windows .terminal-container .xterm-viewport,
+html.platform-macos   .terminal-container .xterm-viewport,
+html.platform-linux   .terminal-container .xterm-viewport {
+  scrollbar-width: none !important;
+}
+html.platform-windows .terminal-container .xterm-viewport::-webkit-scrollbar,
+html.platform-macos   .terminal-container .xterm-viewport::-webkit-scrollbar,
+html.platform-linux   .terminal-container .xterm-viewport::-webkit-scrollbar {
+  width: 0 !important;
+  display: none !important;
+}
+
+/* xterm width correction for all platforms — let FitAddon allocate full width */
+html.platform-macos .terminal-container .xterm,
+html.platform-macos .terminal-container .xterm-screen,
+html.platform-macos .terminal-container .xterm-rows,
+html.platform-macos .terminal-container .xterm-helper-textarea,
+html.platform-linux .terminal-container .xterm,
+html.platform-linux .terminal-container .xterm-screen,
+html.platform-linux .terminal-container .xterm-rows,
+html.platform-linux .terminal-container .xterm-helper-textarea {
+  width: 100% !important;
+  min-width: 100% !important;
+}
+
+html.platform-macos .split-pane .xterm-screen,
+html.platform-linux .split-pane .xterm-screen {
+  min-width: 100% !important;
+}
+
+/* WKWebView GPU compositing fix: force the xterm canvas container onto its own
+ * GPU compositing layer. Without this, WKWebView's Metal compositor may reuse the
+ * old (stale) GPU layer from before a window-shrink resize instead of creating a
+ * fresh layer for the new smaller canvas dimensions. The stale layer retains old
+ * opaque pixels that bleed through the transparent canvas, making the terminal
+ * appear less transparent. Using transform: translateZ(0) ensures WKWebView
+ * always creates a dedicated, properly-invalidated layer for the canvas content.
+ * Chrome (dev mode) handles canvas layer lifecycle correctly; this rule only
+ * matters for WKWebView / Metal. */
+html.platform-macos .terminal-container .xterm-screen,
+html.platform-linux .terminal-container .xterm-screen {
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+}
+
+/* Custom overlay scrollbar — container spans right edge of .xterm */
+.xterm-overlay-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.xterm-overlay-scrollbar-track {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 4px;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: width 0.15s ease, background 0.15s ease;
+  border-radius: 999px;
+}
+
+.xterm-overlay-scrollbar:hover .xterm-overlay-scrollbar-track,
+.xterm-overlay-scrollbar.dragging .xterm-overlay-scrollbar-track {
+  width: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.xterm-overlay-scrollbar-thumb {
+  position: absolute;
+  right: 0;
+  width: 100%;
+  min-height: 20px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  transition: background 0.15s ease;
+}
+
+.xterm-overlay-scrollbar:hover .xterm-overlay-scrollbar-thumb,
+.xterm-overlay-scrollbar.dragging .xterm-overlay-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.30);
+}
+
+.xterm-overlay-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.42) !important;
+}
+
+/* Light theme */
+html[data-theme="light"] .xterm-overlay-scrollbar:hover .xterm-overlay-scrollbar-track,
+html[data-theme="light"] .xterm-overlay-scrollbar.dragging .xterm-overlay-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+html[data-theme="light"] .xterm-overlay-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+}
+
+html[data-theme="light"] .xterm-overlay-scrollbar:hover .xterm-overlay-scrollbar-thumb,
+html[data-theme="light"] .xterm-overlay-scrollbar.dragging .xterm-overlay-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+html[data-theme="light"] .xterm-overlay-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.40) !important;
+}
+

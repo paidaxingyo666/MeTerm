@@ -5,244 +5,31 @@ import { LigaturesAddon } from '@xterm/addon-ligatures';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { WebglAddon } from '@xterm/addon-webgl';
 import {
-  decodeHello,
-  decodeMessage,
   encodeMessage,
-  encodeResize,
-  ErrSessionNotFound,
-  ErrNotMaster,
-  ErrKicked,
-  MsgError,
-  MsgHello,
   MsgInput,
-  MsgOutput,
   MsgPing,
-  MsgPong,
-  MsgRoleChange,
-  MsgSessionEnd,
   MsgSetEncoding,
   MsgMasterRequest,
-  MsgMasterRequestNotify,
   MsgMasterApproval,
   MsgMasterReclaim,
-  MsgPairNotify,
   MsgPairApproval,
-  MsgFileList,
-  MsgFileListResp,
 } from './protocol';
-import { buildWsProtocols, buildWsUrl } from './connection';
-import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
-import { AppSettings, getTheme, getColorSchemeBg, hexToRgba, hexToOscRgb } from './themes';
+import { AppSettings, getTheme, getColorSchemeBg, hexToRgba } from './themes';
 import { loadFont, getFontFamily } from './fonts';
 import { DrawerManager } from './drawer';
-import { registerFileLinkProvider, prefetchDirCache, setSSHDirProbe, getSSHDirProbe, clearSSHDirProbe } from './terminal-file-link';
-
-const isWindowsPlatform = navigator.userAgent.toLowerCase().includes('windows');
-
-function sanitizeNotificationText(text: string): string {
-  return text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').slice(0, 200);
-}
-
-
-/**
- * Patch xterm.js viewport on Windows: force scrollBarWidth=0 so FitAddon
- * allocates full width, then attach a custom overlay scrollbar.
- */
-function patchOverlayScrollbar(terminal: Terminal, container: HTMLElement): void {
-  const core = (terminal as any)._core;
-  if (core?.viewport) {
-    core.viewport.scrollBarWidth = 0;
-  }
-
-  const xtermEl = container.querySelector('.xterm') as HTMLElement | null;
-  const viewport = container.querySelector('.xterm-viewport') as HTMLElement | null;
-  if (!xtermEl || !viewport) return;
-
-  // Build overlay structure
-  const bar = document.createElement('div');
-  bar.className = 'xterm-overlay-scrollbar';
-  const track = document.createElement('div');
-  track.className = 'xterm-overlay-scrollbar-track';
-  const thumb = document.createElement('div');
-  thumb.className = 'xterm-overlay-scrollbar-thumb';
-  track.appendChild(thumb);
-  bar.appendChild(track);
-  xtermEl.appendChild(bar);
-
-  // Track whether we're in alternate screen buffer (TUI apps).
-  // In alternate mode there is no scrollback, so hide the scrollbar.
-  let inAlternate = terminal.buffer.active.type === 'alternate';
-  terminal.buffer.onBufferChange((buf) => {
-    inAlternate = buf.type === 'alternate';
-    sync();
-  });
-
-  // --- sync thumb position / size ---
-  function sync(): void {
-    if (inAlternate) {
-      bar.style.display = 'none';
-      return;
-    }
-    const sh = viewport!.scrollHeight;
-    const ch = viewport!.clientHeight;
-    if (sh <= ch) {
-      bar.style.display = 'none';
-      return;
-    }
-    bar.style.display = '';
-    const ratio = ch / sh;
-    const thumbH = Math.max(20, ratio * ch);
-    const maxScroll = sh - ch;
-    const pct = viewport!.scrollTop / maxScroll;
-    const thumbTop = pct * (ch - thumbH);
-    thumb.style.height = `${thumbH}px`;
-    thumb.style.transform = `translateY(${thumbTop}px)`;
-  }
-
-  viewport.addEventListener('scroll', sync, { passive: true });
-  const ro = new ResizeObserver(sync);
-  ro.observe(viewport);
-  // Catch buffer changes (new lines, clear, etc.)
-  const mo = new MutationObserver(sync);
-  mo.observe(viewport, { childList: true, subtree: true, characterData: true });
-  sync();
-
-  // --- drag support ---
-  let dragging = false;
-  let dragStartY = 0;
-  let dragStartScroll = 0;
-
-  thumb.addEventListener('mousedown', (e: MouseEvent) => {
-    dragging = true;
-    dragStartY = e.clientY;
-    dragStartScroll = viewport!.scrollTop;
-    bar.classList.add('dragging');
-    e.preventDefault();
-    e.stopPropagation();
-  });
-
-  const onMouseMove = (e: MouseEvent): void => {
-    if (!dragging) return;
-    const ch = viewport!.clientHeight;
-    const sh = viewport!.scrollHeight;
-    const ratio = ch / sh;
-    const thumbH = Math.max(20, ratio * ch);
-    const trackH = ch - thumbH;
-    const maxScroll = sh - ch;
-    const dy = e.clientY - dragStartY;
-    viewport!.scrollTop = dragStartScroll + (dy / trackH) * maxScroll;
-  };
-
-  const onMouseUp = (): void => {
-    if (!dragging) return;
-    dragging = false;
-    bar.classList.remove('dragging');
-  };
-
-  // Use AbortController so document-level listeners are cleaned up when
-  // the terminal DOM is removed (container.remove() in destroy()).
-  const ac = new AbortController();
-  document.addEventListener('mousemove', onMouseMove, { signal: ac.signal });
-  document.addEventListener('mouseup', onMouseUp, { signal: ac.signal });
-
-  // --- click-on-track to jump ---
-  track.addEventListener('mousedown', (e: MouseEvent) => {
-    if (e.target === thumb) return; // handled by thumb drag
-    const rect = track.getBoundingClientRect();
-    const clickY = e.clientY - rect.top;
-    const ch = viewport!.clientHeight;
-    const sh = viewport!.scrollHeight;
-    const maxScroll = sh - ch;
-    viewport!.scrollTop = (clickY / ch) * maxScroll;
-    e.preventDefault();
-  });
-
-  // Cleanup: observe container removal from DOM to abort document listeners
-  const cleanupObs = new MutationObserver(() => {
-    if (!container.isConnected) {
-      ac.abort();
-      ro.disconnect();
-      mo.disconnect();
-      cleanupObs.disconnect();
-    }
-  });
-  if (container.parentElement) {
-    cleanupObs.observe(container.parentElement, { childList: true });
-  }
-}
-
-// NOTE: patchConPtyAlternateScreen was removed — it called terminal.clear()
-// (or CSI 3J) after TUI exit which interfered with ConPTY's normal-screen
-// restore sequence, leaving the terminal unusable (no prompt, cursor stuck).
-// Scrollback pollution from old Win10 ConPTY is minor and tolerable.
-
-export type SessionStatus = 'connecting' | 'connected' | 'reconnecting' | 'ended' | 'notfound' | 'disconnected';
-
-export interface SessionInfo {
-  id: string;
-  title: string;
-  status: SessionStatus;
-}
-
-export interface ManagedTerminal {
-  id: string;
-  title: string;
-  shellTitle: string;
-  hasOscTitle: boolean;
-  terminal: Terminal;
-  thumbnailTerminal: Terminal;
-  fitAddon: FitAddon;
-  canvasAddon: CanvasAddon | null;
-  webglAddon: WebglAddon | null;
-  ligaturesAddon: LigaturesAddon | null;
-  container: HTMLDivElement;
-  thumbnailContainer: HTMLDivElement;
-  ws: WebSocket | null;
-  clientId: string | null;
-  ended: boolean;
-  reconnectAttempt: number;
-  reconnectTimer: ReturnType<typeof setTimeout> | null;
-  /** Port used for local WebSocket connection (updated on sidecar restart) */
-  _port: number;
-  /** Auth token for local WebSocket connection (updated on sidecar restart) */
-  _token: string;
-  resizeDebounce: ReturnType<typeof setTimeout> | null;
-  settleTimers: ReturnType<typeof setTimeout>[];
-  lastSentCols: number;
-  lastSentRows: number;
-  observer: ResizeObserver | null;
-  onStatus: (status: SessionStatus) => void;
-  onTitleChange: (title: string) => void;
-  /** Count of \n bytes to filter from incoming data after SIGWINCH, 0 = disabled */
-  _postResizeNewlineFilter: number;
-  _postResizeFilterTimer: ReturnType<typeof setTimeout> | null;
-  /** True once user has sent any input — disables post-resize \n filter */
-  _hasUserInput: boolean;
-  /** Suppress MsgRoleChange during cross-window tab transfer grace period */
-  _transferGrace: boolean;
-  /** Remote WebSocket URL override */
-  remoteWsUrl?: string;
-  /** Remote authentication token */
-  remoteToken?: string;
-  /** Whether this is a remote viewer session */
-  isRemote?: boolean;
-  /** Whether this session was kicked by the host */
-  kicked?: boolean;
-  /** Last reported OSC background color — used to detect actual theme change */
-  _lastOscBg?: string;
-  /** OSC 7766 marker resolvers — key is marker ID, value resolves with exit code */
-  _oscMarkerResolvers: Map<string, (exitCode: number) => void>;
-  /** Shell integration state — tracked via OSC 7768 prompt hook */
-  shellState: {
-    phase: 'unknown' | 'ready' | 'agent_executing' | 'user_active';
-    lastExitCode: number;
-    cwd: string;
-    hookInjected: boolean;
-    lastInputSource: 'none' | 'agent' | 'user';
-    lastUserInputAt: number;
-    agentCommandSeq: number;
-  };
-}
+import { registerFileLinkProvider, getSSHDirProbe, clearSSHDirProbe } from './terminal-file-link';
+import { isWindowsPlatform } from './app-state';
+import type { SessionStatus, SessionInfo, ManagedTerminal } from './terminal-types';
+export type { SessionStatus, SessionInfo, ManagedTerminal } from './terminal-types';
+import { patchCanvasBgOpacity, patchOverlayScrollbar } from './terminal-patches';
+import {
+  applySettingsToTerminal,
+  registerOscColorHandlers,
+} from './terminal-settings';
+import { scheduleResize as _scheduleResize } from './terminal-resize';
+import { initIMEState, setupKeyHandler, setupCompositionListeners } from './terminal-ime';
+import { registerOscHandlers } from './terminal-osc';
+import { connectWebSocket, scheduleReconnect as _scheduleReconnect } from './terminal-websocket';
 
 class TerminalRegistryClass {
   private terminals = new Map<string, ManagedTerminal>();
@@ -329,7 +116,7 @@ class TerminalRegistryClass {
     this.settings = settings;
     await loadFont(settings.fontFamily, settings.enableNerdFont);
     this.terminals.forEach((mt) => {
-      this.applySettingsToTerminal(mt);
+      this._applySettingsToTerminal(mt);
       if (oldEncoding !== settings.encoding) {
         this.sendEncoding(mt, settings.encoding);
       }
@@ -342,162 +129,13 @@ class TerminalRegistryClass {
     }
   }
 
-  private applySettingsToTerminal(mt: ManagedTerminal): void {
+  private _applySettingsToTerminal(mt: ManagedTerminal): void {
     if (!this.settings) return;
-
-    const theme = getTheme(this.settings.theme);
-    const fontFamily = getFontFamily(this.settings.fontFamily, this.settings.enableNerdFont);
-    const fontWeight = this.settings.enableBoldFont ? 'bold' as const : 'normal' as const;
-
-    // Use rgba background so only the background is transparent, not the text
-    const bgHex = getColorSchemeBg(this.settings.colorScheme);
-    const opacity = Math.max(20, Math.min(100, this.settings.opacity)) / 100;
-    const hasBackgroundImage = !!this.settings.backgroundImage;
-    // When a bg image is active, the terminal canvas must be fully transparent so
-    // text floats over the image+overlay stack. The container itself is also made
-    // transparent so padding areas don't show a mismatched solid color.
-    // Without an image, set container background = canvas background so the
-    // padding areas always match the terminal color.
-    const needsTransparency = isWindowsPlatform || opacity < 1 || hasBackgroundImage;
-    const bgColor = hasBackgroundImage ? 'rgba(0,0,0,0)' : (opacity < 1 ? hexToRgba(bgHex, opacity) : bgHex);
-    mt.terminal.options.allowTransparency = needsTransparency;
-    mt.terminal.options.theme = { ...theme, background: bgColor };
-    // Padding color fix: match container background to the canvas color so the
-    // padding areas don't show a mismatched color from the parent.
-    // When bg image is active, keep transparent so image shows through padding areas.
-    // When opacity < 1, leave transparent to avoid double-stacking (container rgba
-    // on top of canvas rgba makes the terminal appear darker than intended).
-    // When opacity == 1 (opaque), set the exact theme color so padding matches canvas.
-    if (hasBackgroundImage) {
-      mt.container.style.backgroundColor = 'transparent';
-    } else if (opacity >= 1) {
-      mt.container.style.backgroundColor = bgHex;
-    } else {
-      mt.container.style.backgroundColor = '';
-    }
-    mt.terminal.options.fontSize = this.settings.fontSize;
-    mt.terminal.options.fontFamily = fontFamily;
-    mt.terminal.options.fontWeight = fontWeight;
-    mt.terminal.options.fontWeightBold = 'bold';
-
-    if (needsTransparency && !mt.canvasAddon) {
-      try {
-        const canvasAddon = new CanvasAddon();
-        mt.terminal.loadAddon(canvasAddon);
-        mt.canvasAddon = canvasAddon;
-      } catch {
-        // Canvas addon not available
-      }
-    }
-
-    // Manage WebGL addon based on transparency
-    if (needsTransparency && mt.webglAddon) {
-      // WebGL doesn't support alpha — dispose it so canvas renderer takes over
-      mt.webglAddon.dispose();
-      mt.webglAddon = null;
-    } else if (!needsTransparency && !mt.webglAddon) {
-      // Restore WebGL when transparency is no longer needed
-      try {
-        const webglAddon = new WebglAddon();
-        mt.terminal.loadAddon(webglAddon);
-        mt.webglAddon = webglAddon;
-      } catch {
-        // WebGL not available
-      }
-    }
-
-    // Keep thumbnail background fully transparent — the app supplies its own
-    // background behind the thumbnail, so the thumbnail canvas GPU layer must be
-    // entirely see-through to avoid compositing interference in WKWebView.
-    mt.thumbnailTerminal.options.theme = { ...theme, background: '#00000000' };
-    mt.thumbnailTerminal.options.fontSize = this.settings.fontSize;
-    mt.thumbnailTerminal.options.fontFamily = fontFamily;
-    mt.thumbnailTerminal.options.fontWeight = fontWeight;
-    mt.thumbnailTerminal.options.fontWeightBold = 'bold';
-
-    // Manage ligatures addon
-    if (this.settings.enableLigatures && !mt.ligaturesAddon) {
-      try {
-        const addon = new LigaturesAddon();
-        mt.terminal.loadAddon(addon);
-        mt.ligaturesAddon = addon;
-      } catch {
-        // Ligatures may not be supported in all environments
-      }
-    } else if (!this.settings.enableLigatures && mt.ligaturesAddon) {
-      mt.ligaturesAddon.dispose();
-      mt.ligaturesAddon = null;
-    }
-
-    mt.terminal.refresh(0, mt.terminal.rows - 1);
-    mt.thumbnailTerminal.refresh(0, mt.thumbnailTerminal.rows - 1);
-
-    // When theme changes, proactively report the new background/foreground
-    // colors via OSC 11/10 responses so running TUI apps can auto-adapt
-    // (e.g. switch between light/dark mode without restarting).
-    this.notifyColorSchemeChange(mt, theme);
+    applySettingsToTerminal(mt, this.settings);
   }
 
-  /**
-   * Register OSC 10 (foreground) and OSC 11 (background) color query handlers.
-   * When a TUI app sends \x1b]10;?\x07 or \x1b]11;?\x07, we respond with the
-   * current theme colors so the app can detect light/dark mode.
-   */
-  private registerOscColorHandlers(mt: ManagedTerminal, terminal: Terminal): void {
-    terminal.parser.registerOscHandler(10, (data: string) => {
-      if (data !== '?') return true; // Intercept color SET — prevent xterm.js from overriding our theme
-      const theme = this.settings ? getTheme(this.settings.theme) : null;
-      if (!theme || !mt.ws || mt.ws.readyState !== WebSocket.OPEN) return true;
-      const response = `\x1b]10;${hexToOscRgb(theme.foreground)}\x07`;
-      mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode(response)));
-      return true;
-    });
-
-    terminal.parser.registerOscHandler(11, (data: string) => {
-      if (data !== '?') return true; // Intercept color SET — prevent xterm.js from overriding our theme
-      const theme = this.settings ? getTheme(this.settings.theme) : null;
-      if (!theme || !mt.ws || mt.ws.readyState !== WebSocket.OPEN) return true;
-      const response = `\x1b]11;${hexToOscRgb(theme.background)}\x07`;
-      mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode(response)));
-      return true;
-    });
-  }
-
-  /**
-   * Notify running TUI apps that the terminal color scheme changed.
-   *
-   * We do NOT send unsolicited OSC 10/11 reports via MsgInput because on
-   * Windows, ConPTY treats them as keyboard input — the ESC byte becomes an
-   * Escape key press and the remaining bytes are echoed as visible garbage
-   * on the shell prompt (e.g. "]11;rgb:1e1e/1e1e/1e1e^G").
-   *
-   * Instead we use a resize nudge (shrink 1 col then restore) which triggers
-   * SIGWINCH / WindowSizeMsg.  TUI apps that re-query OSC 11 on resize
-   * (vim, neovim, etc.) will pick up the new background color.  Apps that
-   * don't re-query on resize (like opencode) won't auto-switch — that's a
-   * limitation of the app, not the terminal.
-   */
-  private notifyColorSchemeChange(mt: ManagedTerminal, theme: { foreground: string; background: string }): void {
-    if (!mt.ws || mt.ws.readyState !== WebSocket.OPEN) return;
-    if (mt._lastOscBg === theme.background) return;
-    const isFirstSet = mt._lastOscBg === undefined;
-    mt._lastOscBg = theme.background;
-    // First call is just initialization — don't nudge on app startup.
-    if (isFirstSet) return;
-
-    // Nudge resize: shrink by 1 col then restore after a short delay.
-    // This triggers SIGWINCH, causing TUI apps that re-query terminal
-    // capabilities on resize to pick up the new background color via OSC 11.
-    const cols = mt.lastSentCols || mt.terminal.cols;
-    const rows = mt.lastSentRows || mt.terminal.rows;
-    if (cols > 1) {
-      mt.ws.send(encodeResize(cols - 1, rows));
-      setTimeout(() => {
-        if (mt.ws?.readyState === WebSocket.OPEN) {
-          mt.ws.send(encodeResize(cols, rows));
-        }
-      }, 80);
-    }
+  private _registerOscColorHandlers(mt: ManagedTerminal, terminal: Terminal): void {
+    registerOscColorHandlers(mt, terminal, () => this.settings);
   }
 
   getAllSessions(): SessionInfo[] {
@@ -577,220 +215,8 @@ class TerminalRegistryClass {
     }
   }
 
-  private isVisible(mt: ManagedTerminal): boolean {
-    if (mt.ended || !mt.container.classList.contains('active')) {
-      return false;
-    }
-    const rect = mt.container.getBoundingClientRect();
-    return rect.width >= 10 && rect.height >= 10;
-  }
-
-  private sendResize(mt: ManagedTerminal, cols: number, rows: number): void {
-    if (cols <= 0 || rows <= 0) {
-      return;
-    }
-    if (mt.ws?.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    // Always send resize to trigger SIGWINCH for TUI apps
-    // The backend will ignore if dimensions unchanged but still sends signal
-    mt.ws.send(encodeResize(cols, rows));
-    mt.lastSentCols = cols;
-    mt.lastSentRows = rows;
-  }
-
-  /**
-   * Check if data consists solely of newline characters (\n, \r, \r\n).
-   * Only filter when the entire chunk is pure whitespace newlines — never
-   * strip \n from chunks that also carry escape sequences or text content.
-   */
-  private filterPostResizeNewlines(mt: ManagedTerminal, data: Uint8Array): Uint8Array | null {
-    for (let i = 0; i < data.length; i++) {
-      if (data[i] !== 0x0a && data[i] !== 0x0d) { // not \n and not \r
-        // Chunk contains real content — stop filtering, pass through as-is
-        mt._postResizeNewlineFilter = 0;
-        if (mt._postResizeFilterTimer) {
-          clearTimeout(mt._postResizeFilterTimer);
-          mt._postResizeFilterTimer = null;
-        }
-        return data;
-      }
-    }
-    // Entire chunk is only \n / \r — drop it
-    mt._postResizeNewlineFilter--;
-    if (mt._postResizeNewlineFilter <= 0) {
-      mt._postResizeNewlineFilter = 0;
-      if (mt._postResizeFilterTimer) {
-        clearTimeout(mt._postResizeFilterTimer);
-        mt._postResizeFilterTimer = null;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Core resize implementation.
-   * @param sendSignal - true: fit display AND send SIGWINCH to PTY.
-   *                     false: fit display only (no PTY signal).
-   *
-   * Separating these two operations prevents scrollback pollution during
-   * interactive window drag.  On macOS/Linux we call fitDisplay immediately
-   * every frame for a smooth visual resize, but defer sendSignal until the
-   * window stops moving.  Without this, zsh (and other shells) redraw their
-   * prompt at every intermediate column width and each version is committed to
-   * the scrollback buffer.  When the window is later expanded, xterm.js reflow
-   * surfaces all those intermediate prompts as duplicate lines.
-   */
-  private doResizeInternal(mt: ManagedTerminal, generation: number, sendSignal: boolean): void {
-    if (!this.isVisible(mt)) {
-      return;
-    }
-    const currentGen = this.resizeGeneration.get(mt.id) || 0;
-    if (generation !== currentGen) {
-      return;
-    }
-
-    // During split-pane drag, skip resize entirely to avoid
-    // buffer reflow artifacts from rapid intermediate sizes.
-    // resizeAll() after drag end handles the final resize.
-    if (document.body.classList.contains('split-resizing')) {
-      return;
-    }
-
-    const rect = mt.container.getBoundingClientRect();
-    if (rect.width < 10 || rect.height < 10) {
-      return;
-    }
-
-    // Check if terminal was scrolled to bottom before resize
-    const buf = mt.terminal.buffer.active;
-    const wasAtBottom = buf.viewportY >= buf.baseY;
-
-    // Use fitAddon to calculate and apply correct dimensions
-    mt.fitAddon.fit();
-
-    const cols = mt.terminal.cols;
-    const rows = mt.terminal.rows;
-
-    if (cols <= 0 || rows <= 0) {
-      return;
-    }
-
-    if (mt.thumbnailTerminal.cols !== cols || mt.thumbnailTerminal.rows !== rows) {
-      mt.thumbnailTerminal.resize(cols, rows);
-    }
-
-    // Send resize to backend (SIGWINCH) only when explicitly requested and
-    // dimensions actually changed.  Deferring this to after the resize settles
-    // avoids shells writing a prompt-redraw for every intermediate column count.
-    if (sendSignal && (cols !== mt.lastSentCols || rows !== mt.lastSentRows)) {
-      const inSplitPane = mt.lastSentCols > 0 && mt.lastSentRows > 0 && mt.container.closest('.split-container');
-      if (inSplitPane && !mt._hasUserInput) {
-        // Enable post-resize newline filter to prevent blank lines from
-        // shell's SIGWINCH response (zsh themes output \n before prompt redraw).
-        // Only for fresh terminals with no prior user input — once the user
-        // has interacted, the \n spacing between prompts is expected behavior.
-        mt._postResizeNewlineFilter = 1;
-        if (mt._postResizeFilterTimer) clearTimeout(mt._postResizeFilterTimer);
-        mt._postResizeFilterTimer = setTimeout(() => {
-          mt._postResizeNewlineFilter = 0;
-          mt._postResizeFilterTimer = null;
-        }, 600);
-      }
-
-      // Bundled conpty.dll (default) does not re-emit screen content on
-      // resize, so no mute/suppression is needed — just send the resize
-      // and let the TUI handle SIGWINCH naturally. This matches Windows
-      // Terminal's approach.
-      //
-      // If the system falls back to inbox kernel32.dll ConPTY (Win10),
-      // ResizePseudoConsole may re-emit phantom screen content. The TUI's
-      // own SIGWINCH redraw overwrites it shortly after, so the brief
-      // flash is acceptable for the fallback path.
-      this.sendResize(mt, cols, rows);
-    }
-
-    // After reflow (cols changed → lines re-wrap), viewport scroll position
-    // may become incorrect. Force scroll to bottom if terminal was at bottom.
-    if (wasAtBottom) {
-      mt.terminal.scrollToBottom();
-    }
-
-    // Force full refresh to keep display in sync
-    mt.terminal.refresh(0, rows - 1);
-
-    // WKWebView GPU compositing fix: xterm.js schedules its canvas render via
-    // requestAnimationFrame (async). During a window shrink on WKWebView/Metal,
-    // the compositor may reuse the old (larger) GPU layer from the previous frame
-    // before xterm.js's rAF callback fires and redraws with the new dimensions.
-    // This causes a transient "more opaque" artifact that can persist.
-    //
-    // Fix: after the regular rAF render completes, issue one more refresh in the
-    // FOLLOWING frame. By that point the compositor has committed the new canvas
-    // dimensions and cleared any stale GPU content, so the second refresh renders
-    // into a clean layer — eliminating the stale-pixel opacity artifact.
-    //
-    // Chrome (dev mode) handles this correctly with no extra step needed.
-    if (import.meta.env.PROD) {
-      requestAnimationFrame(() => {
-        if ((this.resizeGeneration.get(mt.id) || 0) === generation) {
-          mt.terminal.refresh(0, mt.terminal.rows - 1);
-        }
-      });
-    }
-  }
-
-  private doResize(mt: ManagedTerminal, generation: number): void {
-    this.doResizeInternal(mt, generation, true);
-  }
-
-  private fitDisplay(mt: ManagedTerminal, generation: number): void {
-    this.doResizeInternal(mt, generation, false);
-  }
-
   private scheduleResize(mt: ManagedTerminal): void {
-    const generation = (this.resizeGeneration.get(mt.id) || 0) + 1;
-    this.resizeGeneration.set(mt.id, generation);
-
-    if (mt.resizeDebounce !== null) {
-      clearTimeout(mt.resizeDebounce);
-    }
-    mt.settleTimers.forEach((timer) => clearTimeout(timer));
-
-    if (isWindowsPlatform) {
-      // Windows/ConPTY: debounce aggressively to avoid rapid reflow
-      // which corrupts line wrapping. Single resize after settle —
-      // no extra settle timer to prevent double-resize conflicts
-      // with the ConPTY mute window.
-      mt.resizeDebounce = setTimeout(() => {
-        this.doResize(mt, generation);
-        mt.resizeDebounce = null;
-      }, 150);
-      mt.settleTimers = [];
-    } else {
-      // macOS/Linux: fit display immediately every frame for smooth visual resize,
-      // but defer SIGWINCH until the window stops moving (~80 ms idle).
-      // This prevents shells from writing a prompt-redraw into the scrollback
-      // buffer at every intermediate column width during a drag resize.
-      this.fitDisplay(mt, generation);
-
-      mt.resizeDebounce = setTimeout(() => {
-        this.doResize(mt, generation);
-        mt.resizeDebounce = null;
-      }, 80);
-
-      // Settle passes in case the container size is still unstable.
-      // The extra 400 ms pass catches slower layout engines (e.g. x86 WKWebView)
-      // where flex siblings (AI bar, drawers) finish layout after 160 ms.
-      mt.settleTimers = [
-        setTimeout(() => this.doResize(mt, generation), 160),
-        setTimeout(() => this.doResize(mt, generation), 400),
-      ];
-    }
-  }
-
-  private fitAndSignal(mt: ManagedTerminal, _forceSignal: boolean): void {
-    this.scheduleResize(mt);
+    _scheduleResize(mt, this.resizeGeneration);
   }
 
   private debouncedFitAndSignal(mt: ManagedTerminal): void {
@@ -875,6 +301,10 @@ class TerminalRegistryClass {
     if (hasBackgroundImage) {
       container.style.backgroundColor = 'transparent';
     }
+    // Apply opacity to explicit TUI backgrounds so they become semi-transparent
+    // (like iTerm2's window-level transparency). xterm.js Canvas addon draws
+    // explicit backgrounds via fillRect; text is drawn via drawImage (unaffected).
+    patchCanvasBgOpacity(container, opacityVal);
     patchOverlayScrollbar(terminal, container);
     // patchConPtyAlternateScreen removed — see note above
 
@@ -961,215 +391,18 @@ class TerminalRegistryClass {
       shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0 },
     };
 
-    // Register OSC 7766 handler for agent command completion markers.
-    // The shell sends `printf '\033]7766;MARKER_ID;EXIT_CODE\007'` which
-    // xterm.js consumes silently (never written to terminal buffer).
-    terminal.parser.registerOscHandler(7766, (data: string) => {
-      const sep = data.indexOf(';');
-      if (sep === -1) return true;
-      const markerId = data.slice(0, sep);
-      const exitCode = parseInt(data.slice(sep + 1), 10);
-      const resolver = mt._oscMarkerResolvers.get(markerId);
-      if (resolver) {
-        mt._oscMarkerResolvers.delete(markerId);
-        resolver(isNaN(exitCode) ? -1 : exitCode);
-      }
-      return true;
+    // Register all OSC handlers (7766, 7, 7768, 9, 777)
+    registerOscHandlers(mt, terminal, {
+      onShellIdle: (sid) => {
+        const listeners = this.shellStateListeners.get(sid);
+        if (listeners) listeners.forEach(cb => cb());
+      },
     });
 
-    // Register OSC 7 handler for CWD tracking.
-    // macOS zsh emits this by default (via /etc/zshrc update_terminal_cwd).
-    // SSH sessions receive OSC 7 from injected hook.
-    // Format: file://hostname/path/to/dir  or  file:///path/to/dir
-    terminal.parser.registerOscHandler(7, (data: string) => {
-      try {
-        const url = new URL(data);
-        if (url.protocol === 'file:') {
-          const cwd = decodeURIComponent(url.pathname);
-          if (cwd && cwd !== mt.shellState.cwd) {
-            mt.shellState.cwd = cwd;
-            // 本地会话：预取本地目录缓存
-            // SSH 会话：通过 SFTP 请求远程目录列表
-            if (DrawerManager.getServerInfo(mt.id)) {
-              if (mt.ws?.readyState === WebSocket.OPEN) {
-                try {
-                  const req = JSON.stringify({ path: cwd });
-                  mt.ws.send(encodeMessage(MsgFileList, new TextEncoder().encode(req)));
-                } catch { /* ignore */ }
-              }
-            } else {
-              prefetchDirCache(cwd);
-            }
-          }
-        }
-      } catch { /* ignore malformed URLs */ }
-      return true;
-    });
-
-    // Register OSC 7768 handler for shell state machine (prompt hook).
-    // The injected __meterm_precmd sends `\033]7768;EXIT_CODE;CWD\007` before each prompt.
-    terminal.parser.registerOscHandler(7768, (data: string) => {
-      const sep = data.indexOf(';');
-      if (sep === -1) return true;
-      const exitCode = parseInt(data.slice(0, sep), 10);
-      const cwd = data.slice(sep + 1);
-      mt.shellState.lastExitCode = isNaN(exitCode) ? -1 : exitCode;
-      mt.shellState.cwd = cwd;
-      mt.shellState.phase = 'ready';
-      prefetchDirCache(cwd);
-      const listeners = this.shellStateListeners.get(mt.id);
-      if (listeners) listeners.forEach(cb => cb());
-      return true;
-    });
-
-    // ═══ IME 修复（WebKit Bug #165004 + WKWebView compositionend 不触发） ═══
-    //
-    // WKWebView 有两个 IME 问题：
-    //   1. compositionend 事件顺序颠倒（Bug #165004）→ 残留字符被误发送
-    //   2. 删除最后组合字符时 compositionend 可能完全不触发 → composition 卡死
-    //
-    // 卡死检测原理（flag-based，不依赖事件顺序）：
-    //   正常 composition 中，每次 keydown(229) 周围必有 compositionupdate。
-    //   在 keydown(229) 时设 flag，compositionupdate 时清 flag。
-    //   下一次 keydown(229) 时若 flag 仍在 → 上一轮无 compositionupdate → 卡死。
-    let blockPostCompKeydown229 = false;
-    let compStartValueLen = 0;
-    let pendingCompEnd: { startPos: number } | null = null;
-    let kd229WithoutCompUpdate = false;
-
-    // 重置卡死的 composition 状态
-    const resetStuckComposition = () => {
-      const ch = (terminal as any)._core?._compositionHelper;
-      if (!ch?.isComposing) return;
-      ch._compositionView.classList.remove('active');
-      ch._compositionView.textContent = '';
-      ch._isComposing = false;
-      ch._isSendingComposition = false;
-      if (terminal.textarea) {
-        terminal.textarea.value = terminal.textarea.value.substring(0, compStartValueLen);
-      }
-    };
-
-    terminal.attachCustomKeyEventHandler((event) => {
-      // WebKit Bug #165004 防护：compositionend 后的 keydown(229) 走旁路发送残留字符
-      if (event.type === 'keydown' && event.keyCode === 229 && blockPostCompKeydown229) {
-        return false;
-      }
-
-      // IME 卡死修复 A：浏览器已结束 composition（isComposing=false）但 xterm 仍认为在组合中
-      if (event.type === 'keydown' && !event.isComposing) {
-        const compositionHelper = (terminal as any)._core?._compositionHelper;
-        if (compositionHelper?.isComposing) {
-          if (terminal.textarea) terminal.textarea.value = '';
-          compositionHelper.compositionend();
-        }
-      }
-
-      // IME 卡死修复 B（flag-based）：上一轮 keydown(229) 没有伴随 compositionupdate → 卡死
-      if (event.type === 'keydown' && event.keyCode === 229) {
-        const ch = (terminal as any)._core?._compositionHelper;
-        if (ch?.isComposing) {
-          if (kd229WithoutCompUpdate) {
-            kd229WithoutCompUpdate = false;
-            resetStuckComposition();
-            return true;
-          }
-          kd229WithoutCompUpdate = true;
-        }
-      }
-
-      // 阻止单独按下修饰键时 xterm.js 自动滚到底部（影响 Ctrl/Cmd+Click 文件链接）
-      if (event.key === 'Meta' || event.key === 'Control') return false;
-
-      const isMac = navigator.userAgent.includes('Mac');
-      const mod = isMac ? event.metaKey : event.ctrlKey;
-      if (!mod) return true;
-
-      if (event.type === 'keydown' && event.key === 'c' && terminal.hasSelection()) {
-        clipboardWriteText(terminal.getSelection());
-        return false;
-      }
-      if (event.type === 'keydown' && event.key === 'v') {
-        event.preventDefault();
-        clipboardReadText().then((text) => {
-          if (text) terminal.paste(text);
-        });
-        return false;
-      }
-      if (event.type === 'keydown' && event.key === 'Backspace') {
-        if (mt.ws?.readyState === WebSocket.OPEN) {
-          mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode('\x15')));
-        }
-        return false;
-      }
-      return true;
-    });
-
-    // compositionend 处理 + compositionupdate 卡死计时器取消
-    if (terminal.textarea) {
-      const textarea = terminal.textarea;
-
-      textarea.addEventListener('compositionstart', () => {
-        compStartValueLen = textarea.value.length;
-        blockPostCompKeydown229 = false;
-        pendingCompEnd = null;
-        kd229WithoutCompUpdate = false;
-      });
-
-      // compositionupdate 表明 composition 仍在正常进行 → 清除卡死 flag
-      textarea.addEventListener('compositionupdate', () => {
-        kd229WithoutCompUpdate = false;
-      });
-
-      // input 事件：处理 compositionend 后的提交/取消确认
-      textarea.addEventListener('input', (e: Event) => {
-        if (!pendingCompEnd) return;
-        const { inputType } = e as InputEvent;
-        if (!inputType) return;
-
-        const saved = pendingCompEnd;
-        pendingCompEnd = null;
-        blockPostCompKeydown229 = false;
-
-        if (inputType.startsWith('delete')) return;
-
-        const ch = (terminal as any)._core?._compositionHelper;
-        if (!ch || ch._isComposing) return;
-
-        const input = textarea.value.substring(saved.startPos);
-        if (input.length > 0) {
-          ch._coreService.triggerDataEvent(input, true);
-        }
-      });
-
-      textarea.addEventListener('compositionend', () => {
-        const ch = (terminal as any)._core?._compositionHelper;
-        if (!ch) return;
-        kd229WithoutCompUpdate = false;
-
-        ch._isSendingComposition = false;
-        blockPostCompKeydown229 = true;
-
-        const startPos = ch._compositionPosition.start + ch._dataAlreadySent.length;
-        pendingCompEnd = { startPos };
-
-        requestAnimationFrame(() => {
-          if (!pendingCompEnd) return;
-          const saved = pendingCompEnd;
-          pendingCompEnd = null;
-          blockPostCompKeydown229 = false;
-
-          if (ch._isComposing) return;
-
-          const curValue = textarea.value;
-          const input = curValue.substring(saved.startPos);
-
-          if (input.length > 0 && curValue.length > compStartValueLen) {
-            ch._coreService.triggerDataEvent(input, true);
-          }
-        });
-      });
-    }
+    // IME 修复 + 快捷键处理
+    initIMEState(mt);
+    setupKeyHandler(mt, terminal);
+    setupCompositionListeners(mt, terminal);
 
     terminal.onData((data) => {
       mt._hasUserInput = true;
@@ -1199,44 +432,8 @@ class TerminalRegistryClass {
       }
     });
 
-    // OSC 9 handler: progress indicator (4;state;percent) + general notification
-    terminal.parser.registerOscHandler(9, (data: string) => {
-      const parts = data.split(';');
-      if (parts[0] === '4' && parts.length >= 3) {
-        const state = parseInt(parts[1], 10);
-        const percent = parseInt(parts[2], 10);
-        if (isNaN(state) || state < 0 || state > 3) return false;
-        if (state !== 0 && state !== 3 && (isNaN(percent) || percent < 0 || percent > 100)) return false;
-        document.dispatchEvent(new CustomEvent('osc-progress', {
-          detail: { sessionId: mt.id, state, percent: state === 0 ? 0 : percent },
-        }));
-        return true;
-      }
-      // General OSC 9 notification (plain text)
-      const body = sanitizeNotificationText(data);
-      if (!body) return false;
-      document.dispatchEvent(new CustomEvent('osc-notify', {
-        detail: { sessionId: mt.id, title: 'Terminal', body },
-      }));
-      return true;
-    });
-
-    // OSC 777 handler: notify;title;body
-    terminal.parser.registerOscHandler(777, (data: string) => {
-      const parts = data.split(';');
-      if (parts[0] !== 'notify' || parts.length < 3) return false;
-      document.dispatchEvent(new CustomEvent('osc-notify', {
-        detail: {
-          sessionId: mt.id,
-          title: sanitizeNotificationText(parts[1]),
-          body: sanitizeNotificationText(parts.slice(2).join(';')),
-        },
-      }));
-      return true;
-    });
-
     // OSC 10/11: foreground/background color queries from TUI apps
-    this.registerOscColorHandlers(mt, terminal);
+    this._registerOscColorHandlers(mt, terminal);
 
     const observer = new ResizeObserver(() => {
       this.debouncedFitAndSignal(mt);
@@ -1277,201 +474,24 @@ class TerminalRegistryClass {
     return mt;
   }
 
+  private wsCallbacks = {
+    scheduleSettleResize: (mt: ManagedTerminal) => this.scheduleSettleResize(mt),
+    getSettings: () => this.settings,
+    sendEncoding: (mt: ManagedTerminal, encoding: string) => this.sendEncoding(mt, encoding),
+    getOutputListeners: (sessionId: string) => this.outputListeners.get(sessionId),
+    updateShellTitle: (mt: ManagedTerminal) => this.updateShellTitle(mt),
+    setPongTime: (sessionId: string, time: number) => this.lastPongTime.set(sessionId, time),
+    getPingTimestamp: (sessionId: string) => this.pingTimestamps.get(sessionId),
+    deletePingTimestamp: (sessionId: string) => this.pingTimestamps.delete(sessionId),
+    onReconnectNeeded: (mt: ManagedTerminal) => this.scheduleReconnect(mt),
+  };
+
   private connect(mt: ManagedTerminal): void {
-    mt.onStatus('connecting');
-    const wsUrl = mt.remoteWsUrl || buildWsUrl(mt._port, mt.id, mt.clientId);
-    const wsToken = mt.remoteToken || mt._token;
-    const socket = new WebSocket(wsUrl, buildWsProtocols(wsToken));
-    socket.binaryType = 'arraybuffer';
-    mt.ws = socket;
-
-    socket.onopen = () => {
-      mt.reconnectAttempt = 0;
-      mt.onStatus('connected');
-      this.scheduleSettleResize(mt);
-
-      // 发送当前编码设置
-      if (this.settings && this.settings.encoding !== 'utf-8') {
-        this.sendEncoding(mt, this.settings.encoding);
-      }
-
-      // 通知 DrawerManager WebSocket 已就绪
-      DrawerManager.setWebSocket(mt.id, socket);
-
-      // SSH 会话：CWD 追踪 + 远程目录缓存
-      if (DrawerManager.getServerInfo(mt.id)) {
-        // 监听 MsgFileListResp 更新远程目录缓存
-        socket.addEventListener('message', (ev) => {
-          try {
-            const buf = ev.data as ArrayBuffer;
-            if (buf.byteLength < 2) return;
-            const msgType = new DataView(buf).getUint8(0);
-            if (msgType === MsgFileListResp) {
-              const payload = new Uint8Array(buf, 1);
-              const resp = JSON.parse(new TextDecoder().decode(payload));
-              if (resp.path && Array.isArray(resp.files)) {
-                setSSHDirProbe(mt.id, resp.path, resp.files);
-              }
-            }
-          } catch { /* ignore */ }
-        });
-
-      }
-    };
-
-    socket.onmessage = (event) => {
-      const decoded = decodeMessage(event.data as ArrayBuffer);
-      const type = decoded.type;
-      const payload = decoded.payload;
-
-      if (type === MsgHello) {
-        const hello = decodeHello(payload);
-        mt.clientId = hello.client_id;
-        return;
-      }
-
-      if (type === MsgOutput) {
-        let data: Uint8Array | null = payload;
-        // Filter pure-newline chunks that zsh themes output before prompt redraw after SIGWINCH
-        if (mt._postResizeNewlineFilter > 0) {
-          data = this.filterPostResizeNewlines(mt, data);
-          if (!data) return;
-        }
-
-        // Notify output listeners (event-driven capture for AI agent)
-        const outListeners = this.outputListeners.get(mt.id);
-        if (outListeners && outListeners.size > 0) {
-          const text = new TextDecoder().decode(data);
-          outListeners.forEach(cb => cb(text));
-        }
-
-        // Write to terminal — OSC 7766 markers are consumed by the parser
-        // and never appear in the terminal buffer, so no filtering needed.
-        mt.terminal.write(data);
-        mt.thumbnailTerminal.write(data);
-
-        if (!mt.hasOscTitle) {
-          this.updateShellTitle(mt);
-        }
-        return;
-      }
-
-      if (type === MsgRoleChange) {
-        const role = payload[0]; // 0=viewer, 1=master, 2=readonly
-        // Suppress role changes during tab transfer grace period to avoid
-        // false "remote control" overlays when both old and new connections
-        // are briefly active for the same session.
-        if (mt._transferGrace) {
-          if (role === 1) {
-            // Got master — end grace period early
-            mt._transferGrace = false;
-          }
-          return;
-        }
-        if (mt.ended) return;
-        if (role === 0) {
-          // Lost master — show reclaim button
-          document.dispatchEvent(new CustomEvent('master-lost', { detail: { sessionId: mt.id } }));
-        } else if (role === 1) {
-          // Regained master — hide reclaim button
-          document.dispatchEvent(new CustomEvent('master-gained', { detail: { sessionId: mt.id } }));
-        }
-        return;
-      }
-
-      if (type === MsgMasterRequestNotify) {
-        try {
-          const data = JSON.parse(new TextDecoder().decode(payload));
-          document.dispatchEvent(new CustomEvent('master-request', {
-            detail: { sessionId: data.session_id, requesterId: data.requester_id },
-          }));
-        } catch { /* ignore malformed */ }
-        return;
-      }
-
-      if (type === MsgPairNotify) {
-        try {
-          const data = JSON.parse(new TextDecoder().decode(payload));
-          document.dispatchEvent(new CustomEvent('pair-request', {
-            detail: { pairId: data.pair_id, deviceInfo: data.device_info, remoteAddr: data.remote_addr },
-          }));
-        } catch { /* ignore malformed */ }
-        return;
-      }
-
-      if (type === MsgSessionEnd) {
-        console.warn(`[terminal] MsgSessionEnd received for session ${mt.id} — marking as ended`);
-        mt.ended = true;
-        mt.onStatus('ended');
-        socket.close();
-        return;
-      }
-
-      if (type === MsgPong) {
-        this.lastPongTime.set(mt.id, Date.now());
-        const sentTs = this.pingTimestamps.get(mt.id);
-        if (sentTs !== undefined) {
-          this.pingTimestamps.delete(mt.id);
-          // Check if backend sent SSH RTT in payload (4 bytes, big-endian uint32)
-          let rtt: number;
-          if (payload.length >= 4) {
-            // SSH session: backend measured actual SSH round-trip time
-            const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-            rtt = view.getUint32(0);
-          } else {
-            // Local session: use client-side RTT measurement
-            rtt = Date.now() - sentTs;
-          }
-          document.dispatchEvent(new CustomEvent('status-bar-pong', { detail: { sessionId: mt.id, rtt } }));
-        }
-        return;
-      }
-
-      if (type === MsgError) {
-        const code = payload[0];
-        if (code === ErrSessionNotFound) {
-          mt.ended = true;
-          mt.onStatus('notfound');
-          socket.close();
-        } else if (code === ErrKicked) {
-          mt.ended = true;
-          mt.kicked = true;
-          mt.onStatus('ended');
-          document.dispatchEvent(new CustomEvent('client-kicked', { detail: { sessionId: mt.id } }));
-          socket.close();
-        } else if (code === ErrNotMaster) {
-          document.dispatchEvent(new CustomEvent('master-request-denied', { detail: { sessionId: mt.id } }));
-        }
-        return;
-      }
-    };
-
-    socket.onclose = () => {
-      if (mt.ws === socket) {
-        mt.ws = null;
-        if (!mt.ended) {
-          this.scheduleReconnect(mt);
-        }
-      }
-    };
-
-    socket.onerror = () => {
-      if (!mt.ended) {
-        mt.onStatus('disconnected');
-      }
-    };
+    connectWebSocket(mt, this.wsCallbacks);
   }
 
   private scheduleReconnect(mt: ManagedTerminal): void {
-    if (mt.reconnectAttempt >= 10 || mt.ended) {
-      mt.onStatus('disconnected');
-      return;
-    }
-
-    const delay = Math.min(1000 * Math.pow(2, mt.reconnectAttempt), 16000);
-    mt.reconnectAttempt += 1;
-    mt.onStatus('reconnecting');
-    mt.reconnectTimer = setTimeout(() => this.connect(mt), delay);
+    _scheduleReconnect(mt, (m) => this.connect(m));
   }
 
   mountTo(sessionId: string, panel: HTMLElement): void {
@@ -1521,6 +541,11 @@ class TerminalRegistryClass {
     const mt = this.terminals.get(sessionId);
     if (!mt || mt.ended) return;
     mt.terminal.paste(text);
+    // Windows WebView2: 清理隐藏 textarea 残留内容，防止后续按键被吞
+    if (mt.terminal.textarea) {
+      mt.terminal.textarea.value = '';
+    }
+    mt.terminal.focus();
   }
 
   /**
@@ -1577,6 +602,9 @@ class TerminalRegistryClass {
     this.terminals.forEach((mt) => {
       if (mt.container.classList.contains('active') && !mt.ended) {
         mt.terminal.paste(text);
+        // Windows WebView2: 清理隐藏 textarea 残留内容，防止后续按键被吞
+        if (mt.terminal.textarea) mt.terminal.textarea.value = '';
+        mt.terminal.focus();
       }
     });
   }
@@ -1850,105 +878,17 @@ class TerminalRegistryClass {
       shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0 },
     };
 
-    // Register OSC 7766 handler for agent command completion markers.
-    terminal.parser.registerOscHandler(7766, (data: string) => {
-      const sep = data.indexOf(';');
-      if (sep === -1) return true;
-      const markerId = data.slice(0, sep);
-      const exitCode = parseInt(data.slice(sep + 1), 10);
-      const resolver = mt._oscMarkerResolvers.get(markerId);
-      if (resolver) {
-        mt._oscMarkerResolvers.delete(markerId);
-        resolver(isNaN(exitCode) ? -1 : exitCode);
-      }
-      return true;
-    });
+    // Register all OSC handlers (7766, 7768, 9, 777) — skip OSC 7 and prefetch for transfer
+    registerOscHandlers(mt, terminal, {
+      onShellIdle: (sid) => {
+        const listeners = this.shellStateListeners.get(sid);
+        if (listeners) listeners.forEach(cb => cb());
+      },
+    }, { includeOsc7: false, includePrefetch: false });
 
-    // Register OSC 7768 handler for shell state machine (prompt hook).
-    terminal.parser.registerOscHandler(7768, (data: string) => {
-      const sep = data.indexOf(';');
-      if (sep === -1) return true;
-      const exitCode = parseInt(data.slice(0, sep), 10);
-      const cwd = data.slice(sep + 1);
-      mt.shellState.lastExitCode = isNaN(exitCode) ? -1 : exitCode;
-      mt.shellState.cwd = cwd;
-      mt.shellState.phase = 'ready';
-      const listeners = this.shellStateListeners.get(mt.id);
-      if (listeners) listeners.forEach(cb => cb());
-      return true;
-    });
-
-    // IME 共享状态存储在 mt 上，供 attachFromTransfer + openAndConnect 跨方法访问
-    (mt as any)._imeBlockKd229 = false;
-    (mt as any)._imeCompStartLen = 0;
-    (mt as any)._imePendingEnd = null;
-    (mt as any)._imeKd229NoUpdate = false;
-
-    const resetStuckComp_t = () => {
-      const ch = (terminal as any)._core?._compositionHelper;
-      if (!ch?.isComposing) return;
-      ch._compositionView.classList.remove('active');
-      ch._compositionView.textContent = '';
-      ch._isComposing = false;
-      ch._isSendingComposition = false;
-      if (terminal.textarea) {
-        terminal.textarea.value = terminal.textarea.value.substring(0, (mt as any)._imeCompStartLen);
-      }
-    };
-
-    // Register event handlers — these work before open()
-    terminal.attachCustomKeyEventHandler((event) => {
-      if (event.type === 'keydown' && event.keyCode === 229 && (mt as any)._imeBlockKd229) {
-        return false;
-      }
-
-      // IME 卡死修复 A
-      if (event.type === 'keydown' && !event.isComposing) {
-        const compositionHelper = (terminal as any)._core?._compositionHelper;
-        if (compositionHelper?.isComposing) {
-          if (terminal.textarea) terminal.textarea.value = '';
-          compositionHelper.compositionend();
-        }
-      }
-
-      // IME 卡死修复 B（flag-based）：上一轮 keydown(229) 没有伴随 compositionupdate → 卡死
-      if (event.type === 'keydown' && event.keyCode === 229) {
-        const ch = (terminal as any)._core?._compositionHelper;
-        if (ch?.isComposing) {
-          if ((mt as any)._imeKd229NoUpdate) {
-            (mt as any)._imeKd229NoUpdate = false;
-            resetStuckComp_t();
-            return true;
-          }
-          (mt as any)._imeKd229NoUpdate = true;
-        }
-      }
-
-      if (event.key === 'Meta' || event.key === 'Control') return false;
-
-      const isMac = navigator.userAgent.includes('Mac');
-      const mod = isMac ? event.metaKey : event.ctrlKey;
-      if (!mod) return true;
-
-      if (event.type === 'keydown' && event.key === 'c' && terminal.hasSelection()) {
-        clipboardWriteText(terminal.getSelection());
-        return false;
-      }
-      if (event.type === 'keydown' && event.key === 'v') {
-        event.preventDefault();
-        clipboardReadText().then((text) => {
-          if (text) terminal.paste(text);
-        });
-        return false;
-      }
-      if (event.type === 'keydown' && event.key === 'Backspace') {
-        if (mt.ws?.readyState === WebSocket.OPEN) {
-          mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode('\x15')));
-        }
-        return false;
-      }
-      return true;
-    });
+    // IME 修复 + 快捷键处理（register before open — these work before open()）
+    initIMEState(mt);
+    setupKeyHandler(mt, terminal);
 
     terminal.onData((data) => {
       mt._hasUserInput = true;
@@ -1975,44 +915,8 @@ class TerminalRegistryClass {
       }
     });
 
-    // OSC 9 handler: progress indicator (4;state;percent) + general notification
-    terminal.parser.registerOscHandler(9, (data: string) => {
-      const parts = data.split(';');
-      if (parts[0] === '4' && parts.length >= 3) {
-        const state = parseInt(parts[1], 10);
-        const percent = parseInt(parts[2], 10);
-        if (isNaN(state) || state < 0 || state > 3) return false;
-        if (state !== 0 && state !== 3 && (isNaN(percent) || percent < 0 || percent > 100)) return false;
-        document.dispatchEvent(new CustomEvent('osc-progress', {
-          detail: { sessionId: mt.id, state, percent: state === 0 ? 0 : percent },
-        }));
-        return true;
-      }
-      // General OSC 9 notification (plain text)
-      const body = sanitizeNotificationText(data);
-      if (!body) return false;
-      document.dispatchEvent(new CustomEvent('osc-notify', {
-        detail: { sessionId: mt.id, title: 'Terminal', body },
-      }));
-      return true;
-    });
-
-    // OSC 777 handler: notify;title;body
-    terminal.parser.registerOscHandler(777, (data: string) => {
-      const parts = data.split(';');
-      if (parts[0] !== 'notify' || parts.length < 3) return false;
-      document.dispatchEvent(new CustomEvent('osc-notify', {
-        detail: {
-          sessionId: mt.id,
-          title: sanitizeNotificationText(parts[1]),
-          body: sanitizeNotificationText(parts.slice(2).join(';')),
-        },
-      }));
-      return true;
-    });
-
     // OSC 10/11: foreground/background color queries from TUI apps
-    this.registerOscColorHandlers(mt, terminal);
+    this._registerOscColorHandlers(mt, terminal);
 
     const observer = new ResizeObserver(() => {
       this.debouncedFitAndSignal(mt);
@@ -2038,73 +942,15 @@ class TerminalRegistryClass {
     patchOverlayScrollbar(mt.terminal, mt.container);
     // patchConPtyAlternateScreen removed — see note above
 
-    // IME 修复（同 create()，含卡死检测 + compositionend 接管）
-    if (mt.terminal.textarea) {
-      const textarea = mt.terminal.textarea;
+    // IME composition event listeners（textarea available after open）
+    setupCompositionListeners(mt, mt.terminal);
 
-      textarea.addEventListener('compositionstart', () => {
-        (mt as any)._imeCompStartLen = textarea.value.length;
-        (mt as any)._imeBlockKd229 = false;
-        (mt as any)._imePendingEnd = null;
-        (mt as any)._imeKd229NoUpdate = false;
-      });
-
-      textarea.addEventListener('compositionupdate', () => {
-        (mt as any)._imeKd229NoUpdate = false;
-      });
-
-      textarea.addEventListener('input', (e: Event) => {
-        if (!(mt as any)._imePendingEnd) return;
-        const { inputType } = e as InputEvent;
-        if (!inputType) return;
-
-        const saved = (mt as any)._imePendingEnd;
-        (mt as any)._imePendingEnd = null;
-        (mt as any)._imeBlockKd229 = false;
-
-        if (inputType.startsWith('delete')) return;
-
-        const ch = (mt.terminal as any)._core?._compositionHelper;
-        if (!ch || ch._isComposing) return;
-
-        const input = textarea.value.substring(saved.startPos);
-        if (input.length > 0) {
-          ch._coreService.triggerDataEvent(input, true);
-        }
-      });
-
-      textarea.addEventListener('compositionend', () => {
-        const ch = (mt.terminal as any)._core?._compositionHelper;
-        if (!ch) return;
-        (mt as any)._imeKd229NoUpdate = false;
-
-        ch._isSendingComposition = false;
-        (mt as any)._imeBlockKd229 = true;
-
-        const startPos = ch._compositionPosition.start + ch._dataAlreadySent.length;
-        (mt as any)._imePendingEnd = { startPos };
-
-        requestAnimationFrame(() => {
-          if (!(mt as any)._imePendingEnd) return;
-          const saved = (mt as any)._imePendingEnd;
-          (mt as any)._imePendingEnd = null;
-          (mt as any)._imeBlockKd229 = false;
-
-          if (ch._isComposing) return;
-
-          const curValue = textarea.value;
-          const input = curValue.substring(saved.startPos);
-
-          if (input.length > 0 && curValue.length > (mt as any)._imeCompStartLen) {
-            ch._coreService.triggerDataEvent(input, true);
-          }
-        });
-      });
-    }
+    // Apply opacity to explicit TUI backgrounds (iTerm2-like transparency)
+    const opacityVal = this.settings ? Math.max(20, Math.min(100, this.settings.opacity)) / 100 : 1;
+    patchCanvasBgOpacity(mt.container, opacityVal);
 
     // Load WebGL addon after open (needs rendering context from DOM)
     // Skip WebGL when transparency is active — canvas renderer handles alpha better
-    const opacityVal = this.settings ? Math.max(20, Math.min(100, this.settings.opacity)) / 100 : 1;
     if (!isWindowsPlatform && opacityVal >= 1 && !mt.canvasAddon) {
       try {
         const webglAddon = new WebglAddon();

@@ -1,0 +1,734 @@
+/* ─── Settings AI tab ─── */
+.settings-preset-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.settings-preset-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.settings-preset-btn:hover {
+  background: rgba(106, 164, 255, 0.15);
+  color: var(--accent);
+  border-color: rgba(106, 164, 255, 0.3);
+}
+.settings-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+  transition: border-color 0.15s ease;
+  box-sizing: border-box;
+}
+.settings-input:focus { border-color: var(--accent); }
+.settings-input-group {
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+}
+.settings-toggle-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+.settings-toggle-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+.settings-test-btn { cursor: pointer; text-align: center; width: auto; flex: none; flex-shrink: 0; }
+.settings-test-btn:hover {
+  background: rgba(106, 164, 255, 0.15);
+  border-color: rgba(106, 164, 255, 0.3);
+  color: var(--accent);
+}
+.settings-test-result {
+  font-size: 11px;
+  margin-left: 8px;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+.settings-test-result.test-success { color: #5af78e; }
+.settings-test-result.test-failed { color: #ff6b6b; }
+
+/* ─── AI Provider Cards (Settings) ─── */
+.ai-provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-provider-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ai-provider-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ai-provider-label-input {
+  flex: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.ai-provider-label-input:focus {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ai-provider-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+.ai-provider-delete-btn:hover {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.ai-provider-card-body {
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-provider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ai-provider-row label {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+/* Inline variant: label + control on same row */
+.ai-provider-row.ai-row-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+.ai-provider-row.ai-row-inline > label {
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 100px;
+}
+.ai-provider-row.ai-row-inline > .settings-input,
+.ai-provider-row.ai-row-inline > .settings-input-group {
+  flex: 1;
+  min-width: 0;
+}
+/* Compact AI settings below provider cards */
+.ai-settings-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ai-settings-compact .settings-section {
+  margin-bottom: 0;
+}
+.ai-settings-compact .ai-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ai-settings-compact .ai-slider-row > label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 100px;
+  margin-bottom: 0;
+}
+.ai-settings-compact .ai-slider-row > .settings-slider {
+  flex: 1;
+  min-width: 0;
+}
+.ai-settings-compact .ai-slider-row > .ai-slider-value {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 36px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-provider-fetch-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.ai-provider-fetch-row .settings-select {
+  width: auto;
+  flex: none;
+}
+
+.ai-provider-models {
+  margin-top: 2px;
+}
+
+.ai-provider-models-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.ai-provider-models-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.ai-provider-models-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ai-model-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  transition: background 0.15s, border-color 0.15s;
+  user-select: none;
+}
+.ai-model-checkbox:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.ai-model-checkbox input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.ai-add-provider-section .settings-preset-buttons {
+  margin-top: 6px;
+}
+
+/* ─── AI Bar Model Group Header ─── */
+.ai-bar-model-group-header {
+  font-size: 9px;
+  color: var(--text-muted);
+  padding: 3px 8px 1px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  user-select: none;
+}
+
+/* ─── Light theme overrides ─── */
+[data-theme="light"] .ai-provider-card {
+  background: rgba(0, 0, 0, 0.02);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .ai-provider-card-header {
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .ai-provider-label-input:focus {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .ai-model-checkbox {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme="light"] .ai-model-checkbox:hover {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+/* AI bar popup scrollbar — unified thin scrollbar, theme-aware */
+.ai-chat-messages::-webkit-scrollbar,
+.ai-bar-history-panel::-webkit-scrollbar,
+.ai-bar-chat-history-panel::-webkit-scrollbar,
+.ai-chat-hist-messages::-webkit-scrollbar,
+.ai-danger-cmd::-webkit-scrollbar,
+.ai-bar-model-dropdown::-webkit-scrollbar {
+  width: 4px;
+}
+.ai-chat-messages::-webkit-scrollbar-track,
+.ai-bar-history-panel::-webkit-scrollbar-track,
+.ai-bar-chat-history-panel::-webkit-scrollbar-track,
+.ai-chat-hist-messages::-webkit-scrollbar-track,
+.ai-danger-cmd::-webkit-scrollbar-track,
+.ai-bar-model-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ai-chat-messages::-webkit-scrollbar-thumb,
+.ai-bar-history-panel::-webkit-scrollbar-thumb,
+.ai-bar-chat-history-panel::-webkit-scrollbar-thumb,
+.ai-chat-hist-messages::-webkit-scrollbar-thumb,
+.ai-danger-cmd::-webkit-scrollbar-thumb,
+.ai-bar-model-dropdown::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+.ai-chat-messages:hover::-webkit-scrollbar-thumb,
+.ai-bar-history-panel:hover::-webkit-scrollbar-thumb,
+.ai-bar-chat-history-panel:hover::-webkit-scrollbar-thumb,
+.ai-chat-hist-messages:hover::-webkit-scrollbar-thumb,
+.ai-danger-cmd:hover::-webkit-scrollbar-thumb,
+.ai-bar-model-dropdown:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+}
+/* Firefox */
+.ai-chat-messages,
+.ai-bar-history-panel,
+.ai-bar-chat-history-panel,
+.ai-chat-hist-messages,
+.ai-danger-cmd,
+.ai-bar-model-dropdown {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+/* Light theme */
+[data-theme="light"] .ai-chat-messages::-webkit-scrollbar-thumb,
+[data-theme="light"] .ai-bar-history-panel::-webkit-scrollbar-thumb,
+[data-theme="light"] .ai-bar-chat-history-panel::-webkit-scrollbar-thumb,
+[data-theme="light"] .ai-chat-hist-messages::-webkit-scrollbar-thumb,
+[data-theme="light"] .ai-danger-cmd::-webkit-scrollbar-thumb,
+[data-theme="light"] .ai-bar-model-dropdown::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+}
+[data-theme="light"] .ai-chat-messages:hover::-webkit-scrollbar-thumb,
+[data-theme="light"] .ai-bar-history-panel:hover::-webkit-scrollbar-thumb,
+[data-theme="light"] .ai-bar-chat-history-panel:hover::-webkit-scrollbar-thumb,
+[data-theme="light"] .ai-chat-hist-messages:hover::-webkit-scrollbar-thumb,
+[data-theme="light"] .ai-danger-cmd:hover::-webkit-scrollbar-thumb,
+[data-theme="light"] .ai-bar-model-dropdown:hover::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.25);
+}
+[data-theme="light"] .ai-chat-messages,
+[data-theme="light"] .ai-bar-history-panel,
+[data-theme="light"] .ai-bar-chat-history-panel,
+[data-theme="light"] .ai-chat-hist-messages,
+[data-theme="light"] .ai-danger-cmd,
+[data-theme="light"] .ai-bar-model-dropdown {
+  scrollbar-color: rgba(0, 0, 0, 0.12) transparent;
+}
+
+/* ─── Agent Tool Call Cards ────────────────────────────────────── */
+
+.ai-tool-card {
+  max-width: 95%;
+  align-self: flex-start;
+  margin: 3px 0;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  border-left: 2px solid #6B7280;
+  font-size: 12px;
+  animation: msg-appear 0.1s ease-out;
+}
+.ai-tool-card + .ai-tool-card {
+  margin-top: 1px;
+}
+.ai-tool-card[data-tool="run_command"]  { border-left-color: #F59E0B; }
+.ai-tool-card[data-tool="read_terminal"]{ border-left-color: #3B82F6; }
+.ai-tool-card[data-tool="read_file"]    { border-left-color: #06B6D4; }
+.ai-tool-card[data-tool="write_file"]   { border-left-color: #8B5CF6; }
+.ai-tool-card[data-tool="list_files"]   { border-left-color: #10B981; }
+.ai-tool-card[data-tool="search_files"] { border-left-color: #EC4899; }
+
+.ai-tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+.ai-tool-card-header.clickable { cursor: pointer; }
+.ai-tool-card-header.clickable:hover { color: var(--text-primary); }
+
+.ai-tool-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.ai-tool-name {
+  font-weight: 500;
+  font-family: var(--mono-font);
+}
+
+.ai-tool-status {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.ai-tool-args-inline {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-tool-args-inline code {
+  font-size: 11px;
+  font-family: var(--mono-font);
+  color: var(--text-primary);
+  opacity: 0.7;
+}
+
+.ai-tool-result {
+  margin-top: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.ai-tool-result pre {
+  margin: 0;
+  padding: 4px 0;
+  font-size: 11px;
+  font-family: var(--mono-font);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ai-tool-result-error pre {
+  color: #EF4444;
+}
+
+.ai-tool-card.completed {
+  opacity: 0.85;
+}
+
+/* ─── Agent Confirm Cards ──────────────────────────────────────── */
+
+.ai-confirm-card {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: 8px;
+  border-left: 3px solid #EF4444;
+  font-size: 12px;
+}
+.ai-confirm-card[data-tool="run_command"]  { border-left-color: #F59E0B; background: rgba(245, 158, 11, 0.08); }
+.ai-confirm-card[data-tool="write_file"]   { border-left-color: #8B5CF6; background: rgba(139, 92, 246, 0.08); }
+
+.ai-confirm-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.ai-confirm-resolved {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  margin-left: auto;
+}
+
+.ai-confirm-preview {
+  margin-bottom: 8px;
+}
+.ai-confirm-preview code {
+  font-size: 12px;
+  font-family: var(--mono-font);
+  color: var(--text-primary);
+}
+
+.ai-confirm-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.ai-confirm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ai-confirm-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.ai-confirm-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.ai-confirm-approve { border-color: rgba(34, 197, 94, 0.3); }
+.ai-confirm-approve:hover { background: rgba(34, 197, 94, 0.15); }
+.ai-confirm-reject  { border-color: rgba(239, 68, 68, 0.3); }
+.ai-confirm-reject:hover  { background: rgba(239, 68, 68, 0.15); }
+
+.ai-confirm-editor {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.ai-confirm-edit-input {
+  flex: 1;
+  padding: 3px 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 5px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--mono-font);
+  outline: none;
+}
+.ai-confirm-edit-input:focus {
+  border-color: var(--accent);
+}
+
+.ai-confirm-card.resolved {
+  opacity: 0.6;
+}
+
+/* ─── System Notice ────────────────────────────────────────────── */
+
+.ai-system-notice {
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  opacity: 0.6;
+  letter-spacing: 0.3px;
+}
+
+/* ─── Reasoning / Thinking Block ──────────────────────────────── */
+
+.ai-reasoning {
+  margin: 0 0 6px 0;
+  padding: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+.ai-reasoning summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  user-select: none;
+  padding: 2px 0;
+  list-style: none;
+}
+.ai-reasoning summary::-webkit-details-marker { display: none; }
+.ai-reasoning summary::before {
+  content: '▸';
+  display: inline-block;
+  transition: transform 0.15s;
+  font-size: 10px;
+}
+.ai-reasoning[open] summary::before { transform: rotate(90deg); }
+.ai-reasoning summary svg { flex-shrink: 0; }
+.ai-reasoning-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 4px 0 4px 14px;
+  border-left: 2px solid rgba(139, 92, 246, 0.3);
+  margin: 2px 0 0 5px;
+  line-height: 1.5;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* ─── Trust Level Switcher ─────────────────────────────────────── */
+
+.ai-bar-trust-switcher {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.ai-bar-btn-trust {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+}
+
+.ai-trust-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 200px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  z-index: 9999;
+}
+
+.ai-trust-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-secondary);
+  transition: background 0.12s;
+}
+.ai-trust-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+.ai-trust-item.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* ─── Settings Radio Group ─────────────────────────────────────── */
+
+.settings-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.settings-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.settings-radio-label input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* ─── AI Trust Level Icon Buttons (Settings) ──────────────────── */
+.ai-trust-group {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+.ai-trust-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ai-trust-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.ai-trust-btn.active {
+  color: var(--accent);
+  background: rgba(106, 164, 255, 0.12);
+  border-color: rgba(106, 164, 255, 0.3);
+}
+[data-theme="light"] .ai-trust-btn {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme="light"] .ai-trust-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+[data-theme="light"] .ai-trust-btn.active {
+  background: rgba(106, 164, 255, 0.1);
+  border-color: rgba(106, 164, 255, 0.3);
+}
+
+/* ─── Light Theme Overrides for Agent UI ───────────────────────── */
+
+[data-theme="light"] .ai-tool-card {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .ai-confirm-card {
+  background: rgba(239, 68, 68, 0.06);
+}
+[data-theme="light"] .ai-confirm-card[data-tool="run_command"] {
+  background: rgba(245, 158, 11, 0.06);
+}
+[data-theme="light"] .ai-confirm-card[data-tool="write_file"] {
+  background: rgba(139, 92, 246, 0.06);
+}
+[data-theme="light"] .ai-confirm-btn {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .ai-confirm-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .ai-confirm-edit-input {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+[data-theme="light"] .ai-trust-dropdown {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+[data-theme="light"] .ai-trust-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .ai-trust-item.active {
+  background: rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .ai-reasoning {
+  opacity: 0.7;
+}
+[data-theme="light"] .ai-reasoning-text {
+  border-left-color: rgba(139, 92, 246, 0.25);
+}
+

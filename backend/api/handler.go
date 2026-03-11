@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"errors"
 	"log"
 	"net"
@@ -306,6 +307,9 @@ func RegisterRoutes(mux *http.ServeMux, sm *session.SessionManager, auth *Authen
 		handleInfo(sm)(w, r)
 	})))
 
+	// JumpServer API proxy routes
+	RegisterJumpServerRoutes(mux, auth)
+
 	mux.Handle("/ws/", auth.Middleware(handleWebSocket(sm, bm)))
 
 	// Serve embedded web viewer (production build)
@@ -331,7 +335,9 @@ func handleCreateSession(sm *session.SessionManager) http.HandlerFunc {
 		s, err := sm.CreateWithShell(shell)
 		if err != nil {
 			log.Printf("[handler] session create error: %v", err)
-			http.Error(w, "failed to create session", http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
 
@@ -408,6 +414,7 @@ func handleCreateSSHSession(sm *session.SessionManager) http.HandlerFunc {
 			PrivateKey         string `json:"private_key"`
 			Passphrase         string `json:"passphrase"`
 			TrustedFingerprint string `json:"trusted_fingerprint"`
+			SkipShellHook      bool   `json:"skip_shell_hook"`
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 8192)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -432,6 +439,7 @@ func handleCreateSSHSession(sm *session.SessionManager) http.HandlerFunc {
 			PrivateKey:         req.PrivateKey,
 			Passphrase:         req.Passphrase,
 			TrustedFingerprint: req.TrustedFingerprint,
+			SkipShellHook:      req.SkipShellHook,
 		}
 
 		exec := executor.NewSSHExecutor(cfg, 80, 24)
@@ -443,7 +451,7 @@ func handleCreateSSHSession(sm *session.SessionManager) http.HandlerFunc {
 				_ = json.NewEncoder(w).Encode(resp)
 				return
 			}
-			http.Error(w, "SSH session creation failed", http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("SSH session creation failed: %v", err), http.StatusInternalServerError)
 			return
 		}
 

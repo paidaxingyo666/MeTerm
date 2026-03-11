@@ -1,133 +1,44 @@
 import { TerminalRegistry } from './terminal';
 import { DrawerManager } from './drawer';
 import { writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
-import { writeTextFile, readTextFile, mkdir, exists, readDir, remove, BaseDirectory } from '@tauri-apps/plugin-fs';
 import { t } from './i18n';
 import { loadSettings, saveSettings } from './themes';
 import { AIAgent, AgentCallbacks } from './ai-agent';
 import { escapeHtml } from './status-bar';
 import { resolveActiveModel, resolveModel } from './ai-provider';
-import { toolIcon, statusIcon, pulseIcon, spinnerIcon, thinkingIcon, shieldIcon, stopIcon, approveIcon, rejectIcon, editIcon, chevronIcon, TOOL_COLORS, STATUS_COLORS, TRUST_COLORS } from './ai-icons';
+import { thinkingIcon } from './ai-icons';
+import type { HistoryEntry, AICapsuleInstance, ConvEntry, ChatConversation } from './ai-capsule-types';
+import { renderMarkdown } from './ai-capsule-markdown';
+import { isDangerousCommand, confirmDangerousCommand } from './ai-capsule-danger';
+import { buildToolCard as buildToolCardFn, appendToolCallCard as appendToolCallCardFn, updateToolResultCard as updateToolResultCardFn, showConfirmCard as showConfirmCardFn } from './ai-capsule-tool-ui';
+import { bindChatContextMenu as bindChatContextMenuFn, resolveMessageIndex as resolveMessageIndexFn, showBubbleContextMenu as showBubbleContextMenuFn } from './ai-capsule-context-menu';
+import { createTrustSwitcher as createTrustSwitcherFn } from './ai-capsule-trust';
+import {
+  getHistoryKey, loadHistory as loadHistoryFn,
+  addHistory as addHistoryFn, fuzzyMatch, enterSearchMode as enterSearchModeFn,
+  exitSearchMode as exitSearchModeFn,
+  renderHistoryPanel as renderHistoryPanelFn, removeHistoryEntry as removeHistoryEntryFn,
+} from './ai-capsule-history';
+import {
+  saveConversation as saveConversationFn, loadConversations as loadConversationsFn,
+  deleteConversation as deleteConversationFn, confirmDeleteConversation as confirmDeleteConversationFn,
+  renderChatHistoryListFromCache as renderChatHistoryListFromCacheFn,
+  renderChatHistoryDetail as renderChatHistoryDetailFn,
+} from './ai-capsule-chat-persistence';
+import {
+  updateButtonHighlight as updateButtonHighlightFn, updateChatTitle as updateChatTitleFn,
+  appendUserMessage as appendUserMessageFn, showAgentPulse as showAgentPulseFn,
+  hideAgentPulse as hideAgentPulseFn, sinkAgentPulse as sinkAgentPulseFn,
+  beginAssistantMessage as beginAssistantMessageFn, ensureStreamBubble as ensureStreamBubbleFn,
+  appendStreamToken as appendStreamTokenFn, collapseActiveThinking as collapseActiveThinkingFn,
+  appendReasoningToken as appendReasoningTokenFn, finalizeMessage as finalizeMessageFn,
+  finalizeThinking as finalizeThinkingFn, showError as showErrorFn,
+  appendSystemNotice as appendSystemNoticeFn, buildAgentCallbacks as buildAgentCallbacksFn,
+  LLM_SEND_SVG,
+} from './ai-capsule-chat-ui';
 
-export interface HistoryEntry {
-  command: string;
-  timestamp: number;
-  source: 'manual' | 'ai';
-}
-
-export interface AICapsuleInstance {
-  sessionId: string;
-  historyKey: string;
-  element: HTMLDivElement;
-  messages: ConvEntry[];
-  selectedModel: string;
-  history: HistoryEntry[];
-  lineBuffer: string;
-  unsubInput: (() => void) | null;
-  historyOpen: boolean;
-  // AI chat state
-  agent: AIAgent;
-  chatPanel: HTMLDivElement | null;
-  chatOpen: boolean;
-  chatMinimized: boolean;
-  isStreaming: boolean;
-  streamBuffer: string;
-  streamMsgEl: HTMLDivElement | null;
-  reasoningBuffer: string;
-  // LLM chat history panel state
-  chatHistoryOpen: boolean;
-  chatHistoryPanel: HTMLDivElement | null;
-  currentConversationId: string;
-}
-
-/** Discriminated-union entry stored per conversation turn */
-export type ConvEntry =
-  | { type: 'user';      content: string; timestamp: number }
-  | { type: 'thinking';  content: string; reasoning?: string; timestamp: number }
-  | { type: 'assistant'; content: string; timestamp: number }
-  | { type: 'system';    content: string; timestamp: number }
-  | { type: 'tool_call'; toolName: string; args: Record<string, unknown>;
-      result: string | null; isError: boolean; timestamp: number };
-
-export interface ChatConversation {
-  id: string;
-  title: string;
-  messages: ConvEntry[];
-  createdAt: number;
-  updatedAt: number;
-}
-
-const MAX_HISTORY = 100;
-const HISTORY_STORAGE_KEY = 'meterm-ai-history';
-
-// ─── Simple Markdown Renderer ────────────────────────────────────
-
-function renderMarkdown(text: string, sessionId: string, addHistoryFn: (cmd: string) => void): string {
-  // Split into code blocks and text segments
-  const segments: string[] = [];
-  const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = codeBlockRegex.exec(text)) !== null) {
-    // Text before code block
-    if (match.index > lastIndex) {
-      segments.push(renderInlineMarkdown(text.slice(lastIndex, match.index)));
-    }
-
-    const lang = match[1] || '';
-    const code = match[2].trim();
-    const isBash = /^(bash|sh|shell|zsh|fish|cmd|powershell)?$/.test(lang);
-
-    // Single-line: no newlines and short enough to fit on one row
-    const isInline = !code.includes('\n') && code.length <= 65;
-
-    // Generate a unique id for command execution binding
-    const blockId = `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    segments.push(
-      `<div class="ai-cmd-block ${isInline ? 'ai-cmd-inline' : 'ai-cmd-stacked'}" data-block-id="${blockId}">` +
-      `<div class="ai-cmd-screen">` +
-      (!isInline ? `<div class="ai-cmd-lang">${escapeHtml(lang || 'code')}</div>` : '') +
-      `<pre><code>${escapeHtml(code)}</code></pre>` +
-      `</div>` +
-      `<div class="ai-cmd-actions">` +
-      (isBash
-        ? `<button class="ai-cmd-run" data-cmd="${escapeHtml(code)}" data-session="${sessionId}">${t('aiRunCommand')}</button>`
-        : '') +
-      `<button class="ai-cmd-copy" data-code="${escapeHtml(code)}">${t('aiCopyCode')}</button>` +
-      `</div></div>`
-    );
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  // Remaining text after last code block
-  if (lastIndex < text.length) {
-    segments.push(renderInlineMarkdown(text.slice(lastIndex)));
-  }
-
-  return segments.join('');
-}
-
-function renderInlineMarkdown(text: string): string {
-  // Escape HTML first
-  let html = escapeHtml(text);
-
-  // Bold: **text**
-  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
-  // Inline code: `text`
-  html = html.replace(/`([^`]+)`/g, '<code class="ai-inline-code">$1</code>');
-
-  // Paragraphs: double newline
-  html = html.split('\n\n').map((p) => `<p>${p.trim()}</p>`).join('');
-
-  // Single newlines within paragraphs -> <br>
-  html = html.replace(/\n/g, '<br>');
-
-  return html;
-}
+export type { HistoryEntry, AICapsuleInstance, ConvEntry, ChatConversation } from './ai-capsule-types';
+export { MAX_HISTORY, HISTORY_STORAGE_KEY } from './ai-capsule-types';
 
 // ─── AI Capsule Manager ──────────────────────────────────────────
 
@@ -142,6 +53,10 @@ class AICapsuleManagerClass {
   private _savedPlaceholder = new Map<string, string>();   // sessionId → 原始 placeholder
   private _savedInputValue = new Map<string, string>();    // sessionId → 原始输入值
   private _filterListener = new Map<string, () => void>(); // sessionId → input 监听器引用
+  private _popupResizeObserver: ResizeObserver | null = null;
+  private _popupResizeHandler: (() => void) | null = null;
+  private _activePopup: { panel: HTMLElement; aiBar: HTMLElement } | null = null;
+  private _popupManualHeight = false; // 手动调整后锁定，不再自适应
 
   create(sessionId: string): AICapsuleInstance {
     if (this.capsules.has(sessionId)) {
@@ -150,7 +65,7 @@ class AICapsuleManagerClass {
 
     const isSSH = DrawerManager.has(sessionId);
     const element = this.createBarElement(sessionId, isSSH);
-    const historyKey = this.getHistoryKey(sessionId);
+    const historyKey = getHistoryKey(sessionId);
     const conversationId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const instance: AICapsuleInstance = {
       sessionId,
@@ -220,12 +135,17 @@ class AICapsuleManagerClass {
       if (isOpen) {
         modelDropdown.style.display = 'none';
         modelSelect.classList.remove('open');
+        this.unobservePopupResize();
+        this._popupManualHeight = false;
       } else {
         this.buildModelDropdown(modelDropdown, modelLabel);
         modelDropdown.style.display = '';
         modelSelect.classList.add('open');
         const aiBar = modelSelect.closest('.ai-bar') as HTMLElement;
-        if (aiBar) this.adjustPopupMaxHeight(modelDropdown, aiBar);
+        if (aiBar) {
+          this.adjustPopupMaxHeight(modelDropdown, aiBar);
+          this.observePopupResize(modelDropdown, aiBar);
+        }
       }
     });
 
@@ -233,16 +153,36 @@ class AICapsuleManagerClass {
     document.addEventListener('click', () => {
       modelDropdown.style.display = 'none';
       modelSelect.classList.remove('open');
+      this.unobservePopupResize();
+      this._popupManualHeight = false;
     });
 
-    // Input
+    // Input wrapper (for custom placeholder overlay)
+    const inputWrap = document.createElement('div');
+    inputWrap.className = 'ai-bar-input-wrap';
+
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'ai-bar-input';
-    input.placeholder = t('aiPlaceholderInput');
+    input.placeholder = ' '; // non-empty so :placeholder-shown works
     input.autocapitalize = 'off';
     input.setAttribute('autocorrect', 'off');
     input.spellcheck = false;
+
+    // Custom placeholder with SVG key icons
+    const isMac = navigator.userAgent.includes('Mac');
+    const phOverlay = document.createElement('div');
+    phOverlay.className = 'ai-bar-placeholder';
+    const enterKey = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3v4.5a1.5 1.5 0 01-1.5 1.5H4"/><polyline points="6 6 3.5 9 6 12"/></svg>`;
+    const modKey = isMac
+      ? `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><text x="7" y="11" text-anchor="middle" font-size="12" font-family="system-ui, -apple-system, sans-serif" fill="currentColor" stroke="none">⌘</text></svg>`
+      : `<svg class="key-icon key-icon-wide" viewBox="0 0 24 14" width="24" height="14"><text x="12" y="11" text-anchor="middle" font-size="10" font-family="system-ui, -apple-system, sans-serif" fill="currentColor">Ctrl</text></svg>`;
+    const cmdIcon = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 3 6 7 2 11"/><line x1="7" y1="11" x2="12" y2="11"/></svg>`;
+    const botIcon = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="10" height="7" rx="2"/><line x1="5" y1="11" x2="5" y2="13"/><line x1="9" y1="11" x2="9" y2="13"/><circle cx="5.5" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="8.5" cy="7.5" r="1" fill="currentColor" stroke="none"/><line x1="7" y1="1" x2="7" y2="4"/><circle cx="7" cy="1" r="1" fill="currentColor" stroke="none"/></svg>`;
+    phOverlay.innerHTML = `<span class="ai-ph-seg">${cmdIcon}${enterKey}</span><span class="ai-ph-sep">/</span><span class="ai-ph-seg">${botIcon}${modKey}<span class="ai-ph-plus">+</span>${enterKey}</span>`;
+
+    inputWrap.appendChild(input);
+    inputWrap.appendChild(phOverlay);
 
     // Send to terminal button (Enter)
     const termBtn = document.createElement('button');
@@ -279,7 +219,7 @@ class AICapsuleManagerClass {
     histPanel.style.display = 'none';
 
     bar.appendChild(modelSelect);
-    bar.appendChild(input);
+    bar.appendChild(inputWrap);
     bar.appendChild(termBtn);
     bar.appendChild(llmBtn);
     bar.appendChild(chatHistBtn);
@@ -691,763 +631,117 @@ class AICapsuleManagerClass {
     TerminalRegistry.resizeAll();
   }
 
-  private static readonly LLM_SEND_SVG = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8L7 3.5 13.5 2.5 12.5 9 8 13.5z"/><path d="M2.5 8L6.5 6.5 9.5 9.5 8 13.5"/><circle cx="9.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg>`;
+  // ─── Chat UI (delegated to ai-capsule-chat-ui.ts) ──
 
-  /** Update term/llm button highlight + streaming stop state */
   private updateButtonHighlight(instance: AICapsuleInstance): void {
-    const termBtn = instance.element.querySelector('.ai-bar-btn-term') as HTMLButtonElement;
-    const llmBtn = instance.element.querySelector('.ai-bar-btn-llm') as HTMLButtonElement;
-    const chatActive = instance.chatOpen || instance.chatMinimized;
-    if (termBtn) termBtn.classList.toggle('chat-active', chatActive);
-    if (llmBtn) {
-      llmBtn.classList.toggle('chat-active', chatActive);
-      // Toggle between send and stop icon based on streaming state
-      if (instance.isStreaming) {
-        llmBtn.innerHTML = stopIcon(16);
-        llmBtn.classList.add('streaming-active');
-        llmBtn.title = t('aiStopGenerating');
-      } else {
-        llmBtn.innerHTML = AICapsuleManagerClass.LLM_SEND_SVG;
-        llmBtn.classList.remove('streaming-active');
-        llmBtn.title = `${t('aiSendPrompt')} (Ctrl+Enter)`;
-      }
-    }
+    updateButtonHighlightFn(instance);
   }
 
-  /** Update chat panel title bar. If no explicit title given, derives from first user message. */
   private updateChatTitle(instance: AICapsuleInstance, title?: string): void {
-    if (!instance.chatPanel) return;
-    const titleEl = instance.chatPanel.querySelector('.ai-chat-title');
-    if (!titleEl) return;
-    if (title) {
-      titleEl.textContent = title.length > 40 ? title.slice(0, 40) + '...' : title;
-      return;
-    }
-    const firstUser = instance.messages.find(m => m.type === 'user');
-    if (firstUser) {
-      const text = firstUser.content;
-      titleEl.textContent = text.length > 40 ? text.slice(0, 40) + '...' : text;
-    } else {
-      titleEl.textContent = t('aiCapsule');
-    }
+    updateChatTitleFn(instance, title);
   }
 
   private appendUserMessage(instance: AICapsuleInstance, text: string): void {
-    if (!instance.chatPanel) return;
-    const container = instance.chatPanel.querySelector('.ai-chat-messages');
-    if (!container) return;
-
-    const msg = document.createElement('div');
-    msg.className = 'ai-msg ai-msg-user';
-    const content = document.createElement('div');
-    content.className = 'ai-msg-content';
-    content.textContent = text;
-    msg.appendChild(content);
-    container.appendChild(msg);
-    container.scrollTop = container.scrollHeight;
+    appendUserMessageFn(instance, text);
   }
 
-  /** Show a pulsing indicator at the bottom of the chat to signal agent is running. */
   private showAgentPulse(instance: AICapsuleInstance): void {
-    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
-    if (!container || container.querySelector('.ai-agent-pulse')) return;
-    const pulse = document.createElement('div');
-    pulse.className = 'ai-agent-pulse';
-    const dots = Array.from({ length: 6 }, (_, i) =>
-      `<span class="ai-pulse-dot" style="animation-delay:${i * 0.25}s">·</span>`
-    ).join('');
-    pulse.innerHTML = `${pulseIcon('var(--accent, #6aa4ff)', 10)} <span class="ai-pulse-label">${t('aiWorking')}</span><span class="ai-pulse-dots">${dots}</span>`;
-    container.appendChild(pulse);
-    container.scrollTop = container.scrollHeight;
+    showAgentPulseFn(instance);
   }
 
-  /** Remove the pulsing agent indicator. */
   private hideAgentPulse(instance: AICapsuleInstance): void {
-    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
-    if (!container) return;
-    container.querySelector('.ai-agent-pulse')?.remove();
+    hideAgentPulseFn(instance);
   }
 
-  /** Re-position the pulse to the bottom of the messages container. */
   private sinkAgentPulse(instance: AICapsuleInstance): void {
-    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
-    if (!container) return;
-    const pulse = container.querySelector('.ai-agent-pulse');
-    if (pulse) container.appendChild(pulse); // moves to end
+    sinkAgentPulseFn(instance);
   }
 
-  /** Prepare for a new assistant response. Doesn't create the bubble yet —
-   *  it will be created lazily when the first content token arrives. */
   private beginAssistantMessage(instance: AICapsuleInstance): void {
-    // Collapse any previous thinking block
-    this.collapseActiveThinking(instance);
-    instance.streamMsgEl = null;
-    instance.streamBuffer = '';
-    instance.reasoningBuffer = '';
+    beginAssistantMessageFn(instance);
   }
 
-  /** Create the assistant bubble on demand (first content token). */
   private ensureStreamBubble(instance: AICapsuleInstance): HTMLDivElement | null {
-    if (instance.streamMsgEl) return instance.streamMsgEl;
-    if (!instance.chatPanel) return null;
-    const container = instance.chatPanel.querySelector('.ai-chat-messages');
-    if (!container) return null;
-
-    // Collapse thinking block before starting content bubble
-    this.collapseActiveThinking(instance);
-
-    const msg = document.createElement('div');
-    msg.className = 'ai-msg ai-msg-assistant streaming';
-    const content = document.createElement('div');
-    content.className = 'ai-msg-content';
-
-    const cursor = document.createElement('span');
-    cursor.className = 'ai-cursor';
-    cursor.textContent = '\u258A';
-    content.appendChild(cursor);
-
-    msg.appendChild(content);
-    container.appendChild(msg);
-    this.sinkAgentPulse(instance);
-    container.scrollTop = container.scrollHeight;
-
-    instance.streamMsgEl = msg;
-    return msg;
+    return ensureStreamBubbleFn(instance);
   }
 
   private appendStreamToken(instance: AICapsuleInstance, token: string): void {
-    instance.streamBuffer += token;
-
-    this.ensureStreamBubble(instance);
-    if (!instance.streamMsgEl) return;
-    const content = instance.streamMsgEl.querySelector('.ai-msg-content');
-    if (!content) return;
-
-    // Render the raw text for now (we'll finalize with markdown on complete)
-    const textNode = content.querySelector('.ai-stream-text');
-    if (textNode) {
-      textNode.textContent = instance.streamBuffer;
-    } else {
-      const span = document.createElement('span');
-      span.className = 'ai-stream-text';
-      span.textContent = instance.streamBuffer;
-      // Insert before cursor
-      const cursor = content.querySelector('.ai-cursor');
-      content.insertBefore(span, cursor);
-    }
-
-    // Auto-scroll
-    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
-    if (container) container.scrollTop = container.scrollHeight;
+    appendStreamTokenFn(instance, token);
   }
 
-  /** Collapse any active standalone thinking block. */
   private collapseActiveThinking(instance: AICapsuleInstance): void {
-    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
-    if (!container) return;
-    const block = container.querySelector('.ai-thinking-block.active');
-    if (block) {
-      block.classList.remove('active');
-      const details = block.querySelector('details');
-      if (details) details.open = false;
-    }
+    collapseActiveThinkingFn(instance);
   }
 
-  /**
-   * Append a reasoning/thinking token to a standalone thinking block
-   * (outside any bubble) in the chat messages container.
-   */
   private appendReasoningToken(instance: AICapsuleInstance, token: string): void {
-    instance.reasoningBuffer += token;
-
-    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
-    if (!container) return;
-
-    // Find or create the standalone thinking block
-    let block = container.querySelector('.ai-thinking-block.active') as HTMLElement | null;
-    if (!block) {
-      block = document.createElement('div');
-      block.className = 'ai-thinking-block active';
-
-      const details = document.createElement('details');
-      details.className = 'ai-reasoning';
-      details.open = true;
-
-      const summary = document.createElement('summary');
-      summary.innerHTML = `${thinkingIcon(12)} <span>${t('aiThinking')}</span>`;
-      details.appendChild(summary);
-
-      const pre = document.createElement('div');
-      pre.className = 'ai-reasoning-text';
-      details.appendChild(pre);
-
-      block.appendChild(details);
-      container.appendChild(block);
-      this.sinkAgentPulse(instance);
-    }
-
-    const textEl = block.querySelector('.ai-reasoning-text');
-    if (textEl) textEl.textContent += token;
-
-    container.scrollTop = container.scrollHeight;
+    appendReasoningTokenFn(instance, token);
   }
 
   private finalizeMessage(instance: AICapsuleInstance, fullText: string): void {
-    instance.isStreaming = false;
-    document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
-    this.updateButtonHighlight(instance);
-    this.hideAgentPulse(instance);
-
-    // Collapse standalone thinking block
-    this.collapseActiveThinking(instance);
-
-    // Save reasoning if present
-    if (instance.reasoningBuffer) {
-      instance.messages.push({ type: 'thinking', content: '', reasoning: instance.reasoningBuffer, timestamp: Date.now() });
-      instance.reasoningBuffer = '';
-    }
-
-    // Create bubble if content exists but no bubble was created yet
-    if (!instance.streamMsgEl && fullText) {
-      this.ensureStreamBubble(instance);
-    }
-
-    if (instance.streamMsgEl) {
-      instance.streamMsgEl.classList.remove('streaming');
-      const content = instance.streamMsgEl.querySelector('.ai-msg-content');
-      if (content) {
-        content.querySelector('.ai-stream-text')?.remove();
-        content.querySelector('.ai-cursor')?.remove();
-        if (fullText) {
-          const mdWrapper = document.createElement('div');
-          const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
-          mdWrapper.innerHTML = renderMarkdown(fullText, instance.sessionId, addHistory);
-          while (mdWrapper.firstChild) content.appendChild(mdWrapper.firstChild);
-          this.bindCommandButtons(instance, content);
-        }
-      }
-    }
-
-    instance.streamMsgEl = null;
-    instance.streamBuffer = '';
-
-    // Store assistant message
-    if (fullText) {
-      instance.messages.push({ type: 'assistant', content: fullText, timestamp: Date.now() });
-    }
-    void this.saveConversation(instance);
-
-    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
-    if (container) container.scrollTop = container.scrollHeight;
+    finalizeMessageFn(instance, fullText, this._chatUiDeps());
   }
 
-  /**
-   * Finalize the current thinking text *without* ending the streaming state.
-   * Called when LLM returns text + tool_calls — the text is rendered into a
-   * finished markdown bubble so tool cards appear below it cleanly.
-   */
   private finalizeThinking(instance: AICapsuleInstance, text: string): void {
-    // Collapse standalone thinking block
-    this.collapseActiveThinking(instance);
-
-    // Save reasoning + assistant text as a thinking entry
-    const reasoning = instance.reasoningBuffer || undefined;
-    if (reasoning || text) {
-      instance.messages.push({ type: 'thinking', content: text, reasoning, timestamp: Date.now() });
-    }
-    instance.reasoningBuffer = '';
-
-    // Finalize the bubble if it has content
-    if (instance.streamMsgEl) {
-      instance.streamMsgEl.classList.remove('streaming');
-      const content = instance.streamMsgEl.querySelector('.ai-msg-content');
-      if (content) {
-        content.querySelector('.ai-stream-text')?.remove();
-        content.querySelector('.ai-cursor')?.remove();
-        if (text) {
-          const mdWrapper = document.createElement('div');
-          const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
-          mdWrapper.innerHTML = renderMarkdown(text, instance.sessionId, addHistory);
-          while (mdWrapper.firstChild) content.appendChild(mdWrapper.firstChild);
-          this.bindCommandButtons(instance, content);
-        }
-      }
-    } else if (text) {
-      // No bubble was created yet (reasoning-only phase), create one for the text
-      const bubble = this.ensureStreamBubble(instance);
-      if (bubble) {
-        bubble.classList.remove('streaming');
-        const content = bubble.querySelector('.ai-msg-content');
-        if (content) {
-          content.querySelector('.ai-cursor')?.remove();
-          const mdWrapper = document.createElement('div');
-          const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
-          mdWrapper.innerHTML = renderMarkdown(text, instance.sessionId, addHistory);
-          while (mdWrapper.firstChild) content.appendChild(mdWrapper.firstChild);
-          this.bindCommandButtons(instance, content);
-        }
-      }
-    }
-
-    instance.streamMsgEl = null;
-    instance.streamBuffer = '';
-
-    const container = instance.chatPanel?.querySelector('.ai-chat-messages');
-    if (container) container.scrollTop = container.scrollHeight;
+    finalizeThinkingFn(instance, text, {
+      addHistory: (i, cmd, src) => this.addHistory(i, cmd, src),
+      bindCommandButtons: (i, c) => this.bindCommandButtons(i, c),
+    });
   }
 
   private showError(instance: AICapsuleInstance, message: string): void {
-    instance.isStreaming = false;
-    document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
-    this.updateButtonHighlight(instance);
-    this.hideAgentPulse(instance);
-    this.collapseActiveThinking(instance);
-
-    if (!instance.streamMsgEl) {
-      this.ensureStreamBubble(instance);
-    }
-    if (instance.streamMsgEl) {
-      instance.streamMsgEl.classList.remove('streaming');
-      const content = instance.streamMsgEl.querySelector('.ai-msg-content');
-      if (content) {
-        content.innerHTML = `<div class="ai-msg-error">${t('aiStreamError')}: ${escapeHtml(message)}</div>`;
-      }
-    }
-
-    instance.streamMsgEl = null;
-    instance.streamBuffer = '';
-    instance.reasoningBuffer = '';
+    showErrorFn(instance, message);
   }
 
-  // ─── Agent Tool Call UI ───────────────────────────────────────
-
-  /** Build inline args HTML for a tool card header. */
-  private static toolArgsInline(toolName: string, args: Record<string, unknown>): string {
-    if (toolName === 'run_command' && args.command) {
-      return `<span class="ai-tool-args-inline"><code>$ ${escapeHtml(String(args.command))}</code></span>`;
-    } else if ((toolName === 'read_file' || toolName === 'write_file') && args.path) {
-      return `<span class="ai-tool-args-inline"><code>${escapeHtml(String(args.path))}</code></span>`;
-    } else if (toolName === 'read_terminal') {
-      return `<span class="ai-tool-args-inline"><code>${args.lines ?? 50} lines</code></span>`;
-    }
-    return '';
+  private injectUserMessage(instance: AICapsuleInstance, text: string): void {
+    appendUserMessageFn(instance, text);
+    instance.messages.push({ type: 'user', content: text, timestamp: Date.now() });
+    void this.saveConversation(instance);
+    instance.agent.injectMessage(text);
   }
 
-  /** Build a completed tool card element (for history rendering). */
-  private buildToolCard(msg: Extract<ConvEntry, { type: 'tool_call' }>): HTMLDivElement {
-    const card = document.createElement('div');
-    card.className = 'ai-tool-card completed';
-    card.dataset.tool = msg.toolName;
-    const status = msg.result !== null
-      ? (msg.isError ? statusIcon('error', 12) : statusIcon('success', 12))
-      : statusIcon('error', 12);
-    const header = document.createElement('div');
-    header.className = 'ai-tool-card-header clickable';
-    header.innerHTML = `
-      <span class="ai-tool-icon">${toolIcon(msg.toolName, 14)}</span>
-      <span class="ai-tool-name">${escapeHtml(msg.toolName)}</span>
-      ${AICapsuleManagerClass.toolArgsInline(msg.toolName, msg.args)}
-      <span class="ai-tool-status">${status}</span>`;
-    const resultEl = document.createElement('div');
-    resultEl.className = `ai-tool-result${msg.isError ? ' ai-tool-result-error' : ''}`;
-    resultEl.style.display = 'none';
-    const raw = msg.result ?? '';
-    const truncated = raw.length > 500 ? raw.slice(0, 500) + '...' : raw;
-    resultEl.innerHTML = `<pre>${escapeHtml(truncated)}</pre>`;
-    header.addEventListener('click', () => {
-      resultEl.style.display = resultEl.style.display === 'none' ? '' : 'none';
-    });
-    card.appendChild(header);
-    card.appendChild(resultEl);
-    return card;
-  }
-
-  /** Render an inline tool-call card in the chat panel. */
-  private appendToolCallCard(
-    instance: AICapsuleInstance,
-    toolName: string,
-    args: Record<string, unknown>,
-  ): void {
-    if (!instance.chatPanel) return;
-    const container = instance.chatPanel.querySelector('.ai-chat-messages');
-    if (!container) return;
-
-    const card = document.createElement('div');
-    card.className = 'ai-tool-card';
-    card.dataset.tool = toolName;
-    card.dataset.toolId = `tc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-
-    const color = TOOL_COLORS[toolName] ?? '#6B7280';
-
-    // Header row: icon + tool name + inline args + spinner
-    const header = document.createElement('div');
-    header.className = 'ai-tool-card-header';
-    header.innerHTML = `
-      <span class="ai-tool-icon">${toolIcon(toolName, 14)}</span>
-      <span class="ai-tool-name">${escapeHtml(toolName)}</span>
-      ${AICapsuleManagerClass.toolArgsInline(toolName, args)}
-      <span class="ai-tool-status">${spinnerIcon(color, 12)}</span>
-    `;
-
-    card.appendChild(header);
-    container.appendChild(card);
-    this.sinkAgentPulse(instance);
-    container.scrollTop = container.scrollHeight;
-
-    // Add run_command commands to history so they appear in the history panel
-    if (toolName === 'run_command' && typeof args.command === 'string' && args.command.trim()) {
-      this.addHistory(instance, args.command.trim(), 'ai');
-    }
-
-    // Persist tool call (result filled in by updateToolResultCard)
-    instance.messages.push({ type: 'tool_call', toolName, args, result: null, isError: false, timestamp: Date.now() });
-  }
-
-  /** Update the most recent tool card with execution result. */
-  private updateToolResultCard(
-    instance: AICapsuleInstance,
-    toolName: string,
-    result: string,
-    isError: boolean,
-  ): void {
-    if (!instance.chatPanel) return;
-    const container = instance.chatPanel.querySelector('.ai-chat-messages');
-    if (!container) return;
-
-    // Find the last tool card matching this tool
-    const cards = container.querySelectorAll<HTMLDivElement>(`.ai-tool-card[data-tool="${toolName}"]`);
-    const card = cards[cards.length - 1];
-    if (!card) return;
-
-    // Update status icon
-    const statusEl = card.querySelector('.ai-tool-status');
-    if (statusEl) {
-      statusEl.innerHTML = isError ? statusIcon('error', 12) : statusIcon('success', 12);
-    }
-
-    // Add collapsible result
-    const resultEl = document.createElement('div');
-    resultEl.className = `ai-tool-result ${isError ? 'ai-tool-result-error' : ''}`;
-    resultEl.style.display = 'none'; // collapsed by default
-
-    const truncated = result.length > 500 ? result.slice(0, 500) + '...' : result;
-    resultEl.innerHTML = `<pre>${escapeHtml(truncated)}</pre>`;
-    card.appendChild(resultEl);
-
-    // Make header clickable to toggle result
-    const header = card.querySelector('.ai-tool-card-header');
-    if (header) {
-      header.classList.add('clickable');
-      header.addEventListener('click', () => {
-        resultEl.style.display = resultEl.style.display === 'none' ? '' : 'none';
-      });
-    }
-
-    card.classList.add('completed');
-    container.scrollTop = container.scrollHeight;
-
-    // Back-fill result into the last pending tool_call entry for this tool
-    for (let i = instance.messages.length - 1; i >= 0; i--) {
-      const e = instance.messages[i];
-      if (e.type === 'tool_call' && e.toolName === toolName && e.result === null) {
-        e.result = result;
-        e.isError = isError;
-        break;
-      }
-    }
-  }
-
-  /**
-   * Show inline confirmation card and return a Promise.
-   * Resolves with: true (approve), false (reject), or string (edited command).
-   */
-  private showConfirmCard(
-    instance: AICapsuleInstance,
-    toolName: string,
-    args: Record<string, unknown>,
-  ): Promise<boolean | string> {
-    return new Promise((resolve) => {
-      if (!instance.chatPanel) { resolve(false); return; }
-      const container = instance.chatPanel.querySelector('.ai-chat-messages');
-      if (!container) { resolve(false); return; }
-
-      const card = document.createElement('div');
-      card.className = 'ai-confirm-card';
-      card.dataset.tool = toolName;
-
-      const color = TOOL_COLORS[toolName] ?? '#6B7280';
-
-      // Header
-      const header = document.createElement('div');
-      header.className = 'ai-confirm-header';
-      header.innerHTML = `
-        <span class="ai-tool-icon">${toolIcon(toolName, 14)}</span>
-        <span class="ai-tool-name">${escapeHtml(toolName)}</span>
-      `;
-
-      // Command preview
-      const preview = document.createElement('div');
-      preview.className = 'ai-confirm-preview';
-      if (toolName === 'run_command' && args.command) {
-        preview.innerHTML = `<code>$ ${escapeHtml(String(args.command))}</code>`;
-      } else if (toolName === 'write_file' && args.path) {
-        preview.innerHTML = `<code>${escapeHtml(String(args.path))}</code>`;
-      } else {
-        preview.innerHTML = `<code>${escapeHtml(JSON.stringify(args, null, 2).slice(0, 200))}</code>`;
-      }
-
-      // Buttons
-      const buttons = document.createElement('div');
-      buttons.className = 'ai-confirm-buttons';
-
-      const approveBtn = document.createElement('button');
-      approveBtn.className = 'ai-confirm-btn ai-confirm-approve';
-      approveBtn.innerHTML = `${approveIcon(12)} <span>Allow</span>`;
-
-      const rejectBtn = document.createElement('button');
-      rejectBtn.className = 'ai-confirm-btn ai-confirm-reject';
-      rejectBtn.innerHTML = `${rejectIcon(12)} <span>Reject</span>`;
-
-      const editBtn = document.createElement('button');
-      editBtn.className = 'ai-confirm-btn ai-confirm-edit';
-      editBtn.innerHTML = `${editIcon(12)} <span>Edit</span>`;
-
-      buttons.appendChild(approveBtn);
-      buttons.appendChild(rejectBtn);
-      if (toolName === 'run_command') {
-        buttons.appendChild(editBtn);
-      }
-
-      card.appendChild(header);
-      card.appendChild(preview);
-      card.appendChild(buttons);
-      container.appendChild(card);
-      container.scrollTop = container.scrollHeight;
-
-      // Button handlers
-      const cleanup = () => {
-        card.classList.add('resolved');
-        approveBtn.disabled = true;
-        rejectBtn.disabled = true;
-        editBtn.disabled = true;
-      };
-
-      approveBtn.addEventListener('click', () => {
-        cleanup();
-        card.querySelector('.ai-confirm-header')!.innerHTML += ` <span class="ai-confirm-resolved">${statusIcon('success', 10)} Approved</span>`;
-        resolve(true);
-      });
-
-      rejectBtn.addEventListener('click', () => {
-        cleanup();
-        card.querySelector('.ai-confirm-header')!.innerHTML += ` <span class="ai-confirm-resolved">${statusIcon('error', 10)} Rejected</span>`;
-        resolve(false);
-      });
-
-      editBtn.addEventListener('click', () => {
-        // Show inline editor
-        const cmd = String(args.command || '');
-        const editorDiv = document.createElement('div');
-        editorDiv.className = 'ai-confirm-editor';
-        const editInput = document.createElement('input');
-        editInput.type = 'text';
-        editInput.className = 'ai-confirm-edit-input';
-        editInput.value = cmd;
-        const confirmEditBtn = document.createElement('button');
-        confirmEditBtn.className = 'ai-confirm-btn ai-confirm-approve';
-        confirmEditBtn.innerHTML = `${approveIcon(12)} <span>Run</span>`;
-        editorDiv.appendChild(editInput);
-        editorDiv.appendChild(confirmEditBtn);
-        preview.replaceWith(editorDiv);
-        editInput.focus();
-
-        const runEdited = () => {
-          cleanup();
-          card.querySelector('.ai-confirm-header')!.innerHTML += ` <span class="ai-confirm-resolved">${statusIcon('success', 10)} Edited</span>`;
-          resolve(editInput.value);
-        };
-
-        confirmEditBtn.addEventListener('click', runEdited);
-        editInput.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') runEdited();
-          e.stopPropagation();
-        });
-      });
-    });
-  }
-
-  /** Insert a system notice (e.g. trust level change, degradation). */
-  private appendSystemNotice(instance: AICapsuleInstance, text: string): void {
-    if (!instance.chatPanel) return;
-    const container = instance.chatPanel.querySelector('.ai-chat-messages');
-    if (!container) return;
-
-    const notice = document.createElement('div');
-    notice.className = 'ai-system-notice';
-    notice.textContent = text;
-    container.appendChild(notice);
-    container.scrollTop = container.scrollHeight;
-
-    instance.messages.push({ type: 'system', content: text, timestamp: Date.now() });
-  }
-
-  /** Create the trust-level quick switcher button for the AI bar. */
-  private createTrustSwitcher(): HTMLDivElement {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'ai-bar-trust-switcher';
-
-    const settings = loadSettings();
-    const level = settings.aiAgentTrustLevel ?? 0;
-
-    const btn = document.createElement('button');
-    btn.className = 'ai-bar-btn ai-bar-btn-trust';
-    btn.title = `Trust Level ${level}`;
-    btn.innerHTML = shieldIcon(level, 16);
-    btn.dataset.level = String(level);
-
-    const dropdown = document.createElement('div');
-    dropdown.className = 'ai-trust-dropdown';
-    dropdown.style.display = 'none';
-
-    const labels = [
-      { value: 0, label: t('aiAgentTrustManual'), color: TRUST_COLORS[0] },
-      { value: 1, label: t('aiAgentTrustSemiAuto'), color: TRUST_COLORS[1] },
-      { value: 2, label: t('aiAgentTrustFullAuto'), color: TRUST_COLORS[2] },
-    ];
-
-    const buildDropdown = () => {
-      const currentLevel = loadSettings().aiAgentTrustLevel ?? 0;
-      dropdown.innerHTML = '';
-      for (const l of labels) {
-        const item = document.createElement('div');
-        item.className = `ai-trust-item ${l.value === currentLevel ? 'active' : ''}`;
-        item.innerHTML = `${shieldIcon(l.value, 14)} <span>${escapeHtml(l.label)}</span>`;
-        item.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const s = loadSettings();
-          s.aiAgentTrustLevel = l.value;
-          saveSettings(s);
-          btn.innerHTML = shieldIcon(l.value, 16);
-          btn.dataset.level = String(l.value);
-          btn.title = `Trust Level ${l.value}`;
-          dropdown.style.display = 'none';
-          wrapper.classList.remove('open');
-          // Notify all open capsules
-          for (const [, inst] of this.capsules) {
-            this.appendSystemNotice(inst,
-              `── Trust level changed to Level ${l.value} ──`);
-          }
-        });
-        dropdown.appendChild(item);
-      }
+  /** Shared deps object for chat-ui callbacks. */
+  private _chatUiDeps() {
+    return {
+      addHistory: (i: AICapsuleInstance, cmd: string, src: 'manual' | 'ai') => this.addHistory(i, cmd, src),
+      bindCommandButtons: (i: AICapsuleInstance, c: Element) => this.bindCommandButtons(i, c),
+      saveConversation: (i: AICapsuleInstance) => { void this.saveConversation(i); },
     };
-
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const isOpen = dropdown.style.display !== 'none';
-      if (isOpen) {
-        dropdown.style.display = 'none';
-        wrapper.classList.remove('open');
-      } else {
-        buildDropdown();
-        dropdown.style.display = '';
-        wrapper.classList.add('open');
-      }
-    });
-
-    document.addEventListener('click', () => {
-      dropdown.style.display = 'none';
-      wrapper.classList.remove('open');
-    });
-
-    wrapper.appendChild(btn);
-    wrapper.appendChild(dropdown);
-    return wrapper;
   }
 
-  private static readonly DANGER_PATTERNS = [
-    /\brm\s+(-[^\s]*\s+)*-[^\s]*r/,   // rm -r, rm -rf, rm -fr, etc.
-    /\brm\s+(-[^\s]*\s+)*\//, // rm /path (root-level deletes)
-    /\bmkfs\b/,
-    /\bdd\s+/,
-    /\b(shutdown|reboot|poweroff|halt)\b/,
-    /\bsystemctl\s+(stop|disable|mask)\b/,
-    /\bkill\s+-9/,
-    /\bkillall\b/,
-    /\bpkill\b/,
-    /\bchmod\s+(-[^\s]*\s+)*[0-7]*0{2}/,  // chmod 000, 700 etc wide perms
-    /\bchown\s+-R/,
-    /\bchmod\s+-R/,
-    /\b>\s*\/dev\/sd/,
-    /\bdrop\s+(database|table|schema)\b/i,
-    /\btruncate\s+table\b/i,
-    /\bdelete\s+from\b/i,
-    /\bformat\b/,
-    /\bnewfs\b/,
-    /\bdiskutil\s+erase/,
-    /\bsudo\b/,
-    /\bgit\s+push\s+.*--force/,
-    /\bgit\s+reset\s+--hard/,
-    /\bgit\s+clean\s+-[^\s]*f/,
-    /\biptables\s+-F/,
-    /\b:(){ :\|:& };:/,  // fork bomb
-  ];
-
-  private isDangerousCommand(cmd: string): boolean {
-    return AICapsuleManagerClass.DANGER_PATTERNS.some((p) => p.test(cmd));
+  private buildAgentCallbacks(instance: AICapsuleInstance): AgentCallbacks {
+    return buildAgentCallbacksFn(instance, {
+      ...this._chatUiDeps(),
+      appendToolCallCard: (i, tn, a) => this.appendToolCallCard(i, tn, a),
+      updateToolResultCard: (i, tn, r, e) => this.updateToolResultCard(i, tn, r, e),
+      showConfirmCard: (i, tn, a) => this.showConfirmCard(i, tn, a),
+    });
   }
 
-  private confirmDangerousCommand(cmd: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'ai-danger-overlay';
+  // ─── Agent Tool Call UI (delegated to ai-capsule-tool-ui.ts) ──
 
-      const dialog = document.createElement('div');
-      dialog.className = 'ai-danger-dialog';
+  private buildToolCard(msg: Extract<ConvEntry, { type: 'tool_call' }>): HTMLDivElement {
+    return buildToolCardFn(msg);
+  }
 
-      const title = document.createElement('div');
-      title.className = 'ai-danger-title';
-      title.textContent = t('aiDangerConfirmTitle');
+  private appendToolCallCard(instance: AICapsuleInstance, toolName: string, args: Record<string, unknown>): void {
+    appendToolCallCardFn(instance, toolName, args, (i) => sinkAgentPulseFn(i), (i, cmd, src) => this.addHistory(i, cmd, src));
+  }
 
-      const msg = document.createElement('div');
-      msg.className = 'ai-danger-msg';
-      msg.textContent = t('aiDangerConfirmMsg');
+  private updateToolResultCard(instance: AICapsuleInstance, toolName: string, result: string, isError: boolean): void {
+    updateToolResultCardFn(instance, toolName, result, isError);
+  }
 
-      const cmdPreview = document.createElement('pre');
-      cmdPreview.className = 'ai-danger-cmd';
-      cmdPreview.textContent = cmd;
+  private showConfirmCard(instance: AICapsuleInstance, toolName: string, args: Record<string, unknown>): Promise<boolean | string> {
+    return showConfirmCardFn(instance, toolName, args);
+  }
 
-      const actions = document.createElement('div');
-      actions.className = 'ai-danger-actions';
+  private appendSystemNotice(instance: AICapsuleInstance, text: string): void {
+    appendSystemNoticeFn(instance, text);
+  }
 
-      const cancelBtn = document.createElement('button');
-      cancelBtn.className = 'ai-danger-btn ai-danger-btn-cancel';
-      cancelBtn.textContent = t('aiDangerConfirmCancel');
-
-      const runBtn = document.createElement('button');
-      runBtn.className = 'ai-danger-btn ai-danger-btn-run';
-      runBtn.textContent = t('aiDangerConfirmRun');
-
-      const close = (result: boolean) => {
-        overlay.remove();
-        resolve(result);
-      };
-
-      cancelBtn.addEventListener('click', () => close(false));
-      runBtn.addEventListener('click', () => close(true));
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
-
-      actions.appendChild(cancelBtn);
-      actions.appendChild(runBtn);
-      dialog.appendChild(title);
-      dialog.appendChild(msg);
-      dialog.appendChild(cmdPreview);
-      dialog.appendChild(actions);
-      overlay.appendChild(dialog);
-      document.body.appendChild(overlay);
-
-      cancelBtn.focus();
-    });
+  /** Create the trust-level quick switcher button for the AI bar (delegated). */
+  private createTrustSwitcher(): HTMLDivElement {
+    return createTrustSwitcherFn(this.capsules, (inst, text) => this.appendSystemNotice(inst, text));
   }
 
   private bindCommandButtons(instance: AICapsuleInstance, container: Element): void {
@@ -1468,8 +762,8 @@ class AICapsuleManagerClass {
           }, 1500);
         };
 
-        if (this.isDangerousCommand(cmd)) {
-          void this.confirmDangerousCommand(cmd).then((confirmed) => {
+        if (isDangerousCommand(cmd)) {
+          void confirmDangerousCommand(cmd).then((confirmed) => {
             if (confirmed) executeCmd();
           });
         } else {
@@ -1493,181 +787,14 @@ class AICapsuleManagerClass {
     });
   }
 
-  // ─── Chat Bubble Context Menu ─────────────────────────────────
+  // ─── Chat Bubble Context Menu (delegated to ai-capsule-context-menu.ts) ──
 
-  /** Attach context-menu handler to the messages container (event delegation). */
   private bindChatContextMenu(instance: AICapsuleInstance, container?: Element): void {
-    const el = container ?? instance.chatPanel?.querySelector('.ai-chat-messages');
-    if (!el) return;
-    el.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      e.stopPropagation(); // Prevent global handler from interfering
-      const target = e.target as HTMLElement;
-
-      // Find closest message bubble or tool card
-      const bubble = target.closest('.ai-msg') as HTMLElement | null;
-      const toolCard = target.closest('.ai-tool-card') as HTMLElement | null;
-      const thinkingBlock = target.closest('.ai-thinking-block') as HTMLElement | null;
-
-      if (!bubble && !toolCard && !thinkingBlock) return;
-
-      // Determine raw text for copying
-      let rawText = '';
-      let msgIndex = -1;
-      let isUser = false;
-
-      if (bubble) {
-        const content = bubble.querySelector('.ai-msg-content');
-        rawText = content?.textContent ?? '';
-        isUser = bubble.classList.contains('ai-msg-user');
-        // Find matching message index
-        const allMsgs = Array.from(el.querySelectorAll('.ai-msg, .ai-tool-card, .ai-thinking-block'));
-        const pos = allMsgs.indexOf(bubble);
-        msgIndex = this.resolveMessageIndex(instance, allMsgs, pos);
-      } else if (toolCard) {
-        const resultEl = toolCard.querySelector('.ai-tool-result pre');
-        const argsEl = toolCard.querySelector('.ai-tool-args-inline code');
-        rawText = resultEl?.textContent ?? argsEl?.textContent ?? '';
-        const allMsgs = Array.from(el.querySelectorAll('.ai-msg, .ai-tool-card, .ai-thinking-block'));
-        const pos = allMsgs.indexOf(toolCard);
-        msgIndex = this.resolveMessageIndex(instance, allMsgs, pos);
-      } else if (thinkingBlock) {
-        const textEl = thinkingBlock.querySelector('.ai-reasoning-text');
-        rawText = textEl?.textContent ?? '';
-        const allMsgs = Array.from(el.querySelectorAll('.ai-msg, .ai-tool-card, .ai-thinking-block'));
-        const pos = allMsgs.indexOf(thinkingBlock);
-        msgIndex = this.resolveMessageIndex(instance, allMsgs, pos);
-      }
-
-      // Build menu items
-      type MenuItem = { label: string; action: () => void; disabled?: boolean } | 'divider';
-      const items: MenuItem[] = [];
-
-      // Copy selected text (if any text is selected within the bubble)
-      const selection = window.getSelection();
-      const hasSelection = selection && selection.toString().trim().length > 0;
-
-      if (hasSelection) {
-        items.push({ label: t('aiCtxCopy'), action: () => void clipboardWriteText(selection!.toString()) });
-      } else if (toolCard) {
-        // Tool card: copy result if available
-        const resultEl = toolCard.querySelector('.ai-tool-result pre');
-        if (resultEl?.textContent) {
-          items.push({ label: t('aiCtxCopyResult'), action: () => void clipboardWriteText(resultEl.textContent ?? '') });
-        }
-        const argsEl = toolCard.querySelector('.ai-tool-args-inline code');
-        if (argsEl?.textContent) {
-          items.push({ label: t('aiCtxCopy'), action: () => void clipboardWriteText(argsEl.textContent ?? '') });
-        }
-      } else if (rawText) {
-        items.push({ label: t('aiCtxCopy'), action: () => void clipboardWriteText(rawText) });
-      }
-
-      // Resend (user messages only)
-      if (isUser && rawText && !instance.isStreaming) {
-        if (items.length > 0) items.push('divider');
-        items.push({
-          label: t('aiCtxResend'),
-          action: () => {
-            const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement | null;
-            if (input) {
-              input.value = rawText;
-              input.focus();
-            }
-          },
-        });
-      }
-
-      // Delete message
-      if (msgIndex >= 0 && !instance.isStreaming) {
-        if (items.length > 0) items.push('divider');
-        items.push({
-          label: t('aiCtxDelete'),
-          action: () => {
-            instance.messages.splice(msgIndex, 1);
-            // Remove DOM element
-            if (bubble) bubble.remove();
-            else if (toolCard) toolCard.remove();
-            else if (thinkingBlock) thinkingBlock.remove();
-            void this.saveConversation(instance);
-          },
-        });
-      }
-
-      if (items.length === 0) return;
-      this.showBubbleContextMenu(e as MouseEvent, items);
+    bindChatContextMenuFn(instance, container, {
+      resolveMessageIndex: (inst, nodes, pos) => resolveMessageIndexFn(inst, nodes, pos),
+      showBubbleContextMenu: (e, items) => showBubbleContextMenuFn(e, items),
+      saveConversation: (inst) => { void this.saveConversation(inst); },
     });
-  }
-
-  /** Map a DOM position index to the corresponding messages[] index. */
-  private resolveMessageIndex(instance: AICapsuleInstance, domNodes: Element[], domPos: number): number {
-    // Walk the messages array, counting rendered elements to match domPos.
-    let rendered = 0;
-    for (let i = 0; i < instance.messages.length; i++) {
-      const msg = instance.messages[i];
-      if (msg.type === 'thinking') {
-        // A thinking entry can produce 1-2 DOM elements (reasoning block + content bubble)
-        if (msg.reasoning) { if (rendered === domPos) return i; rendered++; }
-        if (msg.content) { if (rendered === domPos) return i; rendered++; }
-        if (!msg.reasoning && !msg.content) { rendered++; }
-      } else {
-        if (rendered === domPos) return i;
-        rendered++;
-      }
-    }
-    return -1;
-  }
-
-  /** Show a context menu at mouse position with given items. */
-  private showBubbleContextMenu(e: MouseEvent, items: ({ label: string; action: () => void; disabled?: boolean } | 'divider')[]): void {
-    // Remove any existing menu
-    document.querySelector('.ai-bubble-ctx-menu')?.remove();
-
-    const menu = document.createElement('div');
-    menu.className = 'custom-context-menu ai-bubble-ctx-menu';
-
-    for (const item of items) {
-      if (item === 'divider') {
-        const div = document.createElement('div');
-        div.className = 'custom-context-menu-divider';
-        menu.appendChild(div);
-        continue;
-      }
-      const btn = document.createElement('button');
-      btn.className = 'custom-context-menu-item';
-      btn.textContent = item.label;
-      if (item.disabled) btn.disabled = true;
-      btn.addEventListener('click', () => {
-        menu.remove();
-        item.action();
-      });
-      menu.appendChild(btn);
-    }
-
-    // Position
-    menu.style.left = `${e.clientX}px`;
-    menu.style.top = `${e.clientY}px`;
-    document.body.appendChild(menu);
-
-    // Adjust if menu overflows viewport
-    requestAnimationFrame(() => {
-      const rect = menu.getBoundingClientRect();
-      if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
-      if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
-    });
-
-    // Close on outside click / Escape
-    const close = (ev: Event) => {
-      if (ev.type === 'keydown' && (ev as KeyboardEvent).key !== 'Escape') return;
-      menu.remove();
-      document.removeEventListener('click', close);
-      document.removeEventListener('keydown', close);
-    };
-    // Delay to prevent immediate close from the contextmenu event
-    setTimeout(() => {
-      document.addEventListener('click', close);
-      document.addEventListener('keydown', close);
-    }, 0);
   }
 
   // ─── Terminal command capture ──────────────────────────────────
@@ -1722,193 +849,43 @@ class AICapsuleManagerClass {
     });
   }
 
-  // ─── History management ────────────────────────────────────────
-
-  private getHistoryKey(sessionId: string): string {
-    const info = DrawerManager.getServerInfo(sessionId);
-    if (info) return `${info.username}@${info.host}:${info.port}`;
-    return 'local';
-  }
-
-  private storageKey(historyKey: string): string {
-    return `${HISTORY_STORAGE_KEY}:${historyKey}`;
-  }
+  // ─── History management (delegated to ai-capsule-history.ts) ──
 
   private loadHistory(historyKey: string): HistoryEntry[] {
-    try {
-      const stored = localStorage.getItem(this.storageKey(historyKey));
-      if (stored) return JSON.parse(stored) as HistoryEntry[];
-    } catch { /* ignore */ }
-    return [];
-  }
-
-  private saveHistory(historyKey: string, history: HistoryEntry[]): void {
-    try {
-      localStorage.setItem(this.storageKey(historyKey), JSON.stringify(history));
-    } catch { /* ignore */ }
+    return loadHistoryFn(historyKey);
   }
 
   private addHistory(instance: AICapsuleInstance, command: string, source: 'manual' | 'ai'): void {
-    instance.history = instance.history.filter((h) => h.command !== command);
-    instance.history.unshift({ command, timestamp: Date.now(), source });
-    if (instance.history.length > MAX_HISTORY) instance.history.length = MAX_HISTORY;
-    this.saveHistory(instance.historyKey, instance.history);
-    this.capsules.forEach((other) => {
-      if (other !== instance && other.historyKey === instance.historyKey) {
-        other.history = instance.history;
-      }
-    });
-    if (instance.historyOpen) this.renderHistoryPanel(instance);
+    addHistoryFn(instance, command, source, this.capsules, (inst) => this.renderHistoryPanel(inst));
   }
 
-  // 模糊匹配：query 中的每个空格分隔的关键词都须在 text 中出现（不区分大小写）
-  private fuzzyMatch(text: string, query: string): boolean {
-    const lower = text.toLowerCase();
-    return query.toLowerCase().split(/\s+/).filter(Boolean).every(kw => lower.includes(kw));
-  }
-
-  // 切换输入框到搜索模式
   private enterSearchMode(instance: AICapsuleInstance, placeholder: string, onInput: () => void): void {
-    const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement;
-    if (!input) return;
-    const sid = instance.sessionId;
-    this._savedPlaceholder.set(sid, input.placeholder);
-    this._savedInputValue.set(sid, input.value);
-    input.value = '';
-    input.placeholder = placeholder;
-    input.classList.add('searching');
-    input.addEventListener('input', onInput);
-    this._filterListener.set(sid, onInput);
+    enterSearchModeFn(instance, placeholder, onInput, this._savedPlaceholder, this._savedInputValue, this._filterListener);
   }
 
-  // 退出搜索模式，恢复输入框
   private exitSearchMode(instance: AICapsuleInstance): void {
-    const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement;
-    if (!input) return;
-    const sid = instance.sessionId;
-    const listener = this._filterListener.get(sid);
-    if (listener) {
-      input.removeEventListener('input', listener);
-      this._filterListener.delete(sid);
-    }
-    input.value = this._savedInputValue.get(sid) ?? '';
-    input.placeholder = this._savedPlaceholder.get(sid) ?? t('aiPlaceholderInput');
-    input.classList.remove('searching');
-    this._savedPlaceholder.delete(sid);
-    this._savedInputValue.delete(sid);
-  }
-
-  private formatRelativeTime(timestamp: number): string {
-    const diff = Date.now() - timestamp;
-    const seconds = Math.floor(diff / 1000);
-    if (seconds < 5) return t('aiTimeJustNow');
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h`;
-    const days = Math.floor(hours / 24);
-    if (days < 30) return `${days}d`;
-    const months = Math.floor(days / 30);
-    return `${months}mo`;
+    exitSearchModeFn(instance, this._savedPlaceholder, this._savedInputValue, this._filterListener);
   }
 
   private renderHistoryPanel(instance: AICapsuleInstance, filter?: string): void {
-    const panel = instance.element.querySelector('.ai-bar-history-panel') as HTMLDivElement;
-    if (!panel) return;
-
-    panel.innerHTML = '';
-
-    const filtered = filter
-      ? instance.history.filter(e => this.fuzzyMatch(e.command, filter))
-      : instance.history;
-
-    if (filtered.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'ai-history-empty';
-      empty.textContent = filter ? t('aiHistoryEmpty') : t('aiHistoryEmpty');
-      panel.appendChild(empty);
-      return;
-    }
-
-    filtered.forEach((entry) => {
-      const row = document.createElement('div');
-      row.className = 'ai-history-row';
-      row.title = entry.command;
-
-      const cmdSpan = document.createElement('span');
-      cmdSpan.className = 'ai-history-cmd';
-      cmdSpan.textContent = entry.command;
-
-      const meta = document.createElement('span');
-      meta.className = 'ai-history-meta';
-      const relTime = this.formatRelativeTime(entry.timestamp);
-      const sourceLabel = entry.source === 'ai' ? 'AI' : t('aiSourceManual');
-      meta.textContent = `${relTime} \u00B7 ${sourceLabel}`;
-
-      const copyBtn = document.createElement('button');
-      copyBtn.className = 'ai-history-copy';
-      copyBtn.title = t('aiCopyCommand');
-      copyBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 012 9.5v-7A1.5 1.5 0 013.5 1h7A1.5 1.5 0 0112 2.5V5"/></svg>`;
-      copyBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        void clipboardWriteText(entry.command);
-        copyBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 8.5 6.5 12 13 4"/></svg>`;
-        copyBtn.classList.add('copied');
-        setTimeout(() => {
-          copyBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 012 9.5v-7A1.5 1.5 0 013.5 1h7A1.5 1.5 0 0112 2.5V5"/></svg>`;
-          copyBtn.classList.remove('copied');
-        }, 1200);
-      });
-
-      const delBtn = document.createElement('button');
-      delBtn.className = 'ai-history-delete';
-      delBtn.title = t('aiChatDeleteConfirmOk');
-      delBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>`;
-      delBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        void this.handleDeleteHistoryEntry(instance, entry);
-      });
-
-      row.appendChild(cmdSpan);
-      row.appendChild(meta);
-      row.appendChild(copyBtn);
-      row.appendChild(delBtn);
-
-      row.addEventListener('click', () => {
-        // 将选中的命令设为"恢复值"，关闭弹窗时会写入输入框
-        this._savedInputValue.set(instance.sessionId, entry.command);
-        this.closeHistory(instance);
-        const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement;
-        if (input) input.focus();
-      });
-
-      panel.appendChild(row);
-    });
+    renderHistoryPanelFn(instance, {
+      ensurePopupResizeHandle: (p, b) => this.ensurePopupResizeHandle(p, b),
+      handleDeleteHistoryEntry: (inst, entry) => { void this.handleDeleteHistoryEntry(inst, entry); },
+      savedInputValue: this._savedInputValue,
+      closeHistory: (inst) => this.closeHistory(inst),
+    }, filter);
   }
 
   private async handleDeleteHistoryEntry(instance: AICapsuleInstance, entry: HistoryEntry): Promise<void> {
     const now = Date.now();
     if (now < this._deleteSkipUntil) {
-      this.removeHistoryEntry(instance, entry);
+      removeHistoryEntryFn(instance, entry, this.capsules, (inst) => this.renderHistoryPanel(inst));
       return;
     }
     const confirmed = await this.confirmDeleteConversation();
     if (confirmed) {
-      this.removeHistoryEntry(instance, entry);
+      removeHistoryEntryFn(instance, entry, this.capsules, (inst) => this.renderHistoryPanel(inst));
     }
-  }
-
-  private removeHistoryEntry(instance: AICapsuleInstance, entry: HistoryEntry): void {
-    instance.history = instance.history.filter((h) => h !== entry);
-    this.saveHistory(instance.historyKey, instance.history);
-    // Sync to other instances with same historyKey
-    this.capsules.forEach((other) => {
-      if (other !== instance && other.historyKey === instance.historyKey) {
-        other.history = instance.history;
-      }
-    });
-    if (instance.historyOpen) this.renderHistoryPanel(instance);
   }
 
   private toggleHistory(instance: AICapsuleInstance): void {
@@ -1928,6 +905,7 @@ class AICapsuleManagerClass {
       this.renderHistoryPanel(instance);
       panel.style.display = '';
       this.adjustPopupMaxHeight(panel, instance.element);
+      this.observePopupResize(panel, instance.element);
     }
     if (btn) btn.classList.add('active');
     // 进入搜索模式
@@ -1944,6 +922,8 @@ class AICapsuleManagerClass {
     const btn = instance.element.querySelector('.ai-bar-btn-history') as HTMLButtonElement;
     if (panel) panel.style.display = 'none';
     if (btn) btn.classList.remove('active');
+    this.unobservePopupResize();
+    this._popupManualHeight = false;
     this.exitSearchMode(instance);
   }
 
@@ -1991,58 +971,33 @@ class AICapsuleManagerClass {
       this.beginAssistantMessage(instance);
       this.showAgentPulse(instance);
 
-      const agentCallbacks: AgentCallbacks = {
-        onToken: (token) => this.appendStreamToken(instance, token),
-        onReasoning: (token) => this.appendReasoningToken(instance, token),
-        onComplete: (fullText) => this.finalizeMessage(instance, fullText),
-        onError: (err) => this.showError(instance, err.message),
-        onThinkingComplete: (text) => {
-          // Finalize thinking block + bubble before tool call cards appear.
-          this.finalizeThinking(instance, text);
-        },
-        onIterationStart: () => {
-          // New agentic iteration — create a fresh assistant message bubble
-          instance.streamBuffer = '';
-          this.beginAssistantMessage(instance);
-        },
-        onToolCall: (toolName, args) => this.appendToolCallCard(instance, toolName, args),
-        onToolResult: (toolName, result, isError) => this.updateToolResultCard(instance, toolName, result, isError),
-        onConfirmRequired: (toolName, args) => this.showConfirmCard(instance, toolName, args),
-        onAborted: (_steps) => {
-          this.collapseActiveThinking(instance);
-          instance.reasoningBuffer = '';
-          if (instance.streamMsgEl && instance.streamBuffer) {
-            this.finalizeMessage(instance, instance.streamBuffer);
-          } else {
-            instance.isStreaming = false;
-            document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
-            this.updateButtonHighlight(instance);
-            this.hideAgentPulse(instance);
-            instance.streamMsgEl = null;
-            instance.streamBuffer = '';
-          }
-        },
-        onDegraded: (reason) => this.appendSystemNotice(instance, reason),
-      };
+      const agentCallbacks = this.buildAgentCallbacks(instance);
       instance.agent.send(text, instance.sessionId, agentCallbacks);
     };
 
     termBtn.addEventListener('click', sendToTerminal);
     llmBtn.addEventListener('click', () => {
       if (instance.isStreaming) {
-        // Streaming active → abort
-        instance.agent.abort();
-        this.collapseActiveThinking(instance);
-        instance.reasoningBuffer = '';
-        if (instance.streamMsgEl && instance.streamBuffer) {
-          this.finalizeMessage(instance, instance.streamBuffer);
+        const text = input.value.trim();
+        if (text) {
+          // Has text → inject message into running agent
+          this.injectUserMessage(instance, text);
+          input.value = '';
         } else {
-          instance.isStreaming = false;
-          instance.streamMsgEl = null;
-          instance.streamBuffer = '';
-          this.updateButtonHighlight(instance);
-          this.hideAgentPulse(instance);
-          document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
+          // Empty → abort
+          instance.agent.abort();
+          this.collapseActiveThinking(instance);
+          instance.reasoningBuffer = '';
+          if (instance.streamMsgEl && instance.streamBuffer) {
+            this.finalizeMessage(instance, instance.streamBuffer);
+          } else {
+            instance.isStreaming = false;
+            instance.streamMsgEl = null;
+            instance.streamBuffer = '';
+            this.updateButtonHighlight(instance);
+            this.hideAgentPulse(instance);
+            document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
+          }
         }
       } else {
         sendToLLM();
@@ -2071,7 +1026,7 @@ class AICapsuleManagerClass {
             // 选中筛选后的第一条
             const query = input.value.trim();
             const match = query
-              ? instance.history.find(h => this.fuzzyMatch(h.command, query))
+              ? instance.history.find(h => fuzzyMatch(h.command, query))
               : instance.history[0];
             if (match) {
               this._savedInputValue.set(instance.sessionId, match.command);
@@ -2096,15 +1051,24 @@ class AICapsuleManagerClass {
       }
 
       if (e.key === 'Enter') {
-        if (e.ctrlKey || e.metaKey) {
+        if (instance.isStreaming && (instance.chatOpen || instance.chatMinimized)) {
+          // Streaming with chat open → inject message into running agent
+          const text = input.value.trim();
+          if (text) {
+            this.injectUserMessage(instance, text);
+            input.value = '';
+          }
+          e.preventDefault();
+        } else if (e.ctrlKey || e.metaKey) {
           sendToLLM();
+          e.preventDefault();
         } else if (instance.chatOpen || instance.chatMinimized) {
-          // When chat is open or minimized, Enter sends to LLM
           sendToLLM();
+          e.preventDefault();
         } else {
           sendToTerminal();
+          e.preventDefault();
         }
-        e.preventDefault();
       }
       if (e.key === 'Escape') {
         if (instance.isStreaming) {
@@ -2168,77 +1132,18 @@ class AICapsuleManagerClass {
     });
   }
 
-  // ─── Chat Persistence ─────────────────────────────────────────
-
-  private static readonly CHAT_DIR = 'chat-history';
-  private static readonly FS_OPTS = { baseDir: BaseDirectory.AppData };
-
-  private async ensureChatDir(): Promise<void> {
-    if (this._chatHistoryDir) return;
-    if (!(await exists(AICapsuleManagerClass.CHAT_DIR, AICapsuleManagerClass.FS_OPTS))) {
-      await mkdir(AICapsuleManagerClass.CHAT_DIR, { recursive: true, ...AICapsuleManagerClass.FS_OPTS });
-    }
-    this._chatHistoryDir = AICapsuleManagerClass.CHAT_DIR;
-  }
+  // ─── Chat Persistence (delegated to ai-capsule-chat-persistence.ts) ──
 
   private async saveConversation(instance: AICapsuleInstance, snapshot?: { id: string; messages: ConvEntry[] }): Promise<void> {
-    const id = snapshot?.id ?? instance.currentConversationId;
-    const msgs = snapshot?.messages ?? instance.messages;
-    if (msgs.length === 0) return;
-    try {
-      await this.ensureChatDir();
-      const firstUser = msgs.find(m => m.type === 'user');
-      const conv: ChatConversation = {
-        id,
-        title: firstUser ? firstUser.content.slice(0, 80) : 'Untitled',
-        messages: msgs,
-        createdAt: msgs[0]?.timestamp || Date.now(),
-        updatedAt: Date.now(),
-      };
-      const safeId = conv.id.replace(/[^a-zA-Z0-9_-]/g, '');
-      if (!safeId) return;
-      const filePath = `${AICapsuleManagerClass.CHAT_DIR}/${safeId}.json`;
-      await writeTextFile(filePath, JSON.stringify(conv), AICapsuleManagerClass.FS_OPTS);
-      // debug: console.log('[chat-history] saved:', filePath, conv.messages.length);
-    } catch (e) {
-      console.error('[chat-history] save failed:', e);
-    }
+    return saveConversationFn(instance, snapshot);
   }
 
   private async loadConversations(): Promise<ChatConversation[]> {
-    try {
-      await this.ensureChatDir();
-      const entries = await readDir(AICapsuleManagerClass.CHAT_DIR, AICapsuleManagerClass.FS_OPTS);
-      // debug: console.log('[chat-history] entries:', entries.length);
-      const convs: ChatConversation[] = [];
-      for (const entry of entries) {
-        if (!entry.name?.endsWith('.json')) continue;
-        // Only allow safe filenames (no path separators)
-        if (/[/\\]/.test(entry.name)) continue;
-        try {
-          const content = await readTextFile(`${AICapsuleManagerClass.CHAT_DIR}/${entry.name}`, AICapsuleManagerClass.FS_OPTS);
-          const raw = JSON.parse(content) as ChatConversation;
-          // Migrate old format: { role, content } → { type, content }
-          if (raw.messages?.length && 'role' in raw.messages[0]) {
-            raw.messages = (raw.messages as unknown as { role: string; content: string; timestamp: number }[])
-              .map(m => ({ type: (m.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.content, timestamp: m.timestamp }));
-          }
-          convs.push(raw);
-        } catch (e) { console.error('[chat-history] read failed:', entry.name, e); }
-      }
-      convs.sort((a, b) => b.updatedAt - a.updatedAt);
-      return convs;
-    } catch (e) { console.error('[chat-history] load failed:', e); return []; }
+    return loadConversationsFn();
   }
 
   private async deleteConversation(id: string): Promise<void> {
-    // Sanitize id to prevent path traversal
-    const safe = id.replace(/[^a-zA-Z0-9_-]/g, '');
-    if (!safe) return;
-    try {
-      await this.ensureChatDir();
-      await remove(`${AICapsuleManagerClass.CHAT_DIR}/${safe}.json`, AICapsuleManagerClass.FS_OPTS);
-    } catch { /* ignore */ }
+    return deleteConversationFn(id);
   }
 
   // ─── Chat History Panel ──────────────────────────────────────
@@ -2282,6 +1187,7 @@ class AICapsuleManagerClass {
     }
     panel.style.display = '';
     this.adjustPopupMaxHeight(panel, instance.element);
+    this.observePopupResize(panel, instance.element);
     instance.chatHistoryPanel = panel;
     this.renderChatHistoryList(instance);
     // 进入搜索模式
@@ -2302,6 +1208,8 @@ class AICapsuleManagerClass {
     const btn = instance.element.querySelector('.ai-bar-btn-chat-history') as HTMLButtonElement;
     if (panel) panel.style.display = 'none';
     if (btn) btn.classList.remove('active');
+    this.unobservePopupResize();
+    this._popupManualHeight = false;
     this._cachedConversations.delete(instance.sessionId);
     this.exitSearchMode(instance);
   }
@@ -2313,162 +1221,30 @@ class AICapsuleManagerClass {
     panel.innerHTML = `<div class="ai-chat-hist-header"><span class="ai-chat-hist-title">${t('aiChatHistoryTitle')}</span></div><div class="ai-chat-hist-loading" style="padding:12px;text-align:center;color:var(--text-muted);font-size:12px;">...</div>`;
 
     const convs = await this.loadConversations();
-    // 缓存用于搜索筛选
     this._cachedConversations.set(instance.sessionId, convs);
     this.renderChatHistoryListFromCache(instance, convs);
   }
 
   private renderChatHistoryListFromCache(instance: AICapsuleInstance, convs: ChatConversation[], filter?: string): void {
-    const panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
-    if (!panel) return;
-
-    panel.innerHTML = '';
-
-    const header = document.createElement('div');
-    header.className = 'ai-chat-hist-header';
-    const title = document.createElement('span');
-    title.className = 'ai-chat-hist-title';
-    title.textContent = t('aiChatHistoryTitle');
-    header.appendChild(title);
-    panel.appendChild(header);
-
-    const filtered = filter
-      ? convs.filter(c => this.fuzzyMatch(c.title, filter) ||
-          c.messages.some(m => m.type !== 'tool_call' && this.fuzzyMatch(m.content, filter)))
-      : convs;
-
-    if (filtered.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'ai-chat-hist-empty';
-      empty.textContent = t('aiChatHistoryEmpty');
-      panel.appendChild(empty);
-      return;
-    }
-
-    const list = document.createElement('div');
-    list.className = 'ai-chat-hist-list';
-
-    for (const conv of filtered) {
-      const row = document.createElement('div');
-      row.className = 'ai-chat-hist-row';
-
-      const info = document.createElement('div');
-      info.className = 'ai-chat-hist-info';
-      info.addEventListener('click', () => this.restoreConversation(instance, conv));
-
-      const rowTitle = document.createElement('div');
-      rowTitle.className = 'ai-chat-hist-row-title';
-      rowTitle.textContent = conv.title;
-
-      const rowMeta = document.createElement('div');
-      rowMeta.className = 'ai-chat-hist-row-meta';
-      rowMeta.textContent = `${conv.messages.length} msgs · ${this.formatRelativeTime(conv.updatedAt)}`;
-
-      info.appendChild(rowTitle);
-      info.appendChild(rowMeta);
-
-      const delBtn = document.createElement('button');
-      delBtn.className = 'ai-chat-hist-delete';
-      delBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>`;
-      delBtn.title = t('aiChatDeleteConfirmOk');
-      delBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        void this.handleDeleteConversation(instance, conv.id);
-      });
-
-      row.appendChild(info);
-      row.appendChild(delBtn);
-      list.appendChild(row);
-    }
-
-    panel.appendChild(list);
+    renderChatHistoryListFromCacheFn(instance, convs, {
+      ensurePopupResizeHandle: (p, b) => this.ensurePopupResizeHandle(p, b),
+      restoreConversation: (inst, conv) => this.restoreConversation(inst, conv),
+      handleDeleteConversation: (inst, convId) => { void this.handleDeleteConversation(inst, convId); },
+    }, filter);
   }
 
   private renderChatHistoryDetail(instance: AICapsuleInstance, conv: ChatConversation): void {
-    const panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
-    if (!panel) return;
-    panel.innerHTML = '';
-
-    const header = document.createElement('div');
-    header.className = 'ai-chat-hist-header';
-
-    const backBtn = document.createElement('button');
-    backBtn.className = 'ai-chat-hist-back';
-    backBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="10 3 5 8 10 13"/></svg>`;
-    backBtn.title = t('aiChatHistoryBack');
-    backBtn.addEventListener('click', () => this.renderChatHistoryList(instance));
-
-    const title = document.createElement('span');
-    title.className = 'ai-chat-hist-title';
-    title.textContent = conv.title;
-
-    header.appendChild(backBtn);
-    header.appendChild(title);
-    panel.appendChild(header);
-
-    const msgContainer = document.createElement('div');
-    msgContainer.className = 'ai-chat-hist-messages';
-
-    for (const msg of conv.messages) {
-      const msgEl = document.createElement('div');
-      const content = document.createElement('div');
-      content.className = 'ai-msg-content';
-
-      if (msg.type === 'tool_call') {
-        msgContainer.appendChild(this.buildToolCard(msg));
-        continue;
-      } else if (msg.type === 'assistant') {
-        msgEl.className = 'ai-msg ai-msg-assistant';
-        const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
-        content.innerHTML = renderMarkdown(msg.content, instance.sessionId, addHistory);
-      } else if (msg.type === 'thinking') {
-        // Reasoning — standalone block (no bubble)
-        if (msg.reasoning) {
-          const block = document.createElement('div');
-          block.className = 'ai-thinking-block';
-          const details = document.createElement('details');
-          details.className = 'ai-reasoning';
-          const summary = document.createElement('summary');
-          summary.innerHTML = `${thinkingIcon(12)} <span>${t('aiThinking')}</span>`;
-          const textEl = document.createElement('div');
-          textEl.className = 'ai-reasoning-text';
-          textEl.textContent = msg.reasoning;
-          details.appendChild(summary);
-          details.appendChild(textEl);
-          block.appendChild(details);
-          msgContainer.appendChild(block);
-        }
-        // Assistant text — render as regular bubble
-        if (msg.content) {
-          msgEl.className = 'ai-msg ai-msg-assistant';
-          const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
-          content.innerHTML = renderMarkdown(msg.content, instance.sessionId, addHistory);
-        } else {
-          continue; // No content to render as a bubble
-        }
-      } else if (msg.type === 'system') {
-        msgEl.className = 'ai-msg ai-msg-system';
-        content.textContent = msg.content;
-      } else {
-        // user
-        msgEl.className = 'ai-msg ai-msg-user';
-        content.textContent = msg.content;
-      }
-
-      msgEl.appendChild(content);
-      msgContainer.appendChild(msgEl);
-    }
-
-    panel.appendChild(msgContainer);
-
-    // Bind command buttons in rendered markdown
-    this.bindCommandButtons(instance, msgContainer);
+    renderChatHistoryDetailFn(instance, conv, {
+      ensurePopupResizeHandle: (p, b) => this.ensurePopupResizeHandle(p, b),
+      renderChatHistoryList: (inst) => { void this.renderChatHistoryList(inst); },
+      addHistory: (inst, cmd, src) => this.addHistory(inst, cmd, src),
+      bindCommandButtons: (inst, container) => this.bindCommandButtons(inst, container),
+    });
   }
 
   private async handleDeleteConversation(instance: AICapsuleInstance, convId: string): Promise<void> {
     const now = Date.now();
     if (now < this._deleteSkipUntil) {
-      // Skip confirm, delete directly
       await this.deleteConversation(convId);
       await this.reloadChatHistoryWithFilter(instance);
       return;
@@ -2491,65 +1267,7 @@ class AICapsuleManagerClass {
   }
 
   private confirmDeleteConversation(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'ai-danger-overlay';
-
-      const dialog = document.createElement('div');
-      dialog.className = 'ai-danger-dialog';
-
-      const title = document.createElement('div');
-      title.className = 'ai-danger-title';
-      title.textContent = t('aiChatDeleteConfirmTitle');
-
-      const msg = document.createElement('div');
-      msg.className = 'ai-danger-msg';
-      msg.textContent = t('aiChatDeleteConfirmMsg');
-
-      const checkboxRow = document.createElement('label');
-      checkboxRow.className = 'ai-delete-checkbox-row';
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.className = 'ai-delete-checkbox';
-      const checkLabel = document.createElement('span');
-      checkLabel.textContent = t('aiChatDeleteNoAskMinutes');
-      checkboxRow.appendChild(checkbox);
-      checkboxRow.appendChild(checkLabel);
-
-      const actions = document.createElement('div');
-      actions.className = 'ai-danger-actions';
-
-      const cancelBtn = document.createElement('button');
-      cancelBtn.className = 'ai-danger-btn ai-danger-btn-cancel';
-      cancelBtn.textContent = t('aiChatDeleteConfirmCancel');
-
-      const deleteBtn = document.createElement('button');
-      deleteBtn.className = 'ai-danger-btn ai-danger-btn-run';
-      deleteBtn.textContent = t('aiChatDeleteConfirmOk');
-
-      const close = (result: boolean) => {
-        if (result && checkbox.checked) {
-          this._deleteSkipUntil = Date.now() + 5 * 60 * 1000;
-        }
-        overlay.remove();
-        resolve(result);
-      };
-
-      cancelBtn.addEventListener('click', () => close(false));
-      deleteBtn.addEventListener('click', () => close(true));
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
-
-      actions.appendChild(cancelBtn);
-      actions.appendChild(deleteBtn);
-      dialog.appendChild(title);
-      dialog.appendChild(msg);
-      dialog.appendChild(checkboxRow);
-      dialog.appendChild(actions);
-      overlay.appendChild(dialog);
-      document.body.appendChild(overlay);
-
-      cancelBtn.focus();
-    });
+    return confirmDeleteConversationFn((ts) => { this._deleteSkipUntil = ts; });
   }
 
   // ─── Lifecycle ─────────────────────────────────────────────────
@@ -2600,19 +1318,111 @@ class AICapsuleManagerClass {
     }
   }
 
-  /** 根据 AI bar 上方可用空间动态设置弹窗 max-height，至少保留 4 行终端内容 */
-  private adjustPopupMaxHeight(panel: HTMLElement, aiBar: HTMLElement): void {
+  /** 计算弹窗可用最大高度：保留至少 4 行终端内容，不超过终端面积 30% */
+  private calcPopupMaxHeight(aiBar: HTMLElement): number {
     const container = aiBar.closest('#terminal-panel') || aiBar.parentElement;
-    if (!container) return;
+    if (!container) return 0;
     const containerRect = container.getBoundingClientRect();
     const barRect = aiBar.getBoundingClientRect();
-    // 动态获取终端行高，回退 18px
     const row = container.querySelector('.xterm-rows > div');
     const lineHeight = row ? row.getBoundingClientRect().height : 18;
-    // 预留至少 4 行终端内容 + 8px 余量
     const reserved = lineHeight * 4 + 8;
     const available = barRect.top - containerRect.top - reserved;
-    panel.style.maxHeight = Math.max(available, 120) + 'px';
+    const maxByPercent = containerRect.height * 0.3;
+    return Math.max(Math.min(available, maxByPercent), 0);
+  }
+
+  /** 设置弹窗 max-height（自适应模式） */
+  private adjustPopupMaxHeight(panel: HTMLElement, aiBar: HTMLElement): void {
+    if (this._popupManualHeight) return; // 手动锁定后不再自动调整
+    panel.style.maxHeight = this.calcPopupMaxHeight(aiBar) + 'px';
+  }
+
+  /** 绑定响应式监听：ResizeObserver + window resize */
+  private observePopupResize(panel: HTMLElement, aiBar: HTMLElement): void {
+    this.unobservePopupResize();
+    this._activePopup = { panel, aiBar };
+
+    const onResize = () => {
+      if (this._activePopup && !this._popupManualHeight) {
+        this.adjustPopupMaxHeight(this._activePopup.panel, this._activePopup.aiBar);
+      }
+    };
+
+    // ResizeObserver 监听容器
+    const container = aiBar.closest('#terminal-panel') || aiBar.parentElement;
+    if (container) {
+      this._popupResizeObserver = new ResizeObserver(onResize);
+      this._popupResizeObserver.observe(container);
+    }
+
+    // window resize 兜底
+    this._popupResizeHandler = onResize;
+    window.addEventListener('resize', onResize);
+
+    // 添加拖拽 handle
+    this.ensurePopupResizeHandle(panel, aiBar);
+  }
+
+  /** 解绑弹窗 resize 监听 */
+  private unobservePopupResize(): void {
+    if (this._popupResizeObserver) {
+      this._popupResizeObserver.disconnect();
+      this._popupResizeObserver = null;
+    }
+    if (this._popupResizeHandler) {
+      window.removeEventListener('resize', this._popupResizeHandler);
+      this._popupResizeHandler = null;
+    }
+    this._activePopup = null;
+  }
+
+  /** 为弹窗添加顶部拖拽 handle，手动调整高度后锁定自适应 */
+  private ensurePopupResizeHandle(panel: HTMLElement, aiBar: HTMLElement): void {
+    // render 会清空 innerHTML，每次需要重建
+    let handle = panel.querySelector('.ai-popup-resize-handle') as HTMLElement | null;
+    if (handle) return; // 已存在（未被清空）
+    handle = document.createElement('div');
+    handle.className = 'ai-popup-resize-handle';
+    panel.insertBefore(handle, panel.firstChild);
+
+    let startY = 0;
+    let startH = 0;
+
+    const onMove = (e: MouseEvent) => {
+      const delta = startY - e.clientY;
+      // 手动拖拽允许超过 30% 但保留至少 2 行终端内容
+      const container = aiBar.closest('#terminal-panel') || aiBar.parentElement;
+      let maxH = 0;
+      if (container) {
+        const containerRect = container.getBoundingClientRect();
+        const barRect = aiBar.getBoundingClientRect();
+        const row = container.querySelector('.xterm-rows > div');
+        const lineHeight = row ? row.getBoundingClientRect().height : 18;
+        const reserved = lineHeight * 2 + 8;
+        maxH = barRect.top - containerRect.top - reserved;
+      }
+      const newH = Math.max(Math.min(startH + delta, maxH), 40);
+      panel.style.maxHeight = newH + 'px';
+    };
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = '';
+      handle.classList.remove('dragging');
+    };
+
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      this._popupManualHeight = true; // 锁定自适应
+      startY = e.clientY;
+      startH = panel.getBoundingClientRect().height;
+      document.body.style.userSelect = 'none';
+      handle.classList.add('dragging');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
   }
 
   setDrawerOffset(sessionId: string, drawerHeight: number): void {

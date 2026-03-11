@@ -1,0 +1,341 @@
+/* ---- Pairing Dialog ---- */
+.pairing-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  backdrop-filter: blur(4px);
+}
+
+.pairing-dialog {
+  background: var(--bg-secondary, #252526);
+  border: 1px solid var(--border-color, #3c3c3c);
+  border-radius: 12px;
+  padding: 24px;
+  min-width: 380px;
+  max-width: 460px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+}
+
+.pairing-title {
+  color: var(--text-primary, #d4d4d4);
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+}
+
+.pairing-subtitle {
+  color: var(--text-secondary, #888);
+  font-size: 13px;
+  margin: 0 0 16px 0;
+}
+
+.pairing-qr-container {
+  background: inherit;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  min-height: 200px;
+}
+
+[data-theme="light"] .pairing-overlay {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.pairing-data-box {
+  background: var(--bg-primary, #1e1e1e);
+  border: 1px solid var(--border-color, #3c3c3c);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.pairing-data-box code {
+  color: var(--text-primary, #d4d4d4);
+  font-size: 11px;
+  font-family: 'Menlo', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.pairing-info {
+  margin-bottom: 16px;
+}
+
+.pairing-info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.pairing-info-row span:first-child {
+  color: var(--text-secondary, #888);
+}
+
+.pairing-info-row span:last-child {
+  color: var(--text-primary, #d4d4d4);
+}
+
+.pairing-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.pairing-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #3c3c3c);
+  background: var(--bg-primary, #1e1e1e);
+  color: var(--text-primary, #d4d4d4);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pairing-btn:hover {
+  background: var(--bg-hover, #2a2d2e);
+}
+
+.pairing-btn-primary {
+  background: var(--accent-color, #007acc);
+  border-color: var(--accent-color, #007acc);
+  color: #ffffff;
+}
+
+.pairing-btn-primary:hover {
+  background: #0088e0;
+}
+
+/* ============================================================================
+   Master Request Approval Dialog
+   ============================================================================ */
+/* Tab breathing animation for pending control requests */
+.title-tab.tab-breathing {
+  animation: tab-breathing 2s ease-in-out infinite;
+}
+@keyframes tab-breathing {
+  0%, 100% { box-shadow: none; }
+  50% { box-shadow: inset 0 0 8px var(--accent, #007acc); }
+}
+
+.master-approval-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  backdrop-filter: blur(4px);
+  animation: fade-in 0.2s ease;
+}
+
+.master-approval-dialog {
+  background: rgb(var(--bg-card, 37, 37, 38));
+  border: 1px solid var(--border-primary, #444);
+  border-radius: 12px;
+  padding: 24px;
+  min-width: 340px;
+  max-width: 400px;
+  text-align: center;
+  box-shadow: 0 16px 48px var(--shadow-panel, rgba(0, 0, 0, 0.4));
+}
+
+.master-approval-icon {
+  color: var(--accent, #007acc);
+  margin-bottom: 12px;
+}
+
+.master-approval-dialog h3 {
+  color: var(--text-heading, #fff);
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+}
+
+.master-approval-dialog p {
+  color: var(--text-muted, #888);
+  font-size: 13px;
+  margin: 0 0 6px 0;
+}
+
+.master-approval-requester {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text-dim, #666);
+  background: rgba(var(--bg-button, 50, 50, 52), 0.6);
+  padding: 4px 10px;
+  border-radius: 4px;
+  display: inline-block;
+  margin-bottom: 16px;
+}
+
+.master-approval-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.master-approval-btn {
+  padding: 8px 24px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border-primary, #444);
+  transition: all 0.15s;
+}
+
+.master-approval-btn.deny {
+  background: transparent;
+  color: var(--text-muted, #888);
+}
+
+.master-approval-btn.deny:hover {
+  background: rgba(255, 100, 100, 0.1);
+  border-color: #c44;
+  color: #e55;
+}
+
+.master-approval-btn.approve {
+  background: var(--accent, #007acc);
+  border-color: var(--accent, #007acc);
+  color: #fff;
+}
+
+.master-approval-btn.approve:hover {
+  filter: brightness(1.15);
+}
+
+/* ============================================================================
+   Reclaim Control Overlay (covers terminal panel)
+   ============================================================================ */
+.reclaim-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fade-in 0.2s ease;
+}
+
+.reclaim-overlay-content {
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+.reclaim-overlay-text {
+  font-size: 22px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+  letter-spacing: 1px;
+}
+
+.reclaim-overlay-subtext {
+  margin-top: 8px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* Viewer overlay — transparent overlay for remote viewer sessions */
+.viewer-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fade-in 0.2s ease;
+}
+
+.viewer-overlay-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.viewer-overlay-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 8px 16px;
+  border-radius: 20px;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 13px;
+  font-weight: 500;
+  user-select: none;
+}
+
+.viewer-overlay-badge svg {
+  color: #22c55e;
+  stroke: #22c55e;
+  flex-shrink: 0;
+}
+
+.viewer-request-btn {
+  padding: 10px 28px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  background: rgba(34, 197, 94, 0.2);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  letter-spacing: 0.3px;
+}
+
+.viewer-request-btn:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.4);
+  border-color: rgba(34, 197, 94, 0.5);
+  transform: scale(1.03);
+}
+
+.viewer-request-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.viewer-request-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.viewer-request-btn.requesting {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.1);
+  animation: pulse-subtle 1.5s ease-in-out infinite;
+}
+
+.viewer-request-btn.denied {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+

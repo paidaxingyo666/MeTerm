@@ -499,12 +499,27 @@ class AnthropicProvider implements AIProvider {
       }
     }
 
+    // Merge consecutive same-role messages (Anthropic requires alternating roles).
+    // This can happen when user messages are injected during an agent tool-call cycle.
+    const mergedMessages: Record<string, unknown>[] = [];
+    for (const msg of anthropicMessages) {
+      const last = mergedMessages[mergedMessages.length - 1];
+      if (last && last.role === msg.role) {
+        // Normalize both to content-block arrays and concatenate
+        const toBlocks = (c: unknown): unknown[] =>
+          Array.isArray(c) ? c : [{ type: 'text', text: String(c) }];
+        last.content = [...toBlocks(last.content), ...toBlocks(msg.content)];
+      } else {
+        mergedMessages.push({ ...msg });
+      }
+    }
+
     const body: Record<string, unknown> = {
       model: this.config.model,
       max_tokens: this.config.maxTokens,
       temperature: this.config.temperature,
       stream: true,
-      messages: anthropicMessages,
+      messages: mergedMessages,
     };
 
     if (systemMessages.length > 0) {

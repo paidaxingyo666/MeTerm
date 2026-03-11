@@ -24,8 +24,24 @@ import {
 } from './protocol';
 import { getFileIcon } from './icons';
 import { escapeHtml } from './status-bar';
+import { formatSize, formatSpeed, formatElapsed, encodeMessage, getDiskErrorMessage, validateFileName } from './file-utils';
+import { showUploadConflictDialog as _showUploadConflictDialog, showDirConflictDialog as _showDirConflictDialog } from './file-conflict-dialog';
+import { PathAutocomplete } from './file-autocomplete';
+import { TransferHistoryManager } from './file-transfer-history';
+import {
+  adaptPipeline as _adaptPipeline,
+  sendMkdirRequest, collectLocalFiles as _collectLocalFiles,
+} from './file-upload';
+import {
+  type DownloadState,
+  createDownloadState,
+  downloadFile as _downloadFile,
+  handleDownloadChunk as _handleDownloadChunk,
+  cleanupDownloadState as _cleanupDownloadState,
+  resumeDownload as _resumeDownload,
+} from './file-download';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { readFile, stat as fsStat, readDir, writeFile as fsWriteFile, remove as fsRemove, exists as fsExists } from '@tauri-apps/plugin-fs';
+import { readFile, stat as fsStat, readDir } from '@tauri-apps/plugin-fs';
 
 // 模块级变量：全局只注册一次 drag-drop 监听器，避免分屏时多实例重复上传同一文件
 let _dragDropListenerRegistered = false;
@@ -38,19 +54,8 @@ export class FileManager {
   private files: FileInfo[] = [];
   private listElement: HTMLElement;
   private pathInput: HTMLInputElement;
-  private pendingDownload: {
-    filename: string; savePath: string; remotePath: string;
-    totalSize: number; receivedSize: number;
-  } | null = null;
-  private lastDownloadProgressUpdate: number = 0;
-  // 下载缓冲：累积小 chunk 后批量写入磁盘
-  private downloadBuffer: Uint8Array[] = [];
-  private downloadBufferSize: number = 0;
-  private static readonly WRITE_BATCH_SIZE = 8 * 1024 * 1024; // 8MB per disk write
-  // 异步写入队列：独立于消息处理循环，逐批写入磁盘
-  private writeQueue: Uint8Array[] = [];
-  private isWriting: boolean = false;
-  private writeError: string | null = null;
+  // 下载状态（委托到 file-download 模块）
+  private _dlState: DownloadState = createDownloadState();
   private pendingUpload: { path: string; content: Uint8Array; offset: number } | null = null;
   // Number of upload chunks sent to server but not yet ACKed.
   private inFlightChunks: number = 0;
@@ -59,11 +64,8 @@ export class FileManager {
   private pipelineSize: number = 2;
   // ACK count since last pipeline increase (used for linear phase).
   private pipelineAckCount: number = 0;
-  private static readonly PIPELINE_MAX = 32;
-  private static readonly SLOW_START_THRESHOLD = 16;
   private uploadQueue: Array<{ path: string; content: Uint8Array; filename: string; size: number }> = [];
   private isUploadPaused: boolean = false;
-  private isDownloadPaused: boolean = false;
   private pendingPartCleanup: boolean = false;
   private isLoadingDirectory: boolean = false;
   private loadingTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -77,38 +79,18 @@ export class FileManager {
   private totalFiles: number = 0;  // 大目录模式下的总文件数
   private sortColumn: string | null = null;  // 当前排序列
   private sortDirection: 'asc' | 'desc' | null = null;  // 排序方向
-  private transferHistory: Array<{
-    id: string;
-    type: 'upload' | 'download';
-    filename: string;
-    path: string;
-    size: number;
-    progress: number;
-    status: 'pending' | 'inprogress' | 'completed' | 'failed' | 'paused' | 'cancelled';
-    timestamp: number;
-    error?: string;
-    savePath?: string;  // 下载文件的本地保存路径
-    startTime?: number;   // 传输开始时间（首次 inprogress）
-    endTime?: number;     // 传输结束时间（completed/failed/cancelled）
-  }> = [];
-  private maxHistoryLength = 200;
-  // 非持久化的速度跟踪数据（用于计算实时传输速率）
-  private speedTracker: Map<string, { lastBytes: number; lastTime: number; speed: number }> = new Map();
-  private static readonly STORAGE_KEY = 'meterm-transfer-history';
+  // 传输历史管理（委托到 TransferHistoryManager）
+  private _transferHistory: TransferHistoryManager | null = null;
   private pendingStatCallback: ((response: any) => void) | null = null;
   private pendingMkdirResolve: (() => void) | null = null;
   onServerInfo: ((data: ServerInfoResponse) => void) | null = null;
+  // 首次目录加载完成后的一次性回调（用于 JumpServer 自动进入子目录）
+  onFirstLoad: ((files: FileInfo[], path: string) => void) | null = null;
+  // JumpServer 模式：LIST_FAILED 静默处理不弹 alert（Koko SFTP 初始化延迟）
+  suppressListErrors = false;
 
-  // 路径自动补全
-  private autocompleteDropdown: HTMLDivElement | null = null;
-  private autocompleteItems: FileInfo[] = [];
-  private autocompleteParentDir: string = '/';
-  private autocompleteSelectedIndex: number = -1;
-  private autocompleteDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private autocompleteResolve: ((files: FileInfo[]) => void) | null = null;
-  private dirCache: Map<string, { files: FileInfo[]; ts: number }> = new Map();
-  private static readonly DIR_CACHE_SIZE = 20;
-  private static readonly DIR_CACHE_TTL = 30000; // 30s
+  // 路径自动补全（委托到 PathAutocomplete 模块）
+  private _autocomplete: PathAutocomplete | null = null;
 
   constructor(
     sessionId: string,
@@ -123,8 +105,28 @@ export class FileManager {
     this.loadingOverlay = loadingOverlay;
     this.loadingProgressBar = loadingProgressBar;
 
-    // 从 localStorage 恢复传输历史
-    this.loadTransferHistory();
+    // 初始化传输历史管理器
+    this._transferHistory = new TransferHistoryManager(sessionId);
+    this._transferHistory.setDelegate({
+      pauseUpload: (id) => this.pauseTransfer(id),
+      resumeUpload: (id) => this.resumeTransfer(id),
+      cancelUpload: (id) => this.cancelTransfer(id),
+      pauseDownload: (id) => this.pauseTransfer(id),
+      resumeDownload: (id) => this.resumeTransfer(id),
+      cancelDownload: (id) => this.cancelTransfer(id),
+      revealInFileManager: (savePath) => this.revealInFileManager(savePath),
+    });
+
+    // 初始化路径自动补全
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+    this._autocomplete = new PathAutocomplete(pathInput, {
+      get ws() { return self.ws; },
+      get currentPath() { return self.currentPath; },
+      get files() { return self.files; },
+      get isLoadingDirectory() { return self.isLoadingDirectory; },
+      loadDirectory: (path: string) => self.loadDirectory(path),
+    });
 
     // 初始化列宽调整功能
     this.initializeColumnResize();
@@ -145,7 +147,7 @@ export class FileManager {
       // Reconnected between uploads — kick the queue
       this.processNextUpload();
     }
-    if (this.pendingDownload) {
+    if (this._dlState.pendingDownload) {
       this.resumeDownload();
     }
   }
@@ -175,7 +177,7 @@ export class FileManager {
           this.handleFileListResponse(payload);
         } else if (msgType === MsgFileDownloadChunk) {
           const payload = new Uint8Array(event.data, 1);
-          this.handleDownloadChunk(payload);
+          _handleDownloadChunk(payload, this._dlState, this._dlCallbacks());
         } else if (msgType === MsgFileUploadChunk) {
           // Server acknowledges upload chunk (or resume ACK)
           if (this.pendingUpload) {
@@ -335,10 +337,10 @@ export class FileManager {
       const response: FileListResponse = JSON.parse(new TextDecoder().decode(payload));
 
       // 自动补全静默查询的响应：不更新 UI
-      if (this.autocompleteResolve && !this.isLoadingDirectory) {
+      if (this._autocomplete?.autocompleteResolve && !this.isLoadingDirectory) {
         isAutocompleteResponse = true;
-        const resolve = this.autocompleteResolve;
-        this.autocompleteResolve = null;
+        const resolve = this._autocomplete.autocompleteResolve;
+        this._autocomplete.autocompleteResolve = null;
         this.dirCachePut(response.path, response.files);
         resolve(response.files);
         return;
@@ -364,6 +366,14 @@ export class FileManager {
         this.useRealProgress = false;
         this.totalFiles = 0;
         console.log('✅ 目录加载完成，状态已重置');
+
+        // 触发一次性首次加载回调（用于 JumpServer 自动进入资产子目录）
+        // 必须在 isLoadingDirectory 重置后触发，否则后续 loadDirectory 会被防抖拦截
+        if (this.onFirstLoad) {
+          const cb = this.onFirstLoad;
+          this.onFirstLoad = null;
+          cb(this.files, this.currentPath);
+        }
       }
     }
   }
@@ -413,10 +423,10 @@ export class FileManager {
       }
 
       // 清理 pending 下载状态（关闭文件句柄并删除 .part 临时文件）
-      if (this.pendingDownload) {
-        if (this.currentDownloadId) {
-          this.updateTransferProgress(this.currentDownloadId, 0, 'failed', error.message);
-          this.currentDownloadId = null;
+      if (this._dlState.pendingDownload) {
+        if (this._dlState.currentDownloadId) {
+          this.updateTransferProgress(this._dlState.currentDownloadId, 0, 'failed', error.message);
+          this._dlState.currentDownloadId = null;
         }
         this.cleanupDownload();
       }
@@ -434,8 +444,16 @@ export class FileManager {
       let userMessage = error.message;
       const msgLower = error.message.toLowerCase();
       if (error.code === 'SFTP_NOT_AVAILABLE') {
+        if (this.suppressListErrors) {
+          console.warn('⏭️ JumpServer SFTP 不可用，已静默:', error.message);
+          return;
+        }
         userMessage = 'SSH 文件系统未就绪\n请确保已成功连接到 SSH 服务器';
       } else if (error.code === 'LIST_FAILED') {
+        if (this.suppressListErrors) {
+          console.warn('⏭️ JumpServer SFTP 列目录错误已静默:', error.message);
+          return;
+        }
         userMessage = '无法列出目录\n' + error.message;
       } else if (error.code === 'READ_FAILED') {
         userMessage = '下载失败\n' + error.message;
@@ -555,17 +573,11 @@ export class FileManager {
   }
 
   private formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    return formatSize(bytes);
   }
 
   private encodeMessage(type: number, payload: Uint8Array): Uint8Array {
-    const message = new Uint8Array(1 + payload.length);
-    message[0] = type;
-    message.set(payload, 1);
-    return message;
+    return encodeMessage(type, payload);
   }
 
   getCurrentPath(): string {
@@ -579,180 +591,22 @@ export class FileManager {
     return names;
   }
 
-  // ===================== 路径自动补全 =====================
+  // ===================== 路径自动补全（委托到 PathAutocomplete） =====================
 
   private dirCachePut(path: string, files: FileInfo[]): void {
-    if (this.dirCache.size >= FileManager.DIR_CACHE_SIZE) {
-      const oldest = this.dirCache.keys().next().value!;
-      this.dirCache.delete(oldest);
-    }
-    this.dirCache.set(path, { files, ts: Date.now() });
+    this._autocomplete?.dirCachePut(path, files);
   }
 
-  /** 静默查询目录内容（不影响 UI），供自动补全使用 */
-  private queryDirectory(path: string): Promise<FileInfo[]> {
-    if (path === this.currentPath) return Promise.resolve(this.files);
-    const cached = this.dirCache.get(path);
-    if (cached && Date.now() - cached.ts < FileManager.DIR_CACHE_TTL) {
-      return Promise.resolve(cached.files);
-    }
-    if (this.isLoadingDirectory || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return Promise.resolve([]);
-    }
-    return new Promise((resolve) => {
-      if (this.autocompleteResolve) this.autocompleteResolve([]);
-      this.autocompleteResolve = resolve;
-      const request = JSON.stringify({ path });
-      const message = this.encodeMessage(MsgFileList, new TextEncoder().encode(request));
-      this.ws!.send(message);
-      setTimeout(() => {
-        if (this.autocompleteResolve === resolve) {
-          this.autocompleteResolve = null;
-          resolve([]);
-        }
-      }, 3000);
-    });
-  }
-
-  /** 初始化路径自动补全（由 drawer.ts 调用） */
   setupPathAutocomplete(): void {
-    const wrapper = this.pathInput.parentElement;
-    if (!wrapper || !wrapper.classList.contains('path-input-wrapper')) return;
-    const dropdown = wrapper.querySelector('.path-autocomplete') as HTMLDivElement;
-    if (!dropdown) return;
-    this.autocompleteDropdown = dropdown;
-
-    this.pathInput.addEventListener('input', () => {
-      if (this.autocompleteDebounceTimer) clearTimeout(this.autocompleteDebounceTimer);
-      this.autocompleteDebounceTimer = setTimeout(() => this.fetchAutocompleteItems(), 200);
-    });
-
-    this.pathInput.addEventListener('keydown', (e) => this.onAutocompleteKeydown(e));
-
-    this.pathInput.addEventListener('blur', () => {
-      setTimeout(() => this.hideAutocomplete(), 150);
-    });
+    this._autocomplete?.setup();
   }
 
   isAutocompleteOpen(): boolean {
-    return !!this.autocompleteDropdown && this.autocompleteDropdown.style.display === 'block';
+    return this._autocomplete?.isOpen() ?? false;
   }
 
   hideAutocomplete(): void {
-    if (this.autocompleteDropdown) this.autocompleteDropdown.style.display = 'none';
-    this.autocompleteItems = [];
-    this.autocompleteSelectedIndex = -1;
-  }
-
-  private async fetchAutocompleteItems(): Promise<void> {
-    const value = this.pathInput.value;
-    if (!value.startsWith('/')) { this.hideAutocomplete(); return; }
-
-    const lastSlash = value.lastIndexOf('/');
-    const parentDir = lastSlash === 0 ? '/' : value.substring(0, lastSlash);
-    const prefix = value.substring(lastSlash + 1).toLowerCase();
-
-    try {
-      const files = await this.queryDirectory(parentDir);
-      const matches = files.filter(f =>
-        f.is_dir && f.name !== '.' && f.name !== '..' &&
-        f.name.toLowerCase().startsWith(prefix)
-      );
-      if (matches.length === 0 ||
-          (matches.length === 1 && matches[0].name.toLowerCase() === prefix)) {
-        this.hideAutocomplete();
-        return;
-      }
-      this.showAutocomplete(matches, parentDir);
-    } catch {
-      this.hideAutocomplete();
-    }
-  }
-
-  private showAutocomplete(items: FileInfo[], parentDir: string): void {
-    if (!this.autocompleteDropdown) return;
-    this.autocompleteItems = items;
-    this.autocompleteParentDir = parentDir;
-    this.autocompleteSelectedIndex = -1;
-
-    const folderIcon = '<svg width="12" height="12" viewBox="0 0 16 16" fill="var(--accent)" stroke="none">'
-      + '<path d="M1.5 2h4.3l1.4 1.5H14.5a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>';
-
-    this.autocompleteDropdown.innerHTML = items.map((item, i) =>
-      `<div class="path-ac-item" data-index="${i}">${folderIcon}<span>${escapeHtml(item.name)}</span></div>`
-    ).join('');
-    this.autocompleteDropdown.style.display = 'block';
-
-    this.autocompleteDropdown.querySelectorAll('.path-ac-item').forEach(el => {
-      el.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        this.selectAutocompleteItem(parseInt((el as HTMLElement).dataset.index!), true);
-      });
-    });
-  }
-
-  private selectAutocompleteItem(index: number, navigate = false): void {
-    const item = this.autocompleteItems[index];
-    if (!item) return;
-    const dir = this.autocompleteParentDir;
-    const newPath = dir === '/' ? `/${item.name}` : `${dir}/${item.name}`;
-    this.pathInput.value = navigate ? newPath : newPath + '/';
-    this.hideAutocomplete();
-    if (navigate) {
-      // 鼠标点击：直接进入该目录
-      this.loadDirectory(newPath);
-    } else {
-      // 键盘选择：填充路径并补全下一级
-      this.pathInput.focus();
-      if (this.autocompleteDebounceTimer) clearTimeout(this.autocompleteDebounceTimer);
-      this.autocompleteDebounceTimer = setTimeout(() => this.fetchAutocompleteItems(), 100);
-    }
-  }
-
-  private onAutocompleteKeydown(e: KeyboardEvent): void {
-    if (!this.isAutocompleteOpen()) return;
-    const len = this.autocompleteItems.length;
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        this.autocompleteSelectedIndex = (this.autocompleteSelectedIndex + 1) % len;
-        this.updateAutocompleteSelection();
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        this.autocompleteSelectedIndex = (this.autocompleteSelectedIndex - 1 + len) % len;
-        this.updateAutocompleteSelection();
-        break;
-      case 'Tab':
-        e.preventDefault();
-        if (this.autocompleteSelectedIndex >= 0) {
-          this.selectAutocompleteItem(this.autocompleteSelectedIndex);
-        } else if (len > 0) {
-          this.selectAutocompleteItem(0);
-        }
-        break;
-      case 'Enter':
-        if (this.autocompleteSelectedIndex >= 0) {
-          e.preventDefault();
-          e.stopPropagation();
-          this.selectAutocompleteItem(this.autocompleteSelectedIndex);
-        }
-        break;
-      case 'Escape':
-        e.preventDefault();
-        this.hideAutocomplete();
-        break;
-    }
-  }
-
-  private updateAutocompleteSelection(): void {
-    if (!this.autocompleteDropdown) return;
-    this.autocompleteDropdown.querySelectorAll('.path-ac-item').forEach((el, i) => {
-      el.classList.toggle('selected', i === this.autocompleteSelectedIndex);
-      if (i === this.autocompleteSelectedIndex) {
-        (el as HTMLElement).scrollIntoView({ block: 'nearest' });
-      }
-    });
+    this._autocomplete?.hide();
   }
 
   // ===================== 路径自动补全结束 =====================
@@ -836,26 +690,7 @@ export class FileManager {
   }
 
   private validateFileName(name: string): boolean {
-    // Check for invalid characters
-    const invalidChars = /[<>:"/\\|?*\x00-\x1F]/;
-    if (invalidChars.test(name)) {
-      console.error('Invalid characters in filename');
-      return false;
-    }
-
-    // Check for path traversal
-    if (name.includes('..') || name.includes('/')) {
-      console.error('Path traversal detected');
-      return false;
-    }
-
-    // Check length
-    if (name.length === 0 || name.length > 255) {
-      console.error('Invalid filename length');
-      return false;
-    }
-
-    return true;
+    return validateFileName(name);
   }
 
   async triggerUpload(targetDir?: string): Promise<void> {
@@ -998,27 +833,10 @@ export class FileManager {
     }
   }
 
-  // 递归收集本地目录下所有文件
-  private async collectLocalFiles(basePath: string, relativePath: string): Promise<Array<{ localPath: string; relativePath: string }>> {
-    const results: Array<{ localPath: string; relativePath: string }> = [];
-    const entries = await readDir(basePath);
-
-    for (const entry of entries) {
-      const fullPath = basePath.endsWith('/') ? `${basePath}${entry.name}` : `${basePath}/${entry.name}`;
-      const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-
-      if (entry.isDirectory) {
-        const subFiles = await this.collectLocalFiles(fullPath, relPath);
-        results.push(...subFiles);
-      } else {
-        results.push({ localPath: fullPath, relativePath: relPath });
-      }
-    }
-
-    return results;
+  private collectLocalFiles(basePath: string, relativePath: string): Promise<Array<{ localPath: string; relativePath: string }>> {
+    return _collectLocalFiles(basePath, relativePath);
   }
 
-  // 通过 WebSocket 创建远程目录（Promise 包装）
   private ensureRemoteDir(remotePath: string): Promise<void> {
     return new Promise((resolve) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -1036,37 +854,18 @@ export class FileManager {
         resolve();
       };
 
-      const request: FileOperationRequest = { operation: 'mkdir', path: remotePath };
-      const message = this.encodeMessage(MsgFileOperation, new TextEncoder().encode(JSON.stringify(request)));
-      this.ws.send(message);
+      sendMkdirRequest(this.ws, remotePath);
     });
   }
 
-  // Adaptive pipeline: TCP-inspired slow start + linear congestion avoidance.
-  //
-  // Phase 1 — Slow start (pipelineSize < SLOW_START_THRESHOLD):
-  //   Increment by 1 on every ACK.  Because we fill the window immediately after
-  //   each ACK, this doubles the in-flight data roughly every RTT, letting the
-  //   pipeline grow quickly on high-latency or high-bandwidth links.
-  //
-  // Phase 2 — Linear increase (pipelineSize ≥ SLOW_START_THRESHOLD):
-  //   Increment by 1 only after a full window of ACKs, slowing growth to
-  //   +1 chunk per RTT.  Caps at PIPELINE_MAX.
-  //
-  // On upload start / resume the window resets to 2 so we never flood a
-  // newly-restored connection.
   private adaptPipeline(): void {
-    if (this.pipelineSize < FileManager.SLOW_START_THRESHOLD) {
-      // Slow start: +1 per ACK (doubles per RTT)
-      this.pipelineSize = Math.min(FileManager.SLOW_START_THRESHOLD, this.pipelineSize + 1);
-    } else {
-      // Linear: +1 per window-worth of ACKs
-      this.pipelineAckCount++;
-      if (this.pipelineAckCount >= this.pipelineSize) {
-        this.pipelineSize = Math.min(FileManager.PIPELINE_MAX, this.pipelineSize + 1);
-        this.pipelineAckCount = 0;
-      }
-    }
+    const result = _adaptPipeline({
+      inFlightChunks: this.inFlightChunks,
+      pipelineSize: this.pipelineSize,
+      pipelineAckCount: this.pipelineAckCount,
+    });
+    this.pipelineSize = result.pipelineSize;
+    this.pipelineAckCount = result.pipelineAckCount;
   }
 
   private sendUploadChunk(): void {
@@ -1134,47 +933,7 @@ export class FileManager {
   }
 
   private async resumeDownload(): Promise<void> {
-    if (!this.pendingDownload || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      // Cannot resume, mark as failed
-      if (this.pendingDownload) {
-        if (this.currentDownloadId) {
-          this.updateTransferProgress(this.currentDownloadId, 0, 'failed', '连接已断开');
-          this.currentDownloadId = null;
-        }
-        await this.cleanupDownload();
-      }
-      return;
-    }
-
-    try {
-      // 等待之前的写入完成
-      while (this.isWriting) {
-        await new Promise(r => setTimeout(r, 50));
-      }
-      this.writeQueue = [];
-      this.writeError = null;
-
-      // 检查磁盘上实际已写入的大小
-      let resumeOffset = 0;
-      if (await fsExists(this.pendingDownload.savePath)) {
-        const fileStat = await fsStat(this.pendingDownload.savePath);
-        resumeOffset = fileStat.size;
-      }
-      this.pendingDownload.receivedSize = resumeOffset;
-    } catch (err) {
-      console.error('Failed to setup resume:', err);
-      if (this.currentDownloadId) {
-        this.updateTransferProgress(this.currentDownloadId, 0, 'failed', '恢复下载失败');
-        this.currentDownloadId = null;
-      }
-      await this.cleanupDownload();
-      return;
-    }
-
-    console.log(`Attempting download resume for ${this.pendingDownload.remotePath} from offset ${this.pendingDownload.receivedSize}`);
-    const request = JSON.stringify({ path: this.pendingDownload.remotePath, offset: this.pendingDownload.receivedSize });
-    const message = this.encodeMessage(MsgFileDownloadResume, new TextEncoder().encode(request));
-    this.ws.send(message);
+    await _resumeDownload(this.ws, this._dlState, this._dlCallbacks());
   }
 
   private handleOperationResponse(payload: Uint8Array): void {
@@ -1254,253 +1013,38 @@ export class FileManager {
     }
   }
 
-  private currentDownloadId: string | null = null;
   private currentUploadId: string | null = null;
 
   private async downloadFile(filename: string, isDir: boolean = false): Promise<void> {
-    const filePath = this.currentPath === '/'
-      ? `/${filename}`
-      : `${this.currentPath}/${filename}`;
-
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.error('WebSocket not ready');
-      return;
-    }
-
-    try {
-      const { save } = await import('@tauri-apps/plugin-dialog');
-      const defaultName = isDir ? `${filename}.zip` : filename;
-      const savePath = await save({
-        defaultPath: defaultName,
-        filters: isDir
-          ? [{ name: 'ZIP 压缩文件', extensions: ['zip'] }]
-          : []
-      });
-
-      if (!savePath) return;
-
-      // 保存对话框期间 WebSocket 可能已断开，重新检查
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        console.error('WebSocket disconnected during save dialog');
-        alert('连接已断开，请稍后重试');
-        return;
-      }
-
-      // 获取文件大小（从当前文件列表中查找）
-      const fileInfo = this.files.find(f => f.name === filename);
-      const fileSize = fileInfo ? fileInfo.size : 0;
-
-      // 添加到传输历史（包含本地保存路径）
-      this.currentDownloadId = this.addTransferRecord('download', filename, filePath, fileSize, savePath);
-      this.updateTransferProgress(this.currentDownloadId, 0, 'inprogress');
-
-      // 创建空文件（后续以 append 模式追加写入）
-      await fsWriteFile(savePath, new Uint8Array(0));
-      this.writeQueue = [];
-      this.isWriting = false;
-      this.writeError = null;
-
-      this.pendingDownload = { filename, savePath, remotePath: filePath, totalSize: 0, receivedSize: 0 };
-
-      // Send download request
-      const request = JSON.stringify({ path: filePath });
-      const message = this.encodeMessage(MsgFileDownloadStart, new TextEncoder().encode(request));
-      try {
-        this.ws.send(message);
-      } catch (sendErr) {
-        console.error('Failed to send download request:', sendErr);
-        await this.cleanupDownload();
-        if (this.currentDownloadId) {
-          this.updateTransferProgress(this.currentDownloadId, 0, 'failed', '发送请求失败');
-          this.currentDownloadId = null;
-        }
-        return;
-      }
-
-      console.log(`Downloading ${filePath} to ${savePath}`);
-    } catch (err) {
-      console.error('Download failed:', err);
-      alert(`下载失败: ${err instanceof Error ? err.message : String(err)}`);
-      await this.cleanupDownload();
-      if (this.currentDownloadId) {
-        this.updateTransferProgress(this.currentDownloadId, 0, 'failed', err instanceof Error ? err.message : String(err));
-        this.currentDownloadId = null;
-      }
-    }
+    this._dlState = await _downloadFile(filename, this.currentPath, this.files, this.ws, this._dlState, this._dlCallbacks(), isDir);
   }
 
-  // 完全同步的数据块处理——缓冲小 chunk，批量推入写入队列
-  private handleDownloadChunk(content: Uint8Array): void {
-    if (!this.pendingDownload) {
-      console.error('No pending download');
-      return;
-    }
-
-    // Parse chunked protocol: [8B totalSize BE][8B offset BE][chunk_data]
-    if (content.length < 16) {
-      console.error('Invalid download chunk: too short');
-      return;
-    }
-
-    const view = new DataView(content.buffer, content.byteOffset, content.byteLength);
-    const totalSize = Number(view.getBigUint64(0));
-    const offset = Number(view.getBigUint64(8));
-    const chunkData = content.slice(16);
-
-    // Update total size on first chunk
-    if (this.pendingDownload.totalSize === 0 && totalSize > 0) {
-      this.pendingDownload.totalSize = totalSize;
-    }
-
-    // 缓冲小 chunk，累积到 8MB 再推入写入队列
-    if (chunkData.length > 0) {
-      this.downloadBuffer.push(chunkData);
-      this.downloadBufferSize += chunkData.length;
-      this.pendingDownload.receivedSize = offset + chunkData.length;
-
-      if (this.downloadBufferSize >= FileManager.WRITE_BATCH_SIZE) {
-        this.flushDownloadBuffer();
-      }
-    }
-
-    // Throttled progress UI update (~200ms interval)
-    const isComplete = totalSize > 0 && this.pendingDownload.receivedSize >= totalSize;
-    const now = Date.now();
-    if (this.currentDownloadId && !this.isDownloadPaused && (now - this.lastDownloadProgressUpdate >= 200 || isComplete)) {
-      this.lastDownloadProgressUpdate = now;
-      const progress = totalSize > 0
-        ? Math.round((this.pendingDownload.receivedSize / totalSize) * 100)
-        : 0;
-      this.updateTransferProgress(this.currentDownloadId, isComplete ? 100 : Math.min(progress, 99), 'inprogress');
-    }
-
-    // Download complete: flush remaining buffer（暂停时不 finalize，等恢复后处理）
-    if (isComplete && !this.isDownloadPaused) {
-      this.flushDownloadBuffer();
-      this.finalizeDownload();
-    }
-  }
-
-  // 将缓冲区合并为一个批次，推入写入队列
-  private flushDownloadBuffer(): void {
-    if (this.downloadBuffer.length === 0 || !this.pendingDownload) return;
-    const merged = new Uint8Array(this.downloadBufferSize);
-    let pos = 0;
-    for (const chunk of this.downloadBuffer) {
-      merged.set(chunk, pos);
-      pos += chunk.length;
-    }
-    this.downloadBuffer = [];
-    this.downloadBufferSize = 0;
-    this.writeQueue.push(merged);
-    this.processWriteQueue();
-  }
-
-  // 异步写入队列处理——独立于消息循环，逐批写入磁盘
-  private async processWriteQueue(): Promise<void> {
-    if (this.isWriting || !this.pendingDownload) return;
-    this.isWriting = true;
-    try {
-      while (this.writeQueue.length > 0 && this.pendingDownload) {
-        const batch = this.writeQueue.shift()!;
-        await fsWriteFile(this.pendingDownload.savePath, batch, { append: true });
-      }
-    } catch (err) {
-      console.error('Write queue failed:', err);
-      this.writeError = this.getDiskErrorMessage(err);
-    }
-    this.isWriting = false;
-  }
-
-  // 完成下载：等待写入队列排空
-  private async finalizeDownload(): Promise<void> {
-    if (!this.pendingDownload) return;
-    try {
-      // 等待写入队列排空（通常已经几乎空了，因为写入与接收并行）
-      while (this.writeQueue.length > 0 || this.isWriting) {
-        await new Promise(r => setTimeout(r, 50));
-      }
-      if (!this.pendingDownload) return;
-
-      // 检查写入过程中是否出错
-      if (this.writeError) {
-        throw new Error(this.writeError);
-      }
-
-      console.log(`File saved to ${this.pendingDownload.savePath} (${this.formatSize(this.pendingDownload.receivedSize)})`);
-      if (this.currentDownloadId) {
-        this.updateTransferProgress(this.currentDownloadId, 100, 'completed');
-        this.currentDownloadId = null;
-      }
-      this.pendingDownload = null;
-    } catch (err) {
-      console.error('Failed to finalize download:', err);
-      const errMsg = this.getDiskErrorMessage(err);
-      if (this.currentDownloadId) {
-        this.updateTransferProgress(this.currentDownloadId, 0, 'failed', errMsg);
-        this.currentDownloadId = null;
-      }
-      await this.cleanupDownload();
-    }
-  }
-
-  // 清理下载状态：清空队列、删除不完整文件
   private async cleanupDownload(): Promise<void> {
-    if (!this.pendingDownload) return;
-    const savePath = this.pendingDownload.savePath;
-    // 清空缓冲和写入队列
-    this.downloadBuffer = [];
-    this.downloadBufferSize = 0;
-    this.writeQueue = [];
-    this.writeError = null;
-    // 等待正在进行的写入完成
-    while (this.isWriting) {
-      await new Promise(r => setTimeout(r, 50));
-    }
-    try {
-      if (await fsExists(savePath)) {
-        await fsRemove(savePath);
-      }
-    } catch { /* ignore cleanup errors */ }
-    this.pendingDownload = null;
+    await _cleanupDownloadState(this._dlState);
   }
 
-  // 格式化传输速度为人类可读字符串
+  /** 构造下载回调对象——桥接 file-download 模块与 FileManager 实例 */
+  private _dlCallbacks() {
+    return {
+      updateTransferProgress: (id: string, progress: number, status: 'pending' | 'inprogress' | 'completed' | 'failed' | 'paused' | 'cancelled', error?: string) => {
+        this.updateTransferProgress(id, progress, status, error);
+      },
+      addTransferRecord: (type: 'upload' | 'download', filename: string, path: string, size: number, savePath?: string) => {
+        return this.addTransferRecord(type, filename, path, size, savePath);
+      },
+    };
+  }
+
   private formatSpeed(bytesPerSec: number): string {
-    if (bytesPerSec <= 0) return '';
-    if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
-    if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-    if (bytesPerSec < 1024 * 1024 * 1024) return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
-    return `${(bytesPerSec / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
+    return formatSpeed(bytesPerSec);
   }
 
-  // 格式化耗时为人类可读字符串
   private formatElapsed(ms: number): string {
-    if (ms < 0) ms = 0;
-    const totalSec = Math.floor(ms / 1000);
-    if (totalSec < 60) return `${totalSec}秒`;
-    const min = Math.floor(totalSec / 60);
-    const sec = totalSec % 60;
-    if (min < 60) return `${min}分${sec > 0 ? sec + '秒' : ''}`;
-    const hr = Math.floor(min / 60);
-    const remMin = min % 60;
-    return `${hr}时${remMin > 0 ? remMin + '分' : ''}`;
+    return formatElapsed(ms);
   }
 
-  // 将磁盘写入错误转换为用户友好的中文提示
   private getDiskErrorMessage(err: unknown): string {
-    const msg = err instanceof Error ? err.message : String(err);
-    const lower = msg.toLowerCase();
-    if (lower.includes('no space') || lower.includes('enospc') || lower.includes('disk full') || lower.includes('not enough space')) {
-      return '磁盘空间不足，下载失败';
-    }
-    if (lower.includes('permission denied') || lower.includes('eacces')) {
-      return '没有写入权限，下载失败';
-    }
-    if (lower.includes('read-only') || lower.includes('erofs')) {
-      return '文件系统为只读，下载失败';
-    }
-    return msg;
+    return getDiskErrorMessage(err);
   }
 
   async deleteFile(path: string): Promise<void> {
@@ -1655,132 +1199,12 @@ export class FileManager {
     return this.listElement.closest('.drawer-content') as HTMLElement || document.body;
   }
 
-  // 显示上传冲突对话框：覆盖 / 重命名 / 跳过
   private showUploadConflictDialog(filename: string): Promise<{ action: 'overwrite' | 'rename' | 'skip'; newName?: string }> {
-    return new Promise((resolve) => {
-      const container = this.getModalContainer();
-      container.querySelector('.drawer-modal-overlay')?.remove();
-
-      const overlay = document.createElement('div');
-      overlay.className = 'drawer-modal-overlay';
-      overlay.innerHTML = `
-        <div class="drawer-modal">
-          <div class="drawer-modal-title">文件 "${escapeHtml(filename)}" 已存在</div>
-          <div style="margin-bottom:clamp(6px,2%,10px);font-size:clamp(11px,1.4vw,12px);color:var(--text-secondary);">请选择操作：</div>
-          <div class="drawer-modal-buttons" style="flex-direction:column;gap:6px;">
-            <button class="drawer-modal-btn confirm" data-action="overwrite" style="width:100%">覆盖</button>
-            <button class="drawer-modal-btn" data-action="rename" style="width:100%">重命名</button>
-            <button class="drawer-modal-btn cancel" data-action="skip" style="width:100%">跳过</button>
-          </div>
-        </div>
-      `;
-
-      container.appendChild(overlay);
-
-      const close = (result: { action: 'overwrite' | 'rename' | 'skip'; newName?: string }) => {
-        overlay.remove();
-        resolve(result);
-      };
-
-      overlay.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
-        const action = target.dataset.action;
-        if (action === 'overwrite') {
-          close({ action: 'overwrite' });
-        } else if (action === 'skip') {
-          close({ action: 'skip' });
-        } else if (action === 'rename') {
-          // 切换到重命名输入模式
-          const modal = overlay.querySelector('.drawer-modal') as HTMLElement;
-          const ext = filename.includes('.') ? '.' + filename.split('.').pop() : '';
-          const base = ext ? filename.slice(0, -ext.length) : filename;
-          const suggestName = `${base}_copy${ext}`;
-          modal.innerHTML = `
-            <div class="drawer-modal-title">重命名上传文件</div>
-            <input class="drawer-modal-input" type="text" value="${escapeHtml(suggestName)}" spellcheck="false" />
-            <div class="drawer-modal-buttons">
-              <button class="drawer-modal-btn cancel">取消</button>
-              <button class="drawer-modal-btn confirm">确定</button>
-            </div>
-          `;
-          const input = modal.querySelector('.drawer-modal-input') as HTMLInputElement;
-          const confirmBtn = modal.querySelector('.drawer-modal-btn.confirm') as HTMLButtonElement;
-          const cancelBtn = modal.querySelector('.drawer-modal-btn.cancel') as HTMLButtonElement;
-          input.focus();
-          input.select();
-          input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && input.value.trim()) close({ action: 'rename', newName: input.value.trim() });
-            if (e.key === 'Escape') close({ action: 'skip' });
-          });
-          confirmBtn.addEventListener('click', () => {
-            if (input.value.trim()) close({ action: 'rename', newName: input.value.trim() });
-          });
-          cancelBtn.addEventListener('click', () => close({ action: 'skip' }));
-        }
-      });
-    });
+    return _showUploadConflictDialog(filename, this.getModalContainer());
   }
 
-  // 显示文件夹冲突对话框：合并 / 重命名 / 跳过
   private showDirConflictDialog(dirName: string): Promise<{ action: 'merge' | 'rename' | 'skip'; newName?: string }> {
-    return new Promise((resolve) => {
-      const container = this.getModalContainer();
-      container.querySelector('.drawer-modal-overlay')?.remove();
-
-      const overlay = document.createElement('div');
-      overlay.className = 'drawer-modal-overlay';
-      overlay.innerHTML = `
-        <div class="drawer-modal">
-          <div class="drawer-modal-title">文件夹 "${escapeHtml(dirName)}" 已存在</div>
-          <div style="margin-bottom:clamp(6px,2%,10px);font-size:clamp(11px,1.4vw,12px);color:var(--text-secondary);">请选择操作：</div>
-          <div class="drawer-modal-buttons" style="flex-direction:column;gap:6px;">
-            <button class="drawer-modal-btn confirm" data-action="merge" style="width:100%">合并</button>
-            <button class="drawer-modal-btn" data-action="rename" style="width:100%">重命名</button>
-            <button class="drawer-modal-btn cancel" data-action="skip" style="width:100%">跳过</button>
-          </div>
-        </div>
-      `;
-
-      container.appendChild(overlay);
-
-      const close = (result: { action: 'merge' | 'rename' | 'skip'; newName?: string }) => {
-        overlay.remove();
-        resolve(result);
-      };
-
-      overlay.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
-        const action = target.dataset.action;
-        if (action === 'merge') {
-          close({ action: 'merge' });
-        } else if (action === 'skip') {
-          close({ action: 'skip' });
-        } else if (action === 'rename') {
-          const modal = overlay.querySelector('.drawer-modal') as HTMLElement;
-          modal.innerHTML = `
-            <div class="drawer-modal-title">重命名上传文件夹</div>
-            <input class="drawer-modal-input" type="text" value="${escapeHtml(dirName)}_copy" spellcheck="false" />
-            <div class="drawer-modal-buttons">
-              <button class="drawer-modal-btn cancel">取消</button>
-              <button class="drawer-modal-btn confirm">确定</button>
-            </div>
-          `;
-          const input = modal.querySelector('.drawer-modal-input') as HTMLInputElement;
-          const confirmBtn = modal.querySelector('.drawer-modal-btn.confirm') as HTMLButtonElement;
-          const cancelBtn = modal.querySelector('.drawer-modal-btn.cancel') as HTMLButtonElement;
-          input.focus();
-          input.select();
-          input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && input.value.trim()) close({ action: 'rename', newName: input.value.trim() });
-            if (e.key === 'Escape') close({ action: 'skip' });
-          });
-          confirmBtn.addEventListener('click', () => {
-            if (input.value.trim()) close({ action: 'rename', newName: input.value.trim() });
-          });
-          cancelBtn.addEventListener('click', () => close({ action: 'skip' }));
-        }
-      });
-    });
+    return _showDirConflictDialog(dirName, this.getModalContainer());
   }
 
   private initializeColumnResize(): void {
@@ -1990,193 +1414,34 @@ export class FileManager {
     }
   }
 
-  // 从 localStorage 恢复传输历史
-  private loadTransferHistory(): void {
-    try {
-      const data = localStorage.getItem(FileManager.STORAGE_KEY);
-      if (data) {
-        this.transferHistory = JSON.parse(data);
-        // 将重启前仍在进行中的任务标记为失败
-        for (const record of this.transferHistory) {
-          if (record.status === 'inprogress' || record.status === 'pending' || record.status === 'paused') {
-            record.status = 'failed';
-            record.error = '应用重启，传输中断';
-          }
-        }
-        this.saveTransferHistory();
-      }
-    } catch (err) {
-      console.error('Failed to load transfer history:', err);
-    }
-  }
+  // ===================== 传输历史（委托到 TransferHistoryManager） =====================
 
-  // 保存传输历史到 localStorage
-  private saveTransferHistory(): void {
-    try {
-      localStorage.setItem(FileManager.STORAGE_KEY, JSON.stringify(this.transferHistory));
-    } catch (err) {
-      console.error('Failed to save transfer history:', err);
-    }
-  }
-
-  // 清空已完成的传输历史（保留进行中/暂停/等待中的记录）
-  clearTransferHistory(): void {
-    this.transferHistory = this.transferHistory.filter(
-      r => r.status === 'inprogress' || r.status === 'paused' || r.status === 'pending'
-    );
-    this.saveTransferHistory();
-    this.lastVirtualRange = null;
-    this.renderTransferHistory();
-  }
-
-  // 添加传输记录到历史
   private addTransferRecord(type: 'upload' | 'download', filename: string, path: string, size: number, savePath?: string): string {
-    const id = `${type}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const record: (typeof this.transferHistory)[number] = {
-      id,
-      type,
-      filename,
-      path,
-      size,
-      progress: 0,
-      status: 'pending' as const,
-      timestamp: Date.now(),
-      savePath,
-    };
-
-    this.transferHistory.unshift(record);
-
-    // 限制历史记录数量
-    if (this.transferHistory.length > this.maxHistoryLength) {
-      this.transferHistory = this.transferHistory.slice(0, this.maxHistoryLength);
-    }
-
-    this.saveTransferHistory();
-    document.dispatchEvent(new CustomEvent('status-bar-transfer', {
-      detail: { sessionId: this.sessionId, id, type, progress: 0, status: 'pending' }
-    }));
-    return id;
+    return this._transferHistory!.addTransferRecord(type, filename, path, size, savePath);
   }
 
-  // 更新传输进度
   private updateTransferProgress(id: string, progress: number, status: 'pending' | 'inprogress' | 'completed' | 'failed' | 'paused' | 'cancelled', error?: string): void {
-    const record = this.transferHistory.find(r => r.id === id);
-    if (record) {
-      const statusChanged = record.status !== status;
-      record.progress = progress;
-      record.status = status;
-      if (error) {
-        record.error = error;
-      }
-
-      // 记录传输时间节点
-      if (statusChanged) {
-        if (status === 'inprogress' && !record.startTime) {
-          record.startTime = Date.now();
-        }
-        if (status === 'completed' || status === 'failed' || status === 'cancelled') {
-          record.endTime = Date.now();
-          this.speedTracker.delete(id);
-        }
-        if (status === 'paused') {
-          // 暂停时冻结速度显示
-          this.speedTracker.delete(id);
-        }
-      }
-
-      // 更新速度跟踪（仅 inprogress 状态）
-      if (status === 'inprogress' && record.size > 0) {
-        const now = Date.now();
-        const currentBytes = Math.round(record.size * progress / 100);
-        const tracker = this.speedTracker.get(id);
-        if (tracker) {
-          const dt = (now - tracker.lastTime) / 1000; // 秒
-          if (dt >= 0.5) { // 至少 500ms 才更新速度，避免抖动
-            const db = currentBytes - tracker.lastBytes;
-            tracker.speed = db > 0 ? db / dt : 0;
-            tracker.lastBytes = currentBytes;
-            tracker.lastTime = now;
-          }
-        } else {
-          this.speedTracker.set(id, { lastBytes: currentBytes, lastTime: now, speed: 0 });
-        }
-      }
-
-      // 仅在状态变更时持久化，避免进度更新时高频写入
-      if (statusChanged) {
-        this.saveTransferHistory();
-      }
-      // 如果历史视图当前可见，更新 UI
-      const historyContainer = document.getElementById(`transfer-history-${this.sessionId}`);
-      if (historyContainer && historyContainer.style.display !== 'none') {
-        if (statusChanged) {
-          // 状态变更：全量重绘（按钮、样式、结构都会变）
-          this.renderTransferHistory();
-        } else {
-          // 仅进度变化：原地更新进度条、百分比、速度和用时
-          this.updateProgressInPlace(id, progress);
-        }
-      }
-      document.dispatchEvent(new CustomEvent('status-bar-transfer', {
-        detail: { sessionId: this.sessionId, id, type: record.type, progress, status }
-      }));
-    }
+    this._transferHistory!.updateTransferProgress(id, progress, status, error);
   }
 
-  // 原地更新进度条，不触发全量重绘
-  private updateProgressInPlace(id: string, progress: number): void {
-    const historyContainer = document.getElementById(`history-list-${this.sessionId}`);
-    if (!historyContainer) return;
-    const item = historyContainer.querySelector(`[data-transfer-id="${id}"]`);
-    if (!item) return;
-    const fill = item.querySelector('.progress-fill') as HTMLElement | null;
-    if (fill) fill.style.width = `${progress}%`;
-    const text = item.querySelector('.progress-text');
-    if (text) text.textContent = `${progress}%`;
+  clearTransferHistory(): void {
+    this._transferHistory!.clearTransferHistory();
+  }
 
-    // 更新速度显示
-    const tracker = this.speedTracker.get(id);
-    let speedEl = item.querySelector('.transfer-speed') as HTMLElement | null;
-    const speedStr = tracker ? this.formatSpeed(tracker.speed) : '';
-    if (speedStr) {
-      if (!speedEl) {
-        speedEl = document.createElement('span');
-        speedEl.className = 'transfer-speed';
-        const footer = item.querySelector('.history-footer');
-        const statusEl = footer?.querySelector('.status-indicator');
-        if (footer && statusEl) footer.insertBefore(speedEl, statusEl.nextSibling);
-      }
-      if (speedEl) speedEl.textContent = speedStr;
-    } else if (speedEl) {
-      speedEl.textContent = '';
-    }
-
-    // 更新用时显示
-    const record = this.transferHistory.find(r => r.id === id);
-    if (record?.startTime) {
-      let elapsedEl = item.querySelector('.transfer-elapsed') as HTMLElement | null;
-      if (!elapsedEl) {
-        elapsedEl = document.createElement('span');
-        elapsedEl.className = 'transfer-elapsed';
-        const footer = item.querySelector('.history-footer');
-        const afterEl = speedEl || footer?.querySelector('.status-indicator');
-        if (footer && afterEl) footer.insertBefore(elapsedEl, afterEl.nextSibling);
-      }
-      if (elapsedEl) elapsedEl.textContent = this.formatElapsed(Date.now() - record.startTime);
-    }
+  renderTransferHistory(): void {
+    this._transferHistory!.renderTransferHistory();
   }
 
   // 暂停当前传输
   pauseTransfer(id: string): void {
-    const record = this.transferHistory.find(r => r.id === id);
+    const record = this._transferHistory!.findRecord(id);
     if (!record || record.status !== 'inprogress') return;
 
     if (record.type === 'upload' && this.currentUploadId === id) {
       this.isUploadPaused = true;
       this.updateTransferProgress(id, record.progress, 'paused');
-    } else if (record.type === 'download' && this.currentDownloadId === id) {
-      this.isDownloadPaused = true;
-      // 通知服务端暂停推送
+    } else if (record.type === 'download' && this._dlState.currentDownloadId === id) {
+      this._dlState.isDownloadPaused = true;
       this.sendDownloadCtrl(MsgFileDownloadPause);
       this.updateTransferProgress(id, record.progress, 'paused');
     }
@@ -2184,26 +1449,22 @@ export class FileManager {
 
   // 继续已暂停的传输
   resumeTransfer(id: string): void {
-    const record = this.transferHistory.find(r => r.id === id);
+    const record = this._transferHistory!.findRecord(id);
     if (!record || record.status !== 'paused') return;
 
     if (record.type === 'upload' && this.currentUploadId === id) {
       this.isUploadPaused = false;
       this.updateTransferProgress(id, record.progress, 'inprogress');
-      // 继续发送上传块
       this.sendUploadChunk();
-    } else if (record.type === 'download' && this.currentDownloadId === id) {
-      this.isDownloadPaused = false;
-      // 通知服务端恢复推送
+    } else if (record.type === 'download' && this._dlState.currentDownloadId === id) {
+      this._dlState.isDownloadPaused = false;
       this.sendDownloadCtrl(MsgFileDownloadContinue);
 
-      // 恢复后用实际进度
-      const dl = this.pendingDownload;
+      const dl = this._dlState.pendingDownload;
       if (dl && dl.totalSize > 0) {
         const actualProgress = Math.min(Math.round((dl.receivedSize / dl.totalSize) * 100), 99);
-        // 重新初始化 speedTracker
         const currentBytes = Math.round(record.size * actualProgress / 100);
-        this.speedTracker.set(id, { lastBytes: currentBytes, lastTime: Date.now(), speed: 0 });
+        this._transferHistory!.resetSpeedTracker(id, currentBytes);
         this.updateTransferProgress(id, actualProgress, 'inprogress');
       } else {
         this.updateTransferProgress(id, record.progress, 'inprogress');
@@ -2213,7 +1474,7 @@ export class FileManager {
 
   // 取消传输
   cancelTransfer(id: string): void {
-    const record = this.transferHistory.find(r => r.id === id);
+    const record = this._transferHistory!.findRecord(id);
     if (!record || (record.status !== 'inprogress' && record.status !== 'paused' && record.status !== 'pending')) return;
 
     if (record.type === 'upload') {
@@ -2223,23 +1484,19 @@ export class FileManager {
         this.inFlightChunks = 0;
         this.currentUploadId = null;
         this.updateTransferProgress(id, record.progress, 'cancelled', '用户取消');
-        // 删除远程 .meterm.part 临时文件
         this.deleteRemotePartFile(record.path);
-        // 继续处理上传队列
         this.processNextUpload();
       } else {
-        // 还在队列中，通过路径匹配移除
         const queueIdx = this.uploadQueue.findIndex(item => item.path === record.path);
         if (queueIdx !== -1) {
           this.uploadQueue.splice(queueIdx, 1);
         }
         this.updateTransferProgress(id, 0, 'cancelled', '用户取消');
       }
-    } else if (record.type === 'download' && this.currentDownloadId === id) {
-      this.isDownloadPaused = false;
-      // 通知服务端取消
+    } else if (record.type === 'download' && this._dlState.currentDownloadId === id) {
+      this._dlState.isDownloadPaused = false;
       this.sendDownloadCtrl(MsgFileDownloadCancel);
-      this.currentDownloadId = null;
+      this._dlState.currentDownloadId = null;
       this.updateTransferProgress(id, record.progress, 'cancelled', '用户取消');
       this.cleanupDownload();
     }
@@ -2272,214 +1529,5 @@ export class FileManager {
     } catch (err) {
       console.error('Failed to reveal in file manager:', err);
     }
-  }
-
-  // 虚拟滚动相关
-  private static readonly ITEM_HEIGHT = 95; // 卡片估算高度(px)，含 margin
-  private static readonly VIRTUAL_BUFFER = 5; // 上下缓冲区卡片数
-  private virtualScrollBound = false;
-  private lastVirtualRange: { start: number; end: number } | null = null;
-
-  // 生成单条传输记录的 HTML
-  private renderTransferItem(record: (typeof this.transferHistory)[number]): string {
-    const typeIcon = record.type === 'upload' ? '↑' : '↓';
-    const statusClass = record.status;
-    const statusText: Record<string, string> = {
-      'pending': '等待中',
-      'inprogress': '进行中',
-      'completed': '已完成',
-      'failed': '失败',
-      'paused': '已暂停',
-      'cancelled': '已取消'
-    };
-
-    const date = new Date(record.timestamp).toLocaleString('zh-CN', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-
-    const progressBar = (record.status === 'inprogress' || record.status === 'paused')
-      ? `<div class="progress-bar${record.status === 'paused' ? ' paused' : ''}">
-           <div class="progress-fill${record.status === 'paused' ? ' paused' : ''}" style="width: ${record.progress}%"></div>
-         </div>
-         <span class="progress-text">${record.progress}%</span>`
-      : '';
-
-    let actionButtons = '';
-    if (record.status === 'inprogress') {
-      actionButtons = `<div class="transfer-actions">
-        <button class="transfer-btn pause-btn" data-id="${record.id}" title="暂停">⏸</button>
-        <button class="transfer-btn cancel-btn" data-id="${record.id}" title="取消">✕</button>
-      </div>`;
-    } else if (record.status === 'paused') {
-      actionButtons = `<div class="transfer-actions">
-        <button class="transfer-btn resume-btn" data-id="${record.id}" title="继续">▶</button>
-        <button class="transfer-btn cancel-btn" data-id="${record.id}" title="取消">✕</button>
-      </div>`;
-    } else if (record.status === 'pending') {
-      actionButtons = `<div class="transfer-actions">
-        <button class="transfer-btn cancel-btn" data-id="${record.id}" title="取消">✕</button>
-      </div>`;
-    }
-
-    let speedHtml = '';
-    let elapsedHtml = '';
-    if (record.status === 'inprogress') {
-      const tracker = this.speedTracker.get(record.id);
-      const speedStr = tracker ? this.formatSpeed(tracker.speed) : '';
-      if (speedStr) speedHtml = `<span class="transfer-speed">${speedStr}</span>`;
-      if (record.startTime) {
-        elapsedHtml = `<span class="transfer-elapsed">${this.formatElapsed(Date.now() - record.startTime)}</span>`;
-      }
-    } else if (record.status === 'paused' && record.startTime) {
-      elapsedHtml = `<span class="transfer-elapsed">${this.formatElapsed(Date.now() - record.startTime)}</span>`;
-    } else if ((record.status === 'completed' || record.status === 'failed' || record.status === 'cancelled') && record.startTime) {
-      const end = record.endTime || Date.now();
-      elapsedHtml = `<span class="transfer-elapsed">${this.formatElapsed(end - record.startTime)}</span>`;
-    }
-
-    const localPathHtml = (record.type === 'download' && record.savePath && record.status === 'completed')
-      ? `<span class="save-path clickable" data-save-path="${escapeHtml(record.savePath)}" title="在文件管理器中打开: ${escapeHtml(record.savePath)}">📂 ${escapeHtml(record.savePath)}</span>`
-      : '';
-
-    const errorMsg = record.error
-      ? `<div class="error-message">${escapeHtml(record.error)}</div>`
-      : '';
-
-    return `
-      <div class="history-item ${statusClass}" data-transfer-id="${record.id}">
-        <div class="history-header">
-          <span class="type-icon">${typeIcon}</span>
-          <span class="filename">${escapeHtml(record.filename)}</span>
-          <span class="file-size">${this.formatSize(record.size)}</span>
-          ${actionButtons}
-        </div>
-        <div class="history-details">
-          <span class="file-path">${escapeHtml(record.path)}</span>
-          <span class="transfer-time">${date}</span>
-        </div>
-        ${progressBar}
-        <div class="history-footer">
-          <span class="status-indicator ${statusClass}">${statusText[record.status] || record.status}</span>
-          ${speedHtml}${elapsedHtml}
-          ${localPathHtml}
-        </div>
-        ${errorMsg}
-      </div>
-    `;
-  }
-
-  // 渲染传输历史列表（虚拟滚动）
-  renderTransferHistory(): void {
-    const historyList = document.getElementById(`history-list-${this.sessionId}`);
-    if (!historyList) {
-      console.warn('History container not found');
-      return;
-    }
-
-    if (this.transferHistory.length === 0) {
-      historyList.innerHTML = `
-        <div class="empty-history">
-          <p>暂无上传下载记录</p>
-        </div>
-      `;
-      this.lastVirtualRange = null;
-      return;
-    }
-
-    const scrollContainer = historyList.parentElement as HTMLElement; // .transfer-history
-    if (!scrollContainer) return;
-
-    // 绑定滚动事件（只绑定一次）
-    if (!this.virtualScrollBound) {
-      this.virtualScrollBound = true;
-      scrollContainer.addEventListener('scroll', () => this.updateVirtualSlice());
-      this.ensureTransferDelegation(historyList);
-    }
-
-    // 强制重算可见区域
-    this.lastVirtualRange = null;
-    this.updateVirtualSlice();
-  }
-
-  // 计算并渲染可见范围的卡片
-  private updateVirtualSlice(): void {
-    const historyList = document.getElementById(`history-list-${this.sessionId}`);
-    if (!historyList) return;
-    const scrollContainer = historyList.parentElement as HTMLElement;
-    if (!scrollContainer) return;
-
-    const total = this.transferHistory.length;
-    const itemH = FileManager.ITEM_HEIGHT;
-    const buffer = FileManager.VIRTUAL_BUFFER;
-
-    const scrollTop = scrollContainer.scrollTop;
-    const viewHeight = scrollContainer.clientHeight;
-
-    const startIdx = Math.max(0, Math.floor(scrollTop / itemH) - buffer);
-    const endIdx = Math.min(total, Math.ceil((scrollTop + viewHeight) / itemH) + buffer);
-
-    // 如果可见范围未变化，跳过重绘
-    if (this.lastVirtualRange && this.lastVirtualRange.start === startIdx && this.lastVirtualRange.end === endIdx) {
-      return;
-    }
-    this.lastVirtualRange = { start: startIdx, end: endIdx };
-
-    // 总高度撑开滚动区域
-    const totalHeight = total * itemH;
-    const topPad = startIdx * itemH;
-
-    historyList.style.height = `${totalHeight}px`;
-    historyList.style.paddingTop = `${topPad}px`;
-    historyList.style.boxSizing = 'border-box';
-
-    // 只渲染可见范围的卡片
-    const slice = this.transferHistory.slice(startIdx, endIdx);
-    historyList.innerHTML = slice.map(r => this.renderTransferItem(r)).join('');
-  }
-
-  // 事件委托：只在容器上绑定一次，通过冒泡匹配目标
-  private transferDelegationBound = new WeakSet<HTMLElement>();
-  private ensureTransferDelegation(container: HTMLElement): void {
-    if (this.transferDelegationBound.has(container)) return;
-    this.transferDelegationBound.add(container);
-
-    container.addEventListener('click', (e) => {
-      const target = e.target as HTMLElement;
-
-      // 暂停按钮
-      const pauseBtn = target.closest('.pause-btn') as HTMLElement | null;
-      if (pauseBtn?.dataset.id) {
-        e.stopPropagation();
-        this.pauseTransfer(pauseBtn.dataset.id);
-        return;
-      }
-
-      // 继续按钮
-      const resumeBtn = target.closest('.resume-btn') as HTMLElement | null;
-      if (resumeBtn?.dataset.id) {
-        e.stopPropagation();
-        this.resumeTransfer(resumeBtn.dataset.id);
-        return;
-      }
-
-      // 取消按钮
-      const cancelBtn = target.closest('.cancel-btn') as HTMLElement | null;
-      if (cancelBtn?.dataset.id) {
-        e.stopPropagation();
-        this.cancelTransfer(cancelBtn.dataset.id);
-        return;
-      }
-
-      // 可点击的保存路径
-      const savePath = target.closest('.save-path.clickable') as HTMLElement | null;
-      if (savePath?.dataset.savePath) {
-        e.stopPropagation();
-        this.revealInFileManager(savePath.dataset.savePath);
-        return;
-      }
-    });
   }
 }

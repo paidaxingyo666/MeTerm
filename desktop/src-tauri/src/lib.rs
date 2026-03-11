@@ -226,7 +226,7 @@ fn get_target_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
 	// Utility windows (settings, updater, tray-dialog) are never menu targets —
 	// menu actions must be dispatched to a main window so they are actually handled.
 	let is_main = |label: &str| {
-		label != "settings" && label != "updater" && label != "tray-dialog"
+		label != "settings" && label != "updater" && label != "about" && label != "tray-dialog"
 	};
 
 	// Try to get the currently focused main window first
@@ -385,9 +385,9 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
 		"settings" => {
 			let _ = window.show();
 			let _ = window.set_focus();
-			let payload = WindowEvent { target_window: window_label.clone() };
+			let payload = WindowEvent { target_window: "main".to_string() };
 			match app.emit("menu-open-settings", payload) {
-				Ok(_) => debug_log!("[DEBUG] Successfully emitted menu-open-settings to {}", window_label),
+				Ok(_) => debug_log!("[DEBUG] Successfully emitted menu-open-settings to main"),
 				Err(_e) => debug_log!("[DEBUG] Failed to emit menu-open-settings: {}", _e),
 			}
 		}
@@ -458,10 +458,10 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
 			let _ = app.emit("menu-reload", WindowEvent { target_window: window_label.clone() });
 		}
 		"show_about" => {
-			let _ = app.emit("menu-show-about", WindowEvent { target_window: window_label.clone() });
+			let _ = app.emit("menu-show-about", WindowEvent { target_window: "main".to_string() });
 		}
 		"show_shortcuts" => {
-			let _ = app.emit("menu-show-shortcuts", WindowEvent { target_window: window_label.clone() });
+			let _ = app.emit("menu-show-shortcuts", WindowEvent { target_window: "main".to_string() });
 		}
 		"import_connections" => {
 			let _ = window.show();
@@ -485,8 +485,7 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
 		"check_updates" => {
 			let _ = window.show();
 			let _ = window.set_focus();
-			let payload = WindowEvent { target_window: window_label.clone() };
-			let _ = app.emit("menu-check-updates", payload);
+			let _ = app.emit("menu-check-updates", WindowEvent { target_window: "main".to_string() });
 		}
 		_ => {}
 	}
@@ -730,14 +729,14 @@ pub fn run() {
                         lifecycle.remove_initialized_window(&label);
 
                         // When a utility window is destroyed, skip the main-window check
-                        let is_utility = label == "settings" || label == "tray-dialog" || label == "updater";
+                        let is_utility = label == "settings" || label == "tray-dialog" || label == "updater" || label == "about";
                         if !is_utility {
                             let has_main_windows = app_handle.webview_windows().keys()
-                                .any(|k| k.as_str() != "settings" && k.as_str() != "tray-dialog" && k.as_str() != "updater");
+                                .any(|k| k.as_str() != "settings" && k.as_str() != "tray-dialog" && k.as_str() != "updater" && k.as_str() != "about");
 
                             if !has_main_windows {
                                 // Last main window closed — close all utility windows
-                                for util_label in &["settings", "updater"] {
+                                for util_label in &["settings", "updater", "about"] {
                                     if let Some(w) = app_handle.get_webview_window(util_label) {
                                         let _ = w.close();
                                     }
@@ -749,7 +748,7 @@ pub fn run() {
                         let lifecycle = app_handle.state::<AppLifecycleState>();
 
                         // Always allow utility windows to close
-                        if label == "settings" || label == "tray-dialog" || label == "updater" {
+                        if label == "settings" || label == "tray-dialog" || label == "updater" || label == "about" {
                             debug_log!("[DEBUG] Window {} close allowed (utility)", label);
                             return;
                         }

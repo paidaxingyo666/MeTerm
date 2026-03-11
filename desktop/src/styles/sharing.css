@@ -1,0 +1,455 @@
+/* ============================================================================
+   Settings – Sharing Tab
+   ============================================================================ */
+.sharing-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sharing-qr-row {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.sharing-qr-canvas {
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.sharing-info-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sharing-info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sharing-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.sharing-value {
+  font-size: 13px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.sharing-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  background: rgba(var(--bg-button), 1);
+  color: var(--text-button);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.settings-btn:hover {
+  background: rgba(var(--bg-button-hover), 1);
+}
+
+.settings-btn-primary {
+  background: rgba(56, 120, 220, 0.85);
+  border-color: rgba(56, 120, 220, 0.5);
+  color: #fff;
+}
+
+.settings-btn-primary:hover {
+  background: rgba(56, 120, 220, 1);
+}
+
+.sharing-toggle-data-btn {
+  padding: 4px 6px;
+  line-height: 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sharing-data-preview {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+.sharing-data-preview code {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+}
+
+.sharing-loading,
+.sharing-error {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 20px 0;
+  text-align: center;
+}
+
+.sharing-error {
+  color: #e06060;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ============================================================================
+   Settings: Token / Devices / Ban management
+   ============================================================================ */
+.sharing-token-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.sharing-token-value {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sharing-custom-token-row {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+.sharing-custom-token-row .settings-input {
+  flex: 1;
+}
+.settings-btn-danger {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: #f87171 !important;
+  border: 1px solid rgba(239, 68, 68, 0.2) !important;
+  margin-top: 8px;
+}
+.settings-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.25) !important;
+}
+.settings-btn-small {
+  padding: 2px 8px !important;
+  font-size: 11px !important;
+}
+.settings-btn-icon {
+  background: none !important;
+  border: none !important;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  opacity: 0.7;
+}
+.settings-btn-icon:hover { opacity: 1; }
+
+.sharing-devices-table,
+.sharing-ban-table {
+  margin-top: 6px;
+}
+
+/* ── Devices title row ── */
+.devices-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.devices-refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s;
+}
+.devices-refresh-btn svg {
+  transition: transform 0.3s ease;
+}
+.devices-refresh-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+[data-theme="light"] .devices-refresh-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+.devices-refresh-btn:active svg {
+  transform: rotate(180deg);
+}
+.devices-revoke-btn {
+  margin-left: auto;
+  border: none;
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.devices-revoke-btn:hover {
+  background: rgba(239, 68, 68, 0.22);
+}
+[data-theme="light"] .devices-revoke-btn {
+  background: rgba(239, 68, 68, 0.08);
+  color: #dc2626;
+}
+[data-theme="light"] .devices-revoke-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+.sharing-device-row,
+.sharing-ban-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.sharing-device-id,
+.sharing-device-session {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.sharing-device-role {
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.sharing-device-role.master { background: rgba(234, 179, 8, 0.2); color: #eab308; }
+.sharing-device-role.viewer { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+.sharing-device-role.readonly { background: rgba(107, 114, 128, 0.2); color: #9ca3af; }
+.sharing-device-ip,
+.sharing-ban-ip {
+  flex: 1;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.sharing-ban-time {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.sharing-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 12px 0;
+  text-align: center;
+}
+.settings-section-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+/* ── Device Cards ── */
+.device-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+[data-theme="light"] .device-card {
+  background: rgba(0, 0, 0, 0.025);
+  border-color: rgba(0, 0, 0, 0.07);
+}
+.device-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 10px;
+}
+.device-card-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.device-card-ip {
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-card-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.07);
+  padding: 1px 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+[data-theme="light"] .device-card-count {
+  background: rgba(0, 0, 0, 0.05);
+}
+.device-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.device-card-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+  transition: background 0.15s;
+}
+.device-card-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+[data-theme="light"] .device-card-toggle:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+.device-card-toggle svg {
+  transition: transform 0.2s ease;
+}
+.device-card-toggle.expanded svg {
+  transform: rotate(180deg);
+}
+.device-card-kick-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+  opacity: 0.4;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.device-card-kick-btn:hover {
+  opacity: 1;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+.device-card-body {
+  max-height: 300px;
+  overflow: hidden;
+  transition: max-height 0.25s ease;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+[data-theme="light"] .device-card-body {
+  border-top-color: rgba(0, 0, 0, 0.05);
+}
+.device-card-body.collapsed {
+  max-height: 0;
+  border-top-color: transparent;
+}
+.device-session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.device-session-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+[data-theme="light"] .device-session-row:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+.device-session-title {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-session-role {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.device-session-kick {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+.device-session-row:hover .device-session-kick {
+  opacity: 0.5;
+}
+.device-session-kick:hover {
+  opacity: 1 !important;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* ── Capsule: lock (private session) ── */
+.capsule-lock {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+.capsule-lock svg {
+  width: 12px;
+  height: 12px;
+}
+[data-theme="light"] .capsule-lock {
+  background: rgba(217, 119, 6, 0.12);
+  color: #d97706;
+}
+

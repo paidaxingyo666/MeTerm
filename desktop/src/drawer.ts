@@ -1,14 +1,19 @@
 import { FileManager } from './file-manager';
-import { MsgInput, type SysInfoResponse, type ProcessListResponse, type ServerInfoResponse, type NetIfaceInfo } from './protocol';
-import { loadSettings, saveSettings } from './themes';
+import { MsgInput, type SysInfoResponse, type ServerInfoResponse, type NetIfaceInfo } from './protocol';
+import { loadSettings } from './themes';
 import { t } from './i18n';
 import { escapeHtml } from './status-bar';
-
-interface NetRatePoint {
-  ts: number;
-  rxRate: number;
-  txRate: number;
-}
+import { jumpServerConfigMap } from './app-state';
+import {
+  type NetRatePoint,
+  handleServerInfoResponse,
+} from './drawer-system-info';
+import {
+  setupResizeHandle,
+  setupSplitHandle,
+  saveDrawerLayout,
+  updateHeight,
+} from './drawer-layout';
 
 export interface DrawerInstance {
   sessionId: string;
@@ -32,6 +37,12 @@ class DrawerManagerClass {
   private drawers = new Map<string, DrawerInstance>();
   private readonly MIN_HEIGHT = 200;
   private readonly MAX_HEIGHT_RATIO = 0.5;
+
+  private readonly layoutConfig = { minHeight: this.MIN_HEIGHT, maxHeightRatio: this.MAX_HEIGHT_RATIO };
+  private readonly layoutCallbacks = {
+    updateHeight: (inst: DrawerInstance) => this.updateHeight(inst),
+    saveDrawerLayout: (inst: DrawerInstance) => this.saveDrawerLayout(inst),
+  };
 
   constructor() {
     window.addEventListener('resize', () => this.onWindowResize());
@@ -104,6 +115,16 @@ class DrawerManagerClass {
     this.setupFileManagerEvents(instance);
     this.setupMainTabs(instance);
     this.setupSmoothScroll(instance);
+
+    // JumpServer：Koko 代理不支持 exec session，隐藏系统信息侧栏和进程 tab
+    if (jumpServerConfigMap.has(sessionId)) {
+      const sidebar = drawer.querySelector('.drawer-sidebar') as HTMLElement;
+      const splitHandle = drawer.querySelector('.drawer-split-handle') as HTMLElement;
+      const processTab = drawer.querySelector('[data-tab="processes"]') as HTMLElement;
+      if (sidebar) sidebar.style.display = 'none';
+      if (splitHandle) splitHandle.style.display = 'none';
+      if (processTab) processTab.style.display = 'none';
+    }
 
     return instance;
   }
@@ -407,222 +428,7 @@ class DrawerManagerClass {
   }
 
   private handleServerInfoResponse(instance: DrawerInstance, data: ServerInfoResponse): void {
-    if (data.type === 'sysinfo') {
-      const sysInfo = data as SysInfoResponse;
-      instance.sysInfo = sysInfo;
-      this.updateNetHistory(instance, sysInfo.net_ifaces || []);
-      this.renderSysInfo(instance);
-    } else if (data.type === 'processes') {
-      this.renderProcessList(instance, data as ProcessListResponse);
-    }
-  }
-
-  private updateNetHistory(instance: DrawerInstance, ifaces: NetIfaceInfo[]): void {
-    const now = Date.now();
-    if (instance.prevNetIfaces && instance.prevNetTimestamp > 0) {
-      const dt = (now - instance.prevNetTimestamp) / 1000;
-      if (dt > 0) {
-        for (const iface of ifaces) {
-          const prev = instance.prevNetIfaces.find(p => p.name === iface.name);
-          if (prev) {
-            const rxRate = Math.max(0, (iface.rx_bytes - prev.rx_bytes) / dt);
-            const txRate = Math.max(0, (iface.tx_bytes - prev.tx_bytes) / dt);
-            const history = instance.netHistory.get(iface.name) || [];
-            history.push({ ts: now, rxRate, txRate });
-            if (history.length > 60) history.shift();
-            instance.netHistory.set(iface.name, history);
-          }
-        }
-      }
-    }
-    instance.prevNetIfaces = ifaces;
-    instance.prevNetTimestamp = now;
-
-    // Auto-select first NIC if not set
-    if (!instance.selectedNic && ifaces.length > 0) {
-      instance.selectedNic = ifaces[0].name;
-    }
-  }
-
-  private formatUptime(seconds: number): string {
-    if (seconds <= 0) return '-';
-    const days = Math.floor(seconds / 86400);
-    const hours = Math.floor((seconds % 86400) / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    if (days > 0) return `${days}d ${hours}h`;
-    if (hours > 0) return `${hours}h ${mins}m`;
-    return `${mins}m`;
-  }
-
-  private formatBytes(bytes: number): string {
-    if (bytes <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    const val = bytes / Math.pow(1024, i);
-    return `${val.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
-  }
-
-  private formatRate(bytesPerSec: number): string {
-    return this.formatBytes(bytesPerSec) + '/s';
-  }
-
-  private renderNetChart(instance: DrawerInstance): string {
-    const ifaces = instance.prevNetIfaces || [];
-    if (ifaces.length === 0) return '';
-
-    const nic = instance.selectedNic;
-    const history = instance.netHistory.get(nic) || [];
-
-    const nicOptions = ifaces.map(i =>
-      `<option value="${i.name}"${i.name === nic ? ' selected' : ''}>${i.name}</option>`
-    ).join('');
-
-    let lastRx = 0, lastTx = 0;
-    if (history.length > 0) {
-      const last = history[history.length - 1];
-      lastRx = last.rxRate;
-      lastTx = last.txRate;
-    }
-
-    let chartSvg = '';
-    if (history.length >= 2) {
-      const maxPoints = 60;
-      const W = 200;
-      const H = 50;
-      const points = history.slice(-maxPoints);
-      const maxRate = Math.max(...points.map(p => Math.max(p.rxRate, p.txRate)), 1024);
-      const xStep = W / (maxPoints - 1);
-      const offset = maxPoints - points.length;
-
-      const toY = (v: number) => H - (v / maxRate) * (H - 4) - 2;
-
-      const rxPts = points.map((p, i) => `${(offset + i) * xStep},${toY(p.rxRate)}`).join(' ');
-      const txPts = points.map((p, i) => `${(offset + i) * xStep},${toY(p.txRate)}`).join(' ');
-
-      chartSvg = `<svg class="net-chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-        <polyline points="${rxPts}" fill="none" stroke="#4ade80" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
-        <polyline points="${txPts}" fill="none" stroke="#f59e0b" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
-      </svg>`;
-    } else {
-      chartSvg = '<div class="net-chart-empty">...</div>';
-    }
-
-    return `<div class="server-info-item net-chart-section" data-session="${instance.sessionId}">
-      <div class="server-info-label net-chart-header">
-        ${t('serverInfoNetwork')}
-        <select class="net-nic-select" data-session="${instance.sessionId}">${nicOptions}</select>
-      </div>
-      <div class="net-chart-container">${chartSvg}</div>
-      <div class="net-chart-legend">
-        <span class="net-rx">↓ ${this.formatRate(lastRx)}</span>
-        <span class="net-tx">↑ ${this.formatRate(lastTx)}</span>
-      </div>
-    </div>`;
-  }
-
-  private renderProgressBar(percent: number): string {
-    const pct = Math.max(0, Math.min(100, percent));
-    const colorClass = pct > 90 ? 'critical' : pct > 70 ? 'warning' : '';
-    return `<div class="sysinfo-progress ${colorClass}"><div class="sysinfo-progress-fill" style="width:${pct}%"></div><span class="sysinfo-progress-text">${pct.toFixed(0)}%</span></div>`;
-  }
-
-  private renderSysInfo(instance: DrawerInstance): void {
-    const info = instance.sysInfo;
-    if (!info) return;
-
-    const serverInfoEl = instance.element.querySelector(`#server-info-${instance.sessionId}`) as HTMLElement;
-    if (!serverInfoEl) return;
-
-    const memPercent = info.mem_total > 0 ? (info.mem_used / info.mem_total) * 100 : 0;
-
-    // Keep existing connection info (host/user) at the top
-    const existingConn = serverInfoEl.querySelector('.server-info-conn');
-    const connHtml = existingConn ? existingConn.outerHTML : '';
-
-    const disksHtml = (info.disks || []).map(d => {
-      const pct = d.total > 0 ? (d.used / d.total) * 100 : 0;
-      return `<div class="server-info-item">
-        <div class="server-info-label">${t('serverInfoDisk')} ${escapeHtml(String(d.mount))}</div>
-        <div class="server-info-value server-info-value-small">${this.formatBytes(d.used)} / ${this.formatBytes(d.total)}</div>
-        ${this.renderProgressBar(pct)}
-      </div>`;
-    }).join('');
-
-    serverInfoEl.innerHTML = `
-      ${connHtml}
-      <div class="server-info-item">
-        <div class="server-info-label">${t('serverInfoOS')}</div>
-        <div class="server-info-value">${escapeHtml(String(info.os_name || info.os_type))}</div>
-      </div>
-      <div class="server-info-item">
-        <div class="server-info-label">${t('serverInfoKernel')}</div>
-        <div class="server-info-value">${escapeHtml(String(info.kernel))} ${escapeHtml(String(info.arch))}</div>
-      </div>
-      <div class="server-info-item">
-        <div class="server-info-label">${t('serverInfoUptime')}</div>
-        <div class="server-info-value">${this.formatUptime(info.uptime_seconds)}</div>
-      </div>
-      <div class="server-info-item">
-        <div class="server-info-label">${t('serverInfoCPU')} · ${escapeHtml(String(info.cpu_cores))} cores</div>
-        <div class="server-info-value server-info-value-small">${escapeHtml(String(info.cpu_model))}</div>
-        ${this.renderProgressBar(info.cpu_usage)}
-      </div>
-      <div class="server-info-item">
-        <div class="server-info-label">${t('serverInfoMemory')}</div>
-        <div class="server-info-value server-info-value-small">${this.formatBytes(info.mem_used)} / ${this.formatBytes(info.mem_total)}</div>
-        ${this.renderProgressBar(memPercent)}
-      </div>
-      ${this.renderNetChart(instance)}
-      ${disksHtml}
-    `;
-
-    // Bind NIC selector event after innerHTML update
-    const nicSelect = serverInfoEl.querySelector(`.net-nic-select[data-session="${instance.sessionId}"]`) as HTMLSelectElement;
-    if (nicSelect) {
-      nicSelect.addEventListener('change', () => {
-        instance.selectedNic = nicSelect.value;
-        this.renderSysInfo(instance);
-      });
-    }
-
-    // 仅在文本被截断时显示 tooltip
-    serverInfoEl.querySelectorAll('.server-info-value, .server-info-value-small, .server-info-label').forEach((el) => {
-      el.addEventListener('mouseenter', () => {
-        const htmlEl = el as HTMLElement;
-        if (htmlEl.scrollWidth > htmlEl.clientWidth) {
-          htmlEl.title = htmlEl.textContent || '';
-        } else {
-          htmlEl.removeAttribute('title');
-        }
-      });
-    });
-  }
-
-  private renderProcessList(instance: DrawerInstance, data: ProcessListResponse): void {
-    const tbody = instance.element.querySelector(`#process-list-${instance.sessionId}`) as HTMLElement;
-    if (!tbody) return;
-
-    tbody.innerHTML = data.processes.map(p => `
-      <tr>
-        <td>${p.pid}</td>
-        <td class="process-name">${escapeHtml(String(p.command))}</td>
-        <td>${escapeHtml(String(p.user))}</td>
-        <td class="${p.cpu > 50 ? 'high-usage' : ''}">${p.cpu.toFixed(1)}</td>
-        <td class="${p.mem > 50 ? 'high-usage' : ''}">${p.mem.toFixed(1)}</td>
-        <td>${escapeHtml(String(p.time))}</td>
-      </tr>
-    `).join('');
-
-    // 仅在文本被截断时显示 tooltip
-    tbody.querySelectorAll('td').forEach((td) => {
-      td.addEventListener('mouseenter', () => {
-        if (td.scrollWidth > td.clientWidth) {
-          td.title = td.textContent || '';
-        } else {
-          td.removeAttribute('title');
-        }
-      });
-    });
+    handleServerInfoResponse(instance, data);
   }
 
   private setupToggleButton(instance: DrawerInstance): void {
@@ -1174,101 +980,15 @@ class DrawerManagerClass {
   }
 
   private setupResizeHandle(instance: DrawerInstance): void {
-    const handle = instance.element.querySelector('.drawer-resize-handle') as HTMLDivElement;
-    let startY = 0;
-    let startHeight = 0;
-
-    handle.addEventListener('mousedown', (e) => {
-      startY = e.clientY;
-      startHeight = instance.height;
-      instance.element.classList.add('resizing');
-      document.body.classList.add('drawer-resizing');
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-    });
-
-    const onMouseMove = (e: MouseEvent) => {
-      e.preventDefault();
-      const deltaY = startY - e.clientY;
-      const newHeight = Math.max(
-        this.MIN_HEIGHT,
-        Math.min(startHeight + deltaY, window.innerHeight * this.MAX_HEIGHT_RATIO)
-      );
-      instance.height = newHeight;
-      instance.element.style.setProperty('--drawer-height', `${newHeight}px`);
-      // Flex layout handles terminal resizing — no manual bottom offset needed
-      import('./ai-capsule').then(({ AICapsuleManager }) => {
-        AICapsuleManager.setDrawerOffset(instance.sessionId, newHeight);
-      });
-    };
-
-    const onMouseUp = () => {
-      document.body.classList.remove('drawer-resizing');
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      instance.element.classList.remove('resizing');
-      this.updateHeight(instance);
-      this.saveDrawerLayout(instance);
-    };
-
-    handle.addEventListener('dblclick', () => {
-      const presets = [0.3, 0.4, 0.5];
-      const currentRatio = instance.height / window.innerHeight;
-      let nextPreset = presets.find((p) => p > currentRatio + 0.05);
-      if (!nextPreset) nextPreset = presets[0];
-      instance.height = window.innerHeight * nextPreset;
-      this.updateHeight(instance);
-      this.saveDrawerLayout(instance);
-    });
+    setupResizeHandle(instance, this.layoutConfig, this.layoutCallbacks);
   }
 
   private setupSplitHandle(instance: DrawerInstance): void {
-    const splitHandle = instance.element.querySelector('.drawer-split-handle') as HTMLDivElement;
-    const sidebar = instance.element.querySelector('.drawer-sidebar') as HTMLDivElement;
-    const content = instance.element.querySelector('.drawer-content') as HTMLDivElement;
-    if (!splitHandle || !sidebar || !content) return;
-
-    let startX = 0;
-    let startWidth = 0;
-
-    splitHandle.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      startX = e.clientX;
-      startWidth = sidebar.getBoundingClientRect().width;
-      document.body.classList.add('drawer-splitting');
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-    });
-
-    const onMouseMove = (e: MouseEvent) => {
-      e.preventDefault();
-      const deltaX = e.clientX - startX;
-      const contentWidth = content.getBoundingClientRect().width;
-      const maxWidth = contentWidth * 0.5;
-      const newWidth = Math.max(100, Math.min(startWidth + deltaX, maxWidth));
-      sidebar.style.width = `${newWidth}px`;
-    };
-
-    const onMouseUp = () => {
-      document.body.classList.remove('drawer-splitting');
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      this.saveDrawerLayout(instance);
-    };
+    setupSplitHandle(instance, this.layoutCallbacks);
   }
 
   private saveDrawerLayout(instance: DrawerInstance): void {
-    const settings = loadSettings();
-    if (!settings.rememberDrawerLayout) return;
-
-    const sidebar = instance.element.querySelector('.drawer-sidebar') as HTMLDivElement;
-    const sidebarWidth = sidebar ? sidebar.getBoundingClientRect().width : 0;
-
-    saveSettings({
-      ...settings,
-      drawerHeight: instance.height,
-      drawerSidebarWidth: sidebarWidth,
-    });
+    saveDrawerLayout(instance);
   }
 
   toggle(sessionId: string): void {
@@ -1282,10 +1002,14 @@ class DrawerManagerClass {
       this.startSysInfoRefresh(instance);
       // 通知 FileManager 全局监听器：当前活跃的 drag-drop 目标为此 drawer 的 fileManager
       FileManager.setActiveDragDropTarget(instance.fileManager ?? null);
+      // JumpServer 首次打开抽屉时延迟加载文件列表（SFTP 需要连接就绪后才可用）
+      if (jumpServerConfigMap.has(sessionId) && instance.fileManager && instance.fileManager.getCurrentPath() === '/') {
+        instance.fileManager.loadDirectory('.');
+      }
     } else {
       instance.element.classList.remove('open');
       instance.element.style.setProperty('--drawer-height', '0px');
-      this.updateTerminalPadding(sessionId, 0);
+      // Flex layout handles terminal resizing — no manual padding needed
       import('./ai-capsule').then(({ AICapsuleManager }) => {
         AICapsuleManager.setDrawerOffset(sessionId, 0);
       });
@@ -1297,17 +1021,7 @@ class DrawerManagerClass {
   }
 
   private updateHeight(instance: DrawerInstance): void {
-    instance.element.style.setProperty('--drawer-height', `${instance.height}px`);
-    this.updateTerminalPadding(instance.sessionId, instance.height);
-    import('./ai-capsule').then(({ AICapsuleManager }) => {
-      AICapsuleManager.setDrawerOffset(instance.sessionId, instance.height);
-    });
-  }
-
-  private updateTerminalPadding(_sessionId: string, _height: number): void {
-    // Flex layout handles terminal resizing — no manual bottom offset needed.
-    // The ResizeObserver on the terminal container detects the size change
-    // from the drawer flex item and triggers fit() automatically.
+    updateHeight(instance);
   }
 
   mountTo(sessionId: string, container: HTMLElement): void {
@@ -1354,6 +1068,21 @@ class DrawerManagerClass {
     const instance = this.drawers.get(sessionId);
     if (instance?.fileManager) {
       instance.fileManager.setWebSocket(ws);
+      // JumpServer 连接：SFTP 子系统初始化较慢，跳过自动加载，
+      // 在用户首次打开抽屉时再加载，并自动进入唯一的资产子目录
+      if (jumpServerConfigMap.has(sessionId)) {
+        // JumpServer SFTP 错误静默处理（Koko 网关 SFTP 初始化延迟）
+        instance.fileManager.suppressListErrors = true;
+        instance.fileManager.onFirstLoad = (files, _path) => {
+          // SFTP 成功后关闭静默，后续错误正常提示
+          if (instance.fileManager) instance.fileManager.suppressListErrors = false;
+          const dirs = files.filter(f => f.is_dir);
+          if (dirs.length === 1) {
+            instance.fileManager?.loadDirectory(dirs[0].name);
+          }
+        };
+        return;
+      }
       // SSH 会话加载 "."（SFTP 主目录），本地会话加载 "/"
       const initialPath = instance.serverConnectionInfo ? '.' : '/';
       instance.fileManager.loadDirectory(initialPath);

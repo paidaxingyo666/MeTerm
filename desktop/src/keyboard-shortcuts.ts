@@ -1,0 +1,188 @@
+/**
+ * keyboard-shortcuts.ts — Keyboard shortcut handler
+ *
+ * Extracted from main.ts. Handles Cmd/Ctrl+T, W, K, comma, D, Shift+D, Alt+Arrow.
+ */
+
+import { TabManager } from './tabs';
+import { TerminalRegistry } from './terminal';
+import { DrawerManager } from './drawer';
+import { AICapsuleManager } from './ai-capsule';
+import { SplitPaneManager, getAllLeaves, countLeaves, findLeafById, getAdjacentLeaf } from './split-pane';
+import { StatusBar } from './status-bar';
+import { activateTab, showHomeView, openSettings } from './view-manager';
+import { createNewSession, doSplitPane } from './session-actions';
+import { renderTabs } from './tab-renderer';
+import {
+  removeKickedOverlay, removeReconnectOverlay,
+  viewerModeSessionIds, reclaimSessionIds,
+} from './overlays';
+import {
+  sshConfigMap, remoteInfoMap, sessionProgressMap, remoteTabNumbers,
+  jumpServerConfigMap,
+} from './app-state';
+
+export function setupKeyboardShortcuts(): void {
+  document.addEventListener('keydown', async (event) => {
+    const isMac = navigator.userAgent.includes('Mac');
+    const mod = isMac ? event.metaKey : event.ctrlKey;
+    if (!mod) {
+      return;
+    }
+
+    // On Windows, skip app-level shortcuts when focus is inside the xterm terminal
+    // to prevent conflicts with TUI keyboard shortcuts (e.g. Ctrl+W in vim/htop).
+    // On macOS, the modifier is Cmd (metaKey) which xterm doesn't forward to the PTY,
+    // so there is no conflict on macOS.
+    if (!isMac) {
+      const target = event.target as Element;
+      const inTerminal =
+        target.tagName === 'TEXTAREA' ||
+        (typeof (target as HTMLElement).closest === 'function' &&
+          (target as HTMLElement).closest('.xterm') !== null);
+      if (inTerminal) return;
+    }
+
+    const key = event.key.toLowerCase();
+
+    if (key === 't') {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      await createNewSession();
+      return;
+    }
+
+    if (key === 'w') {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const activeTab = TabManager.getActiveTab();
+      if (activeTab) {
+        const leafCount = countLeaves(activeTab.splitRoot);
+        if (leafCount > 1) {
+          // Multi-pane: close focused pane only
+          const closingLeaf = findLeafById(activeTab.splitRoot, activeTab.focusedPaneId);
+          if (closingLeaf) {
+            DrawerManager.destroy(closingLeaf.sessionId);
+            AICapsuleManager.destroy(closingLeaf.sessionId);
+            sshConfigMap.delete(closingLeaf.sessionId);
+            jumpServerConfigMap.delete(closingLeaf.sessionId);
+            sessionProgressMap.delete(closingLeaf.sessionId);
+            removeKickedOverlay(closingLeaf.sessionId);
+            removeReconnectOverlay(closingLeaf.sessionId);
+          }
+          await TabManager.closePane(activeTab.id, activeTab.focusedPaneId);
+          if (TabManager.activeTabId) {
+            await activateTab(TabManager.activeTabId);
+          }
+        } else {
+          // Single pane: close the tab
+          const closingLeaves = getAllLeaves(activeTab.splitRoot);
+          for (const leaf of closingLeaves) {
+            DrawerManager.destroy(leaf.sessionId);
+            AICapsuleManager.destroy(leaf.sessionId);
+            sshConfigMap.delete(leaf.sessionId);
+            jumpServerConfigMap.delete(leaf.sessionId);
+            remoteInfoMap.delete(leaf.sessionId);
+            remoteTabNumbers.delete(leaf.sessionId);
+            viewerModeSessionIds.delete(leaf.sessionId);
+            reclaimSessionIds.delete(leaf.sessionId);
+            sessionProgressMap.delete(leaf.sessionId);
+            removeKickedOverlay(leaf.sessionId);
+            removeReconnectOverlay(leaf.sessionId);
+          }
+          await TabManager.closeTab(activeTab.id);
+          if (TabManager.activeTabId) {
+            await activateTab(TabManager.activeTabId);
+            const newActiveTab = TabManager.tabs.find(t => t.id === TabManager.activeTabId);
+            if (newActiveTab) {
+              const activeSessionId = TabManager.getActiveSessionId();
+              const sshCfg = activeSessionId ? sshConfigMap.get(activeSessionId) : undefined;
+              StatusBar.setConnection(newActiveTab.status, sshCfg ? `${sshCfg.username}@${sshCfg.host}` : 'Local');
+            }
+          } else {
+            showHomeView();
+          }
+        }
+        renderTabs();
+      }
+      return;
+    }
+
+    if (key === 'k') {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const focusedSessionId = TabManager.getActiveSessionId();
+      if (focusedSessionId) {
+        TerminalRegistry.clearSession(focusedSessionId);
+      } else {
+        TerminalRegistry.clearActive();
+      }
+      return;
+    }
+
+    if (key === ',') {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      openSettings();
+      return;
+    }
+
+    // Split pane shortcuts
+    if (key === 'd' && !event.shiftKey) {
+      // ⌘D: horizontal split
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const splitTab = TabManager.getActiveTab();
+      if (splitTab && countLeaves(splitTab.splitRoot) < 4) {
+        void (async () => {
+          await doSplitPane(splitTab.id, splitTab.focusedPaneId, 'horizontal');
+          await activateTab(splitTab.id);
+          renderTabs();
+        })();
+      }
+      return;
+    }
+
+    if (key === 'd' && event.shiftKey) {
+      // ⌘⇧D: vertical split
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const splitTab = TabManager.getActiveTab();
+      if (splitTab && countLeaves(splitTab.splitRoot) < 4) {
+        void (async () => {
+          await doSplitPane(splitTab.id, splitTab.focusedPaneId, 'vertical');
+          await activateTab(splitTab.id);
+          renderTabs();
+        })();
+      }
+      return;
+    }
+
+    // ⌘⌥ Arrow keys: navigate between panes
+    if (event.altKey && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const navTab = TabManager.getActiveTab();
+      if (navTab && countLeaves(navTab.splitRoot) > 1) {
+        const directionMap: Record<string, 'left' | 'right' | 'up' | 'down'> = {
+          ArrowLeft: 'left',
+          ArrowRight: 'right',
+          ArrowUp: 'up',
+          ArrowDown: 'down',
+        };
+        const adjacent = getAdjacentLeaf(navTab.splitRoot, navTab.focusedPaneId, directionMap[event.key]);
+        if (adjacent) {
+          SplitPaneManager.focusPane(adjacent.id);
+        }
+      }
+      return;
+    }
+  }, true);
+}

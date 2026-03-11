@@ -1,4 +1,4 @@
-export type IconName = 'home' | 'settings' | 'plus' | 'terminal' | 'gallery' | 'ssh' | 'server' | 'chevronLeft' | 'chevronRight' | 'mobile' | 'share' | 'remote' | 'remoteList';
+export type IconName = 'home' | 'settings' | 'plus' | 'terminal' | 'gallery' | 'ssh' | 'server' | 'chevronLeft' | 'chevronRight' | 'mobile' | 'share' | 'remote' | 'remoteList' | 'jumpserver';
 
 const icons: Record<IconName, string> = {
   home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5L12 4l9 7.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 10.5V20h11V10.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -14,6 +14,7 @@ const icons: Record<IconName, string> = {
   share: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="6" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="18" cy="19" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8.3 10.8l7.4-4.6M8.3 13.2l7.4 4.6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>',
   remote: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><ellipse cx="12" cy="12" rx="4" ry="9" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3.5 9h17M3.5 15h17" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
   remoteList: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.5"/><ellipse cx="10" cy="10" rx="3.2" ry="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3 7.5h14M3 12.5h14" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M16 17h5M16 19.5h5M16 22h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+  jumpserver: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 12L3 7M12 12l9-5M12 12v10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="12" cy="9" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 14h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
 };
 
 export function icon(name: IconName): string {

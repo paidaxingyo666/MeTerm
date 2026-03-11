@@ -1,0 +1,507 @@
+#window-toolbar {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 10px;
+  padding: 1px 12px;
+  height: 32px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border-toolbar);
+  background: rgba(var(--bg-toolbar), var(--app-window-opacity));
+  position: relative;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#window-toolbar-drag-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  -webkit-app-region: drag;
+  app-region: drag;
+  pointer-events: auto;
+}
+
+#window-toolbar-left,
+#window-toolbar-tabs,
+#window-toolbar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  z-index: 2;
+  transform: translateY(0);
+}
+
+#window-toolbar-left {
+  margin-left: 84px;
+}
+
+/* Windows: no leading offset needed (macOS uses 84px for traffic lights) */
+html.platform-windows #window-toolbar-left {
+  margin-left: 0;
+}
+
+/* Windows: remove right padding so window controls sit flush at the edge */
+html.platform-windows #window-toolbar {
+  padding-right: 0;
+}
+
+/* Windows: window controls must fill the full toolbar height.
+   The win-control-btn elements have height: 32px and are center-aligned. */
+html.platform-windows #window-toolbar-right {
+  align-self: stretch;
+  align-items: center;
+}
+
+.toolbar-action-btn,
+.title-tab,
+.toolbar-icon-btn {
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  background: rgba(var(--bg-button), var(--app-window-opacity));
+  color: var(--text-button);
+  height: 22px;
+  padding: 0 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.toolbar-action-btn:hover,
+.title-tab:hover,
+.toolbar-icon-btn:hover {
+  background: rgba(var(--bg-button-hover), var(--app-window-opacity));
+}
+
+.toolbar-action-btn.active,
+.title-tab.active {
+  border-color: var(--accent);
+  color: var(--text-heading);
+}
+
+#window-toolbar-tabs {
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+  overflow: hidden;
+  white-space: nowrap;
+  padding-right: 4px;
+  pointer-events: none;
+}
+
+#window-toolbar-right {
+  justify-self: end;
+  min-width: max-content;
+  margin-right: 0;
+}
+
+.toolbar-icon-btn {
+  width: 24px;
+  min-width: 24px;
+  justify-content: center;
+  padding: 0;
+}
+
+.app-toolbar-menu {
+  /* width auto-sizes via max-content from .custom-context-menu base */
+}
+
+/* Windows: app icon button in toolbar-left */
+.toolbar-app-icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-button);
+  height: 22px;
+  width: 24px;
+  min-width: 24px;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.toolbar-app-icon-btn:hover {
+  background: rgba(var(--bg-button-hover), var(--app-window-opacity));
+}
+.toolbar-app-icon-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+/* Windows: separator between app buttons and OS window controls */
+.win-controls-separator {
+  width: 1px;
+  height: 16px;
+  background: var(--border-primary);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+/* Windows: OS window control buttons (minimize / maximize / close) */
+.win-control-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-button);
+  height: 32px;
+  width: 46px;
+  min-width: 46px;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  -webkit-user-select: none;
+  user-select: none;
+  /* Override the shared .toolbar-action-btn border style */
+  box-sizing: border-box;
+}
+.win-control-btn:hover {
+  background: rgba(var(--bg-button-hover), 0.9);
+}
+.win-close-btn:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+html[data-theme="light"] .win-close-btn:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+.win-control-btn svg {
+  pointer-events: none;
+}
+
+.title-tab {
+  position: relative;
+  max-width: 340px;
+  min-width: 84px;
+  overflow: hidden;
+  text-align: left;
+  justify-content: flex-start;
+  padding: 0 6px;
+  width: auto;
+  pointer-events: auto;
+}
+
+.tab-icon-area {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.tab-ssh-icon {
+  flex-shrink: 0;
+}
+.tab-js-icon {
+  flex-shrink: 0;
+}
+
+.tab-remote-icon {
+  flex-shrink: 0;
+}
+
+.tab-remote-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.tab-remote-badge {
+  position: absolute;
+  bottom: -3px;
+  right: -4px;
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1;
+  color: #22c55e;
+  pointer-events: none;
+}
+
+.title-tab-track {
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.title-tab-track-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 24px;
+  min-width: max-content;
+  max-width: none;
+}
+
+.title-tab-text {
+  display: inline-block;
+  white-space: nowrap;
+  will-change: transform;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: none;
+  flex: 0 0 auto;
+}
+
+.title-tab-text.duplicate {
+  display: none;
+}
+
+/* Overflowing tabs: non-active tabs only scroll on hover */
+.title-tab.is-overflowing .title-tab-track-inner {
+  animation: none;
+}
+
+.title-tab.is-overflowing .title-tab-text {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.title-tab.is-overflowing .title-tab-text.duplicate {
+  display: inline-block;
+}
+
+/* Active tab: auto-scroll, pause on hover */
+.title-tab.is-overflowing.active .title-tab-track-inner {
+  animation: title-marquee 14s linear infinite;
+}
+
+.title-tab.is-overflowing.active:hover .title-tab-track-inner {
+  animation-play-state: paused;
+}
+
+/* Non-active tab: scroll only on hover */
+.title-tab.is-overflowing:not(.active):hover .title-tab-track-inner {
+  animation: title-marquee 14s linear infinite;
+}
+
+#tab-bar {
+  display: none !important;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tab,
+.tab-add {
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  background: rgba(var(--bg-tab), var(--app-window-opacity));
+  color: var(--text-button);
+  height: 28px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.tab.active {
+  border-color: var(--accent);
+  color: var(--text-heading);
+}
+
+.tab-close {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  color: var(--close-btn-text);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  -webkit-user-select: none;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s;
+  background: linear-gradient(to right, transparent, rgba(var(--bg-button), 1) 40%);
+  z-index: 1;
+}
+
+.title-tab:hover .tab-close {
+  opacity: 1;
+}
+
+.title-tab.active .tab-close {
+  background: linear-gradient(to right, transparent, rgba(var(--bg-button-hover), 1) 40%);
+}
+
+/* Tab drag-and-drop */
+.title-tab.is-dragging {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.tab-drag-ghost {
+  position: fixed;
+  z-index: 99999;
+  padding: 4px 12px;
+  border-radius: 6px;
+  background: rgba(var(--bg-toolbar), 0.88);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: var(--tab-text);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tab-drop-indicator {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 100;
+  transition: left 0.1s ease;
+}
+
+.tab-merge-indicator {
+  position: absolute;
+  top: 0;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(var(--accent-rgb, 100, 149, 237), 0.3);
+  border: 1px solid var(--accent);
+  pointer-events: none;
+  z-index: 100;
+  transition: left 0.1s ease, width 0.1s ease;
+}
+
+/* Tab scroll overflow mode */
+#window-toolbar-tabs.overflow-mode {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.tab-scroll-container {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+  position: relative;
+}
+
+.tab-scroll-btn {
+  width: 20px;
+  min-width: 20px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 0;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  pointer-events: auto;
+  transition: color 0.12s, background 0.12s;
+}
+
+.tab-scroll-btn:hover {
+  color: var(--text-heading);
+  background: rgba(var(--bg-button-hover), var(--app-window-opacity));
+}
+
+.tab-scroll-btn .tab-icon,
+.tab-scroll-btn .tab-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.tab-scroll-btn.hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.tab-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.toolbar-action-btn .tab-icon,
+.toolbar-action-btn .tab-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.toolbar-icon-btn .tab-icon,
+.toolbar-icon-btn .tab-icon svg {
+  width: 13px;
+  height: 13px;
+}
+/* Update available icon in toolbar */
+.toolbar-update-btn {
+  color: var(--accent, #4c7eff) !important;
+  position: relative;
+}
+.toolbar-update-btn svg {
+  animation: update-spin-once 1.2s ease-out 0.5s 1 forwards;
+}
+@keyframes update-spin-once {
+  0% { transform: rotate(0deg); }
+  60% { transform: rotate(360deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes title-marquee {
+  0% {
+    transform: translateX(0);
+  }
+  28% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(calc(-1 * var(--marquee-shift, 100%)));
+  }
+}
+

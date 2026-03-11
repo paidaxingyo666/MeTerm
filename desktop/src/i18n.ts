@@ -141,6 +141,8 @@ export interface Translations {
   aiSendPrompt: string;
   aiModelSelect: string;
   aiPlaceholderInput: string;
+  aiPlaceholderCmd: string;
+  aiPlaceholderAgent: string;
   aiCollapse: string;
   aiExpand: string;
   aiHistory: string;
@@ -178,6 +180,9 @@ export interface Translations {
   aiDangerConfirmCancel: string;
   aiNoConfig: string;
   aiStreamError: string;
+  aiRateLimitRetry: string;
+  aiServerErrorRetry: string;
+  aiContextCompressed: string;
   aiThinking: string;
   aiWorking: string;
   aiStopGenerating: string;
@@ -397,6 +402,48 @@ export interface Translations {
   fileLinkLocalConfirmMsg: string;
   fileLinkConfirmOpen: string;
   fileLinkSkipConfirmSetting: string;
+  // JumpServer
+  jsEditServer: string;
+  jsAddServer: string;
+  jsName: string;
+  jsBaseUrl: string;
+  jsSshHost: string;
+  jsSshHostPlaceholder: string;
+  jsAuthMethod: string;
+  jsAuthPassword: string;
+  jsAuthToken: string;
+  jsApiToken: string;
+  jsOrgId: string;
+  jsOrgIdPlaceholder: string;
+  jsTestConnection: string;
+  jsTesting: string;
+  jsTestSuccess: string;
+  jsTestFailed: string;
+  jsSave: string;
+  jsFieldsRequired: string;
+  jsInvalidUrl: string;
+  jsMfaTitle: string;
+  jsMfaDesc: string;
+  jsMfaCodePlaceholder: string;
+  jsMfaVerify: string;
+  jsAssetBrowser: string;
+  jsSearchAssets: string;
+  jsLoading: string;
+  jsAllAssets: string;
+  jsAssetsTotal: string;
+  jsNoAssets: string;
+  jsAssetName: string;
+  jsAssetAddress: string;
+  jsAssetPlatform: string;
+  jsAssetComment: string;
+  jsAssetProtocols: string;
+  jsAssetActions: string;
+  jsConnect: string;
+  jsLoadingAccounts: string;
+  jsNoAccounts: string;
+  jsSelectAccount: string;
+  homeNewJumpServer: string;
+  jsSaveAndConnect: string;
 }
 
 const translations: Record<Language, Translations> = {
@@ -449,7 +496,7 @@ const translations: Record<Language, Translations> = {
     confirmQuitAllWindows: 'Close all windows and sessions? This will quit the application.',
     confirmHideToTrayWithSessions: 'Active sessions detected. Hide window to tray?',
     aboutDialogTitle: 'About',
-    aboutDialogBody: 'MeTerm\nA lightweight multi-session terminal client.',
+    aboutDialogBody: 'A lightweight multi-session terminal client.',
     shortcutsDialogTitle: 'Keyboard Shortcuts',
     shortcutsDialogBody: '',
     shortcutNewTerminal: 'New Terminal',
@@ -541,6 +588,8 @@ const translations: Record<Language, Translations> = {
     aiSendPrompt: 'Send Prompt',
     aiModelSelect: 'Model',
     aiPlaceholderInput: 'Type a command or prompt...',
+    aiPlaceholderCmd: 'Command ',
+    aiPlaceholderAgent: ' Agent chat ',
     aiCollapse: 'Collapse',
     aiExpand: 'Expand',
     aiHistory: 'History',
@@ -578,6 +627,9 @@ const translations: Record<Language, Translations> = {
     aiDangerConfirmCancel: 'Cancel',
     aiNoConfig: 'AI not configured. Go to Settings > AI to set up.',
     aiStreamError: 'Request failed',
+    aiRateLimitRetry: 'Rate limited, retrying',
+    aiServerErrorRetry: 'Server error, retrying',
+    aiContextCompressed: 'Context compressed to fit model limits',
     aiThinking: 'Thinking',
     aiWorking: 'Working',
     aiStopGenerating: 'Stop',
@@ -797,6 +849,48 @@ const translations: Record<Language, Translations> = {
     fileLinkLocalConfirmMsg: 'Open <code>{path}</code> with system default application?',
     fileLinkConfirmOpen: 'Open',
     fileLinkSkipConfirmSetting: 'Show file link open confirmation',
+    // JumpServer
+    jsEditServer: 'Edit JumpServer',
+    jsAddServer: 'Add JumpServer',
+    jsName: 'Name',
+    jsBaseUrl: 'Server URL',
+    jsSshHost: 'SSH Host',
+    jsSshHostPlaceholder: 'Koko SSH host (default: same as server)',
+    jsAuthMethod: 'Auth Method',
+    jsAuthPassword: 'Password',
+    jsAuthToken: 'API Token',
+    jsApiToken: 'API Token',
+    jsOrgId: 'Organization ID',
+    jsOrgIdPlaceholder: 'Optional, leave empty for default',
+    jsTestConnection: 'Test',
+    jsTesting: 'Testing…',
+    jsTestSuccess: 'Connection successful',
+    jsTestFailed: 'Connection failed',
+    jsSave: 'Save',
+    jsFieldsRequired: 'Name and Server URL are required',
+    jsInvalidUrl: 'Invalid URL format',
+    jsMfaTitle: 'Multi-Factor Authentication',
+    jsMfaDesc: 'Enter the verification code',
+    jsMfaCodePlaceholder: 'Verification code',
+    jsMfaVerify: 'Verify',
+    jsAssetBrowser: 'Asset Browser',
+    jsSearchAssets: 'Search assets…',
+    jsLoading: 'Loading…',
+    jsAllAssets: 'All Assets',
+    jsAssetsTotal: 'assets',
+    jsNoAssets: 'No assets found',
+    jsAssetName: 'Name',
+    jsAssetAddress: 'Address',
+    jsAssetPlatform: 'Platform',
+    jsAssetComment: 'Comment',
+    jsAssetProtocols: 'Protocols',
+    jsAssetActions: 'Actions',
+    jsConnect: 'Connect',
+    jsLoadingAccounts: 'Loading accounts…',
+    jsNoAccounts: 'No accounts available',
+    jsSelectAccount: 'Select Account',
+    homeNewJumpServer: 'JumpServer',
+    jsSaveAndConnect: 'Save & Connect',
   },
   zh: {
     appName: 'MeTerm',
@@ -847,7 +941,7 @@ const translations: Record<Language, Translations> = {
     confirmQuitAllWindows: '关闭所有窗口及会话？这将退出应用程序。',
     confirmHideToTrayWithSessions: '检测到有活跃会话，是否将窗口隐藏到状态栏？',
     aboutDialogTitle: '关于',
-    aboutDialogBody: 'MeTerm\n轻量的多会话终端客户端。',
+    aboutDialogBody: '轻量的多会话终端客户端。',
     shortcutsDialogTitle: '快捷键',
     shortcutsDialogBody: '',
     shortcutNewTerminal: '新建终端',
@@ -939,6 +1033,8 @@ const translations: Record<Language, Translations> = {
     aiSendPrompt: '发送提示词',
     aiModelSelect: '模型',
     aiPlaceholderInput: '输入命令或提示词...',
+    aiPlaceholderCmd: '命令 ',
+    aiPlaceholderAgent: ' Agent 对话 ',
     aiCollapse: '收起',
     aiExpand: '展开',
     aiHistory: '历史',
@@ -976,6 +1072,9 @@ const translations: Record<Language, Translations> = {
     aiDangerConfirmCancel: '取消',
     aiNoConfig: 'AI 未配置，请前往 设置 > AI 进行配置。',
     aiStreamError: '请求失败',
+    aiRateLimitRetry: '请求频率受限，正在重试',
+    aiServerErrorRetry: '服务暂时不可用，正在重试',
+    aiContextCompressed: '上下文已压缩以适应模型限制',
     aiThinking: '思考中',
     aiWorking: '工作中',
     aiStopGenerating: '停止',
@@ -1195,6 +1294,48 @@ const translations: Record<Language, Translations> = {
     fileLinkLocalConfirmMsg: '是否使用系统默认程序打开 <code>{path}</code>？',
     fileLinkConfirmOpen: '打开',
     fileLinkSkipConfirmSetting: '显示文件链接打开确认弹窗',
+    // JumpServer
+    jsEditServer: '编辑 JumpServer',
+    jsAddServer: '添加 JumpServer',
+    jsName: '名称',
+    jsBaseUrl: '服务器地址',
+    jsSshHost: 'SSH 主机',
+    jsSshHostPlaceholder: 'Koko SSH 主机（默认与服务器相同）',
+    jsAuthMethod: '认证方式',
+    jsAuthPassword: '密码',
+    jsAuthToken: 'API 令牌',
+    jsApiToken: 'API 令牌',
+    jsOrgId: '组织 ID',
+    jsOrgIdPlaceholder: '可选，留空使用默认组织',
+    jsTestConnection: '测试',
+    jsTesting: '测试中…',
+    jsTestSuccess: '连接成功',
+    jsTestFailed: '连接失败',
+    jsSave: '保存',
+    jsFieldsRequired: '名称和服务器地址为必填项',
+    jsInvalidUrl: 'URL 格式无效',
+    jsMfaTitle: '多因素认证',
+    jsMfaDesc: '请输入验证码',
+    jsMfaCodePlaceholder: '验证码',
+    jsMfaVerify: '验证',
+    jsAssetBrowser: '资产浏览器',
+    jsSearchAssets: '搜索资产…',
+    jsLoading: '加载中…',
+    jsAllAssets: '全部资产',
+    jsAssetsTotal: '个资产',
+    jsNoAssets: '未找到资产',
+    jsAssetName: '名称',
+    jsAssetAddress: '地址',
+    jsAssetPlatform: '平台',
+    jsAssetComment: '备注',
+    jsAssetProtocols: '协议',
+    jsAssetActions: '操作',
+    jsConnect: '连接',
+    jsLoadingAccounts: '加载账户中…',
+    jsNoAccounts: '没有可用账户',
+    jsSelectAccount: '选择账户',
+    homeNewJumpServer: 'JumpServer',
+    jsSaveAndConnect: '保存并连接',
   },
 };
 

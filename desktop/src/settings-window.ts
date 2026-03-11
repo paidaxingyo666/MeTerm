@@ -1,4 +1,3 @@
-import './style.css';
 import { loadSettings, AppSettings, resolveIsDark, getEffectiveTheme, saveSettings } from './themes';
 import { createSettingsPanel } from './settings';
 import { initLanguage, setLanguage, t } from './i18n';
@@ -65,7 +64,7 @@ export function initSettingsWindow(): void {
   // Platform class for CSS
   document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);
 
-  // Hide main app UI elements
+  // Hide main app UI
   const app = document.getElementById('app');
   if (app) app.style.display = 'none';
 
@@ -73,8 +72,14 @@ export function initSettingsWindow(): void {
   document.body.classList.add('settings-window-mode');
 
   // On Windows: add custom title bar (no native decorations)
+  // On macOS: add drag region for overlay title bar
   if (isWindowsPlatform) {
     document.body.appendChild(createCustomTitleBar());
+  } else {
+    const dragRegion = document.createElement('div');
+    dragRegion.className = 'overlay-drag-region';
+    dragRegion.setAttribute('data-tauri-drag-region', '');
+    document.body.appendChild(dragRegion);
   }
 
   const container = document.createElement('div');
@@ -117,6 +122,11 @@ export function initSettingsWindow(): void {
   }
 
   renderPanel();
+
+  // Show window after first paint (created with visible: false to prevent flash)
+  requestAnimationFrame(() => {
+    void getCurrentWindow().show().then(() => getCurrentWindow().setFocus());
+  });
 
   // macOS native menu accelerators emit Tauri events instead of performing
   // native actions. Wire them to document.execCommand so Cmd+C/V/X/A work

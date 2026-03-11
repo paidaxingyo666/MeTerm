@@ -1,0 +1,314 @@
+/* ============================================================================
+   SSH Modal — frosted glass
+   ============================================================================ */
+.ssh-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ssh-modal {
+  background: rgba(var(--bg-toolbar), 0.85);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  padding: 20px 24px;
+  min-width: 240px;
+  max-width: 370px;
+  width: 370px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+}
+
+.ssh-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.ssh-modal-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-heading);
+}
+
+.ssh-modal-close {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ssh-modal-close:hover {
+  background: rgba(var(--bg-button-hover), var(--app-window-opacity));
+  color: var(--text-heading);
+}
+
+.ssh-modal-body {
+  /* container for the form */
+}
+
+/* ============================================================================
+   SSH Form
+   ============================================================================ */
+.ssh-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ssh-form-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.ssh-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ssh-form-group-flex {
+  flex: 1;
+  min-width: 0;
+}
+
+.ssh-form-group-port {
+  width: 76px;
+  flex: none;
+}
+
+.ssh-form-group label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.ssh-input,
+.ssh-select {
+  width: 100%;
+  height: 32px;
+  background: rgba(var(--bg-input), 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  color: var(--text-primary);
+  padding: 0 10px;
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.ssh-input:focus,
+.ssh-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: rgba(var(--bg-input), 0.7);
+}
+
+.ssh-input::placeholder {
+  color: var(--text-dim);
+}
+
+/* Credential input row: input + auth toggle */
+.ssh-cred-input-wrap {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.ssh-cred-input-wrap .ssh-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.ssh-auth-toggle {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(var(--bg-input), 0.5);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  position: relative;
+}
+
+.ssh-auth-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(var(--bg-input), 0.7);
+}
+
+/* Icon visibility: default = password (lock shown), is-key = key (key shown) */
+.ssh-auth-icon-key { display: none; }
+.ssh-auth-icon-pwd { display: block; }
+.ssh-auth-toggle.is-key .ssh-auth-icon-pwd { display: none; }
+.ssh-auth-toggle.is-key .ssh-auth-icon-key { display: block; }
+
+/* Password visibility toggle (eye icon) */
+.ssh-pwd-toggle {
+  flex: none;
+  width: 28px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: color 0.15s;
+}
+.ssh-pwd-toggle:hover { color: var(--text-primary); }
+.ssh-pwd-icon-hide { display: none; }
+.ssh-pwd-icon-show { display: block; }
+.ssh-pwd-toggle.is-visible .ssh-pwd-icon-show { display: none; }
+.ssh-pwd-toggle.is-visible .ssh-pwd-icon-hide { display: block; }
+
+/* Connect & Save button — outlined accent style */
+.ssh-btn-connect-save {
+  background: transparent !important;
+  color: var(--accent) !important;
+  border: 1px solid var(--accent) !important;
+}
+.ssh-btn-connect-save:hover {
+  background: rgba(106, 164, 255, 0.12) !important;
+}
+
+.ssh-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  align-items: center;
+}
+
+.ssh-btn {
+  height: 32px;
+  padding: 0 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.12s;
+  border: 1px solid transparent;
+}
+
+.ssh-btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.ssh-btn-primary:hover {
+  opacity: 0.9;
+}
+
+.ssh-btn-secondary {
+  background: rgba(var(--bg-button), 0.5);
+  color: var(--text-button);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.ssh-btn-secondary:hover {
+  background: rgba(var(--bg-button-hover), 0.6);
+}
+
+.ssh-btn-test {
+  background: rgba(var(--bg-button), 0.5);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.ssh-btn-test:hover {
+  background: var(--accent-bg);
+}
+
+.ssh-btn-test:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ssh-form-status {
+  min-height: 20px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: 6px;
+  padding: 0;
+  transition: all 0.15s;
+}
+
+.ssh-form-status:not(:empty) {
+  padding: 8px 12px;
+}
+
+.ssh-status-success {
+  background: var(--status-connected-bg);
+  color: var(--status-connected-text);
+}
+
+.ssh-status-error {
+  background: var(--status-disconnected-bg);
+  color: var(--status-disconnected-text);
+}
+
+.ssh-status-info {
+  background: var(--status-default-bg);
+  color: var(--text-secondary);
+}
+
+/* SSH small buttons */
+.ssh-btn-sm {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.ssh-btn-danger {
+  background: var(--status-disconnected-bg);
+  color: var(--status-disconnected-text);
+  border-color: transparent;
+}
+
+.ssh-btn-danger:hover {
+  opacity: 0.9;
+}
+
+/* Unsaved changes confirm bar */
+.ssh-confirm-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(var(--bg-input), 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ssh-confirm-msg {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+

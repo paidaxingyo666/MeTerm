@@ -2,7 +2,7 @@ import { check } from '@tauri-apps/plugin-updater';
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { t } from './i18n';
-import { loadSettings, resolveIsDark } from './themes';
+import { loadSettings, resolveIsDark, windowBgColor } from './themes';
 import { showToast } from './notify';
 
 // ── Update state (module-level) ───────────────────────────────────────────────
@@ -34,9 +34,12 @@ export async function openUpdaterWindow(): Promise<void> {
     if (c === 'auto') return resolveIsDark('auto') ? 'dark' : 'light';
     return 'dark';
   };
-  const nativeTheme = resolveTheme(settings.colorScheme) === 'light' ? 'light' as const : 'dark' as const;
+  const themeStr = resolveTheme(settings.colorScheme);
+  const nativeTheme = themeStr === 'light' ? 'light' as const : 'dark' as const;
+  const bgColor = windowBgColor(settings.colorScheme, themeStr);
   const baseUrl = window.location.origin + window.location.pathname;
 
+  const isMac = !navigator.userAgent.toLowerCase().includes('windows') && navigator.userAgent.includes('Mac');
   const win = new WebviewWindow('updater', {
     url: `${baseUrl}?window=updater`,
     title: t('checkUpdates'),
@@ -44,12 +47,18 @@ export async function openUpdaterWindow(): Promise<void> {
     height: 300,
     resizable: false,
     center: true,
+    visible: false,
     decorations: !navigator.userAgent.toLowerCase().includes('windows'),
     transparent: false,
     theme: nativeTheme,
+    backgroundColor: bgColor,
+    ...(isMac ? { titleBarStyle: 'overlay' as const, hiddenTitle: true } : {}),
   });
 
-  win.once('tauri://created', () => { void win.setFocus(); });
+  // Fallback: ensure window shows even if webview JS hasn't loaded yet
+  win.once('tauri://created', () => {
+    setTimeout(() => { void win.show().then(() => win.setFocus()); }, 150);
+  });
   win.once('tauri://error', (e: unknown) => {
     console.error('[updater] Failed to create updater window:', e);
   });

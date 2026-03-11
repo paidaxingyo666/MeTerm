@@ -1,0 +1,236 @@
+/* ── Update notification banner ─────────────────────────────────────────────── */
+.update-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px 10px 52px; /* left padding for macOS traffic lights */
+  background: rgba(var(--bg-toolbar), 0.97);
+  border-bottom: 1px solid var(--border-subtle);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 13px;
+  color: var(--text-primary);
+  opacity: 0;
+  transform: translateY(-100%);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+}
+.update-banner.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.update-banner-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.update-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.update-banner-btn {
+  padding: 5px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-primary);
+  transition: background 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+}
+.update-banner-btn:hover {
+  background: rgba(var(--bg-button-hover), 0.6);
+  border-color: var(--border-primary);
+}
+.update-banner-btn.primary {
+  background: var(--accent, #4c7eff);
+  color: #fff;
+  border-color: transparent;
+}
+.update-banner-btn.primary:hover {
+  filter: brightness(1.1);
+  background: var(--accent, #4c7eff);
+}
+
+/* ── Update modal ────────────────────────────────────────────────────────────── */
+.update-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+.update-modal-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.update-modal {
+  background: rgba(var(--bg-settings), 1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  width: 440px;
+  max-width: calc(100vw - 48px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.update-modal-header {
+  padding: 20px 20px 0;
+}
+.update-modal-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-heading);
+}
+.update-error-title {
+  color: #e05252;
+}
+.update-modal-notes {
+  padding: 12px 20px 0;
+  overflow-y: auto;
+  max-height: 200px;
+  scrollbar-width: thin;
+}
+.update-modal-notes-label {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.update-modal-notes-body {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.update-modal-progress {
+  padding: 16px 20px 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.update-progress-track {
+  flex: 1;
+  height: 6px;
+  background: rgba(var(--bg-button), 0.6);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.update-progress-fill {
+  height: 100%;
+  background: var(--accent, #4c7eff);
+  border-radius: 999px;
+  width: 0%;
+  transition: width 0.3s ease;
+}
+.update-progress-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  min-width: 80px;
+  text-align: right;
+}
+.update-modal-hint {
+  margin: 12px 20px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.update-error-detail {
+  margin: 8px 20px 0;
+  font-size: 12px;
+  color: #e05252;
+  word-break: break-all;
+  font-family: monospace;
+}
+.update-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
+}
+.update-modal-btn {
+  padding: 7px 18px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-primary);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.update-modal-btn:hover {
+  background: rgba(var(--bg-button-hover), 0.6);
+  border-color: var(--border-primary);
+}
+.update-modal-btn.primary {
+  background: var(--accent, #4c7eff);
+  color: #fff;
+  border-color: transparent;
+}
+.update-modal-btn.primary:hover {
+  filter: brightness(1.1);
+}
+
+/* ── Update status toast (checking / up-to-date / error) ────────────────────── */
+.update-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(12px);
+  background: rgba(var(--bg-secondary), 0.92);
+  color: var(--text-primary);
+  border: 1px solid rgba(var(--border-color), 0.5);
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-size: 13px;
+  z-index: 10001;
+  backdrop-filter: blur(12px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+}
+.update-toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}
+.update-toast.success {
+  border-color: rgba(80, 180, 100, 0.5);
+  color: var(--text-primary);
+}
+.update-toast.error {
+  border-color: rgba(220, 80, 80, 0.5);
+  color: #e05252;
+}
+

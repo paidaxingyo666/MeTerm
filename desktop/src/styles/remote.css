@@ -1,0 +1,610 @@
+/* ============================================================================
+   Remote Connect Modal
+   ============================================================================ */
+.remote-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.remote-modal {
+  background: rgba(var(--bg-toolbar), 0.85);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 20px 24px;
+  width: 460px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+}
+
+.remote-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.remote-modal-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-heading);
+}
+
+.remote-subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.remote-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.remote-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 14px;
+  background: rgba(var(--bg-button), 0.5);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.remote-tab {
+  flex: 1;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.remote-tab.active {
+  background: rgba(var(--bg-button-hover), 0.8);
+  color: var(--text-heading);
+}
+
+.remote-tab:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+.remote-tab-panel {
+  display: none;
+  margin-bottom: 12px;
+}
+
+.remote-tab-panel.active {
+  display: block;
+}
+
+.remote-url-panel.active {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.remote-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.remote-input-row .ssh-input {
+  flex: 1;
+}
+
+.remote-token-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.remote-token-row .ssh-input {
+  flex: 1;
+}
+
+.pair-approval-info {
+  background: #1e1e1e;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.pair-approval-row {
+  color: #888;
+  margin: 4px 0;
+}
+
+.pair-approval-label {
+  color: #d4d4d4;
+  font-weight: 500;
+}
+
+[data-theme="light"] .pair-approval-info {
+  background: #f0f0f2;
+}
+
+[data-theme="light"] .pair-approval-row {
+  color: #555;
+}
+
+[data-theme="light"] .pair-approval-label {
+  color: #333;
+}
+
+.remote-json-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 80px;
+  margin-bottom: 8px;
+  box-sizing: border-box;
+}
+
+.remote-status {
+  font-size: 12px;
+  margin: 8px 0;
+  min-height: 18px;
+}
+
+.remote-status-success {
+  color: var(--status-connected-text);
+}
+
+.remote-status-error {
+  color: var(--error-text);
+}
+
+.remote-status-info {
+  color: var(--text-muted);
+}
+
+.remote-session-list {
+  margin-top: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  max-height: 40vh;
+}
+
+.remote-session-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.remote-no-sessions {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 16px 0;
+}
+
+.remote-session-card {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(var(--bg-card), 0.7);
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.remote-session-card:hover {
+  background: rgba(var(--bg-card-hover), 0.8);
+  border-color: var(--border-primary);
+}
+
+.remote-session-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-heading);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-session-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.remote-scan-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 32px 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.remote-scan-icon svg {
+  width: 36px;
+  height: 36px;
+  opacity: 0.4;
+}
+
+/* Scan panel */
+.remote-scan-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+/* Scan trigger button */
+.remote-scan-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(var(--bg-card), 0.7);
+  color: var(--text-heading);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.remote-scan-trigger:hover {
+  background: rgba(var(--bg-card-hover), 0.8);
+  border-color: var(--border-primary);
+}
+
+.remote-scan-trigger.small {
+  padding: 5px 12px;
+  font-size: 12px;
+  gap: 5px;
+}
+
+.remote-scan-trigger.small .remote-scan-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.remote-scan-trigger .remote-scan-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.remote-scan-trigger.scanning .remote-scan-icon {
+  animation: remote-scan-spin 1.2s linear infinite;
+}
+
+@keyframes remote-scan-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Scan empty state (centered) */
+.remote-scan-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 0;
+}
+
+/* Scan footer (rescan + status) */
+.remote-scan-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.remote-scan-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.remote-scan-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.remote-scan-card {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(var(--bg-card), 0.7);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: all 0.15s;
+}
+
+.remote-scan-card:hover {
+  background: rgba(var(--bg-card-hover), 0.8);
+  border-color: var(--border-primary);
+}
+
+.remote-scan-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.remote-scan-card-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.remote-scan-card-addr {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  margin-top: 2px;
+}
+
+.remote-scan-card-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.remote-scan-card-badge.verifying {
+  color: var(--text-muted);
+  background: rgba(128, 128, 128, 0.15);
+}
+
+.remote-scan-card-badge.verified {
+  color: #34c759;
+  background: rgba(52, 199, 89, 0.12);
+}
+
+.remote-scan-card-badge.failed {
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.12);
+}
+
+.remote-scan-card .ssh-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  min-width: 0;
+}
+
+.remote-scan-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* Remote session list popup */
+.remote-list-popup {
+  position: fixed;
+  z-index: 9998;
+  background: rgba(var(--bg-toolbar), 0.92);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  width: 280px;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.remote-list-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.remote-list-popup-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-heading);
+}
+
+.remote-list-refresh-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.remote-list-refresh-btn:hover {
+  color: var(--text-heading);
+  background: rgba(var(--bg-button-hover), 0.5);
+}
+
+.remote-list-popup-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.remote-list-server-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 4px 6px 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.remote-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  margin-bottom: 2px;
+}
+
+.remote-list-item:hover {
+  background: rgba(var(--bg-card-hover), 0.8);
+}
+
+.remote-list-item.opened {
+  border-left: 2px solid #22c55e;
+}
+
+.remote-list-item-num {
+  min-width: 18px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: rgba(var(--bg-button), 0.6);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.remote-list-item-id {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-heading);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-list-opened-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.15);
+  padding: 1px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.remote-list-item-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.remote-list-lock {
+  display: flex;
+  align-items: center;
+  color: #f59e0b;
+  flex-shrink: 0;
+}
+.remote-list-item-private {
+  opacity: 0.55;
+}
+.remote-list-item-private:hover {
+  opacity: 0.7;
+}
+.remote-session-private {
+  opacity: 0.55;
+}
+.remote-session-private:hover {
+  opacity: 0.7;
+}
+.remote-list-state-running {
+  color: #22c55e;
+}
+
+.remote-list-state-other {
+  color: var(--text-dim);
+}
+
+.remote-list-empty,
+.remote-list-empty-server {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 12px 0;
+}
+
+.remote-list-loading {
+  text-align: center;
+  padding: 16px 0;
+  color: var(--text-muted);
+}
+
+.remote-list-error {
+  font-size: 11px;
+  color: var(--error-text);
+  padding: 4px 6px;
+}
+
+.remote-list-btn .tab-icon svg {
+  color: #22c55e;
+}
+
+/* Settings: SSH import/export status */
+.settings-ssh-io-status {
+  font-size: 12px;
+  margin-top: 6px;
+  min-height: 16px;
+}
+
+.settings-ssh-io-status.ssh-status-success {
+  color: var(--status-connected-text);
+}
+
+.settings-ssh-io-status.ssh-status-error {
+  color: var(--error-text);
+}
+
+/* Light theme overrides for remote button */
+[data-theme="light"] .home-btn-remote {
+  background: rgba(22, 163, 74, 0.1);
+  color: #16a34a;
+  border-color: rgba(22, 163, 74, 0.3);
+}
+
+[data-theme="light"] .home-btn-remote:hover {
+  background: rgba(22, 163, 74, 0.18);
+  border-color: rgba(22, 163, 74, 0.45);
+}
+

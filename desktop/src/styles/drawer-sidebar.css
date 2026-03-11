@@ -1,0 +1,231 @@
+/* ============================================================================
+   Drawer Tabs (Files / Processes)
+   ============================================================================ */
+.drawer-main-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+
+.drawer-tab {
+  height: calc(var(--file-manager-font-size, 12px) * 2);
+  padding: 0 calc(var(--file-manager-font-size, 12px) * 0.67);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--file-manager-font-size, 12px);
+  font-family: inherit;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+
+.drawer-tab:hover {
+  color: var(--text-primary);
+  background: rgba(var(--bg-button), 0.5);
+}
+
+.drawer-tab.active {
+  color: var(--text-heading);
+  background: rgba(var(--bg-button), 0.8);
+  border-color: var(--border-primary);
+}
+
+.file-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--file-manager-font-size, 12px) * 0.5);
+  flex: 1;
+  min-width: 0;
+}
+
+/* ============================================================================
+   Server Info Sidebar Enhancements
+   ============================================================================ */
+.server-info-conn {
+  margin-bottom: 2px;
+}
+
+.server-info-loading {
+  font-size: calc(var(--file-manager-font-size, 12px) - 1px);
+  color: var(--text-dim);
+  padding: 4px 0;
+}
+
+.server-info-value-small {
+  font-size: calc(var(--file-manager-font-size, 12px) - 1px);
+  color: var(--text-secondary);
+  font-family: 'Menlo', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================================================================
+   System Info Progress Bars
+   ============================================================================ */
+.sysinfo-progress {
+  position: relative;
+  height: 12px;
+  background: rgba(var(--bg-button), 0.6);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.sysinfo-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.sysinfo-progress.warning .sysinfo-progress-fill {
+  background: #e6a700;
+}
+
+.sysinfo-progress.critical .sysinfo-progress-fill {
+  background: #e05050;
+}
+
+.sysinfo-progress-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-family: 'Menlo', monospace;
+  color: var(--text-heading);
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+/* ============================================================================
+   Process List Table
+   ============================================================================ */
+.process-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.process-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--file-manager-font-size, 12px);
+}
+
+.process-table thead th {
+  position: sticky;
+  top: 0;
+  background: rgb(var(--bg-primary));
+  padding: 4px calc(var(--file-manager-font-size, 12px) * 0.8);
+  text-align: left;
+  border-bottom: 1px solid var(--border-primary);
+  font-size: var(--file-manager-font-size, 12px);
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 10;
+  user-select: none;
+}
+
+.process-table tbody td {
+  padding: 3px calc(var(--file-manager-font-size, 12px) * 0.8);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--file-manager-font-size, 12px);
+  font-family: 'Menlo', monospace;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.process-table tbody tr:hover {
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.08);
+}
+
+.process-name {
+  /* 截断样式已由 .process-table tbody td 统一处理 */
+}
+
+.high-usage {
+  color: #e05050;
+  font-weight: 600;
+}
+
+/* ============================================================================
+   Network Chart
+   ============================================================================ */
+.net-chart-section {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.net-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.net-nic-select {
+  height: 18px;
+  padding: 0 4px;
+  background: rgba(var(--bg-button), 0.8);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 10px;
+  font-family: 'Menlo', monospace;
+  cursor: pointer;
+}
+
+.net-nic-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.net-chart-container {
+  margin-top: 2px;
+  border-radius: 3px;
+  background: rgba(var(--bg-button), 0.3);
+  overflow: hidden;
+}
+
+.net-chart-svg {
+  display: block;
+  width: 100%;
+  height: 50px;
+}
+
+.net-chart-empty {
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.net-chart-legend {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  font-size: 10px;
+  font-family: 'Menlo', monospace;
+}
+
+.net-rx {
+  color: #4ade80;
+}
+
+.net-tx {
+  color: #f59e0b;
+}
+

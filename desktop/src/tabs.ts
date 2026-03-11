@@ -74,7 +74,12 @@ class TabManagerClass {
 
   async addTab(port: number, token: string, shell?: string): Promise<void> {
     const raw = await invoke<string>('create_session', { shell: shell || null });
-    const parsed = JSON.parse(raw) as SessionCreateResponse;
+    let parsed: SessionCreateResponse;
+    try {
+      parsed = JSON.parse(raw) as SessionCreateResponse;
+    } catch {
+      throw new Error(`Failed to parse session response: ${raw}`);
+    }
     const sessionId = parsed.id;
     const paneId = generatePaneId();
     const tabId = generateTabId();

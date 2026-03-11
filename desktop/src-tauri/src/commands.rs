@@ -353,7 +353,15 @@ pub async fn create_session(
     }
 
     let resp = req.send().await.map_err(|e| e.to_string())?;
-    resp.text().await.map_err(|e| e.to_string())
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("session create failed ({}): {}", status.as_u16(), body));
+    }
+    if body.is_empty() {
+        return Err("session create failed: empty response".to_string());
+    }
+    Ok(body)
 }
 
 #[derive(serde::Serialize)]
@@ -711,6 +719,7 @@ pub async fn create_ssh_session(
     private_key: Option<String>,
     passphrase: Option<String>,
     trusted_fingerprint: Option<String>,
+    skip_shell_hook: Option<bool>,
 ) -> Result<String, String> {
     let meterm_port = state.port();
     let url = format!("http://127.0.0.1:{}/api/sessions/ssh", meterm_port);
@@ -725,6 +734,7 @@ pub async fn create_ssh_session(
         "private_key": private_key.unwrap_or_default(),
         "passphrase": passphrase.unwrap_or_default(),
         "trusted_fingerprint": trusted_fingerprint.unwrap_or_default(),
+        "skip_shell_hook": skip_shell_hook.unwrap_or(false),
     });
 
     let resp = client
@@ -1696,10 +1706,16 @@ fn normalize_path(path: &str) -> String {
     #[cfg(target_os = "windows")]
     {
         // Convert MSYS/Git Bash paths: /c/Users/... → C:\Users\...
+        // Also handle file:// URL pathname: /C:/Users/... → C:\Users\...
         if let Some(rest) = s.strip_prefix('/') {
             if rest.len() >= 2 && rest.as_bytes()[0].is_ascii_alphabetic() && rest.as_bytes()[1] == b'/' {
                 let drive = rest.as_bytes()[0].to_ascii_uppercase() as char;
                 s = format!("{}:{}", drive, rest[1..].replace('/', "\\"));
+                return s;
+            }
+            if rest.len() >= 3 && rest.as_bytes()[0].is_ascii_alphabetic() && rest.as_bytes()[1] == b':' && (rest.as_bytes()[2] == b'/' || rest.as_bytes()[2] == b'\\') {
+                let drive = rest.as_bytes()[0].to_ascii_uppercase() as char;
+                s = format!("{}:{}", drive, rest[2..].replace('/', "\\"));
                 return s;
             }
         }
@@ -1752,8 +1768,11 @@ pub fn open_path(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
         std::process::Command::new("cmd")
             .args(["/c", "start", "", &resolved])
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| e.to_string())?;
     }

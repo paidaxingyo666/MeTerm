@@ -1,0 +1,274 @@
+/* ============================================================================
+   Split Pane Layout
+   ============================================================================ */
+
+/* Split tree root — overlays the terminal panel */
+.split-root {
+  position: absolute;
+  inset: 0 0 5px 0;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  z-index: 10;
+}
+
+/* Branch containers */
+.split-container.split-horizontal {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.split-container.split-vertical {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Leaf pane */
+.split-pane {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  flex-shrink: 0;
+  flex-grow: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+}
+
+/* Override terminal-container positioning inside split panes:
+   Use relative positioning so the container participates in normal flow
+   and xterm.js fitAddon measures dimensions correctly. */
+.split-pane > .terminal-container {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+}
+
+.split-pane.focused {
+  border-radius: 6px;
+}
+.split-pane.focused::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(106, 164, 255, 0.35);
+  pointer-events: none;
+  z-index: 100;
+}
+
+/* Fix sub-row remainder gap: when container height is not evenly divisible
+   by cellHeight, xterm.js sets .xterm-screen height = rows * cellHeight which
+   is shorter than the container. Force min-height to fill the entire container. */
+.split-pane .xterm-screen { min-height: 100% !important; }
+
+/* File drawer as flex item at panel bottom (shared across all panes) */
+#terminal-panel > .file-drawer {
+  position: relative;
+  bottom: auto;
+  left: auto;
+  right: auto;
+  flex: 0 0 auto;
+  width: 100%;
+  z-index: 100;
+  order: 2;
+}
+
+/* AI bar as flex item at panel bottom (shared across all panes) */
+#terminal-panel > .ai-bar {
+  position: relative;
+  bottom: auto;
+  left: auto;
+  right: auto;
+  flex: 0 0 auto;
+  margin: 0 5px 5px;
+  z-index: 10000;
+  overflow: visible;
+  background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
+  border: 1px solid var(--border-primary);
+  order: 1;
+}
+
+/* Floating button to restore hidden AI bar */
+.ai-bar-floating-show {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  z-index: 300;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border-primary);
+  background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+.ai-bar-floating-show:hover {
+  color: var(--accent);
+  transform: scale(1.2);
+}
+
+.ai-bar-floating-show:active {
+  transform: scale(1.05);
+}
+
+/* ─── AI Model Selector ─── */
+.ai-bar-model-select {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  transition: background-color 0.15s;
+}
+.ai-bar-model-select:hover {
+  background: var(--accent-bg);
+}
+.ai-bar-model-select.open {
+  background: var(--accent-bg);
+}
+
+.ai-bar-model-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80px;
+  opacity: 0.85;
+}
+.ai-bar-model-arrow {
+  display: flex;
+  align-items: center;
+  opacity: 0.5;
+  transition: transform 0.15s;
+}
+.ai-bar-model-select.open .ai-bar-model-arrow {
+  transform: rotate(180deg);
+}
+
+.ai-bar-model-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 180px;
+  max-width: 240px;
+  overflow-y: auto;
+  background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  box-shadow: 0 -2px 8px var(--shadow-panel);
+  padding: 3px;
+  z-index: 310;
+  animation: chat-slide-up 0.15s ease-out;
+}
+
+.ai-bar-model-option {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+.ai-bar-model-option:hover {
+  background: var(--accent-bg);
+}
+.ai-bar-model-option.active {
+  background: var(--accent-bg);
+}
+.ai-bar-model-option.active .ai-model-opt-name {
+  color: var(--text-primary);
+}
+
+.ai-model-opt-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-model-opt-desc {
+  font-size: 9px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-bar-model-separator {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 2px 6px;
+  opacity: 0.6;
+}
+/* Resize handles */
+.split-resize-handle {
+  flex-shrink: 0;
+  z-index: 20;
+}
+
+.split-resize-handle.split-resize-horizontal {
+  width: 4px;
+  min-width: 4px;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.split-resize-handle.split-resize-vertical {
+  height: 4px;
+  min-height: 4px;
+  cursor: row-resize;
+  background: transparent;
+}
+
+/* Global state during split resize */
+body.split-resizing,
+body.split-resizing * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+body.split-resizing .split-resize-handle.split-resize-horizontal,
+body.split-resizing .split-resize-handle.split-resize-horizontal ~ * {
+  cursor: col-resize !important;
+}
+
+body.split-resizing .split-resize-handle.split-resize-vertical,
+body.split-resizing .split-resize-handle.split-resize-vertical ~ * {
+  cursor: row-resize !important;
+}
+
+/* Split child wrapper */
+.split-child {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+

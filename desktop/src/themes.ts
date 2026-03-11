@@ -383,6 +383,13 @@ export function resolveIsDark(colorScheme: ColorScheme): boolean {
   return colorScheme === 'dark' || colorScheme === 'darker' || colorScheme === 'navy';
 }
 
+/** Native window background color to prevent white flash before HTML loads. */
+export function windowBgColor(colorScheme: string, resolvedTheme: string): [number, number, number, number] {
+  if (colorScheme === 'darker') return [0x12, 0x12, 0x14, 255];
+  if (resolvedTheme === 'light') return [0xf5, 0xf5, 0xf5, 255];
+  return [0x2d, 0x2d, 0x2d, 255];
+}
+
 export function getEffectiveTheme(settings: AppSettings): string {
   const isDark = resolveIsDark(settings.colorScheme);
   const currentTheme = THEMES[settings.theme];

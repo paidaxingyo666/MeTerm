@@ -1,0 +1,86 @@
+/* ============================================================================
+   Viewer Popup (status bar click)
+   ============================================================================ */
+.viewer-popup {
+  background: rgba(30, 30, 30, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  min-width: 260px;
+  max-width: 360px;
+  max-height: 300px;
+  overflow-y: auto;
+  z-index: 10000;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.viewer-popup-header {
+  padding: 6px 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.viewer-popup-empty {
+  padding: 16px 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.viewer-popup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+}
+.viewer-popup-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.viewer-popup-id {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+  font-size: 11px;
+  min-width: 60px;
+}
+.viewer-popup-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.badge-master { background: rgba(234, 179, 8, 0.2); color: #eab308; }
+.badge-viewer { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+.badge-readonly { background: rgba(107, 114, 128, 0.2); color: #9ca3af; }
+.viewer-popup-ip {
+  flex: 1;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+.viewer-popup-kick {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.viewer-popup-kick:hover {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+[data-theme="light"] .viewer-popup {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+[data-theme="light"] .viewer-popup-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
