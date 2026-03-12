@@ -1,12 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { LogicalPosition } from '@tauri-apps/api/dpi';
 import { TabManager, type Tab } from './tabs';
 import { TerminalRegistry } from './terminal';
 import { DrawerManager } from './drawer';
 import { AICapsuleManager } from './ai-capsule';
 import { type SplitNode, getAllLeaves, findLeafById, generatePaneId } from './split-pane';
+import { jumpServerConfigMap } from './app-state';
 import { createWindowAtPosition } from './window-utils';
 
 interface WindowGeometry {
@@ -28,6 +30,12 @@ export interface TabTransferSessionInfo {
   isRemote?: boolean;
   remoteWsUrl?: string;
   remoteToken?: string;
+  isJumpServer?: boolean;
+  jumpServerInfo?: {
+    config: import('./jumpserver-api').JumpServerConfig;
+    asset: import('./jumpserver-api').JumpServerAsset;
+    account: import('./jumpserver-api').JumpServerAccount;
+  };
 }
 
 export interface TabTransferPayload {
@@ -77,6 +85,8 @@ interface DragState {
   windowGeometries: WindowGeometry[];
   dropIndicator: HTMLElement | null;
   currentTarget: string | null;
+  /** Track which window was last raised to front to avoid repeated setFocus calls */
+  lastRaisedTarget: string | null;
 }
 
 const DRAG_THRESHOLD = 5;
@@ -100,6 +110,12 @@ interface WindowDragState {
 }
 
 let windowDragState: WindowDragState | null = null;
+let windowDragRafPending = false;
+let windowDragTargetX = 0;
+let windowDragTargetY = 0;
+
+/** Label of the window that is being closed after a single-tab merge */
+let singleTabMergeWindowLabel: string | null = null;
 
 function onWindowDragMove(event: PointerEvent): void {
   if (!windowDragState) return;
@@ -114,10 +130,19 @@ function onWindowDragMove(event: PointerEvent): void {
     windowDragState.isDragging = true;
   }
 
-  // Move the window
-  const newX = windowDragState.startWinX + dx;
-  const newY = windowDragState.startWinY + dy;
-  void getCurrentWindow().setPosition(new LogicalPosition(newX, newY));
+  // Move the window (throttled via rAF to prevent jitter).
+  // Always update the target position so the rAF callback uses the latest values.
+  windowDragTargetX = windowDragState.startWinX + dx;
+  windowDragTargetY = windowDragState.startWinY + dy;
+  if (!windowDragRafPending) {
+    windowDragRafPending = true;
+    requestAnimationFrame(() => {
+      windowDragRafPending = false;
+      if (windowDragState) {
+        void getCurrentWindow().setPosition(new LogicalPosition(windowDragTargetX, windowDragTargetY));
+      }
+    });
+  }
 
   // Check if cursor is over another window's tab bar region
   const target = findTargetWindow(event.screenX, event.screenY, windowDragState.windowGeometries, true);
@@ -185,30 +210,9 @@ async function onWindowDragUp(event: PointerEvent): Promise<void> {
 
   console.log('[TAB-DRAG] Single-tab merge: transferring to', target.label);
 
-  // Listen for transfer completion to close this window
-  const unlistenMergeComplete = await listen<TabTransferCompletePayload>('tab-transfer-complete', async (evt) => {
-    if (evt.payload.sourceWindow !== getCurrentWindow().label) return;
-    if (evt.payload.sessionId !== savedSessionId) return;
-
-    console.log('[TAB-DRAG] Single-tab merge complete, closing source window');
-    unlistenMergeComplete();
-
-    // Detach all terminals and cleanup
-    const tab = TabManager.tabs.find((t) => t.id === savedSessionId);
-    if (tab) {
-      const leaves = getAllLeaves(tab.splitRoot);
-      for (const leaf of leaves) {
-        TerminalRegistry.detach(leaf.sessionId);
-        DrawerManager.destroy(leaf.sessionId);
-        AICapsuleManager.destroy(leaf.sessionId);
-      }
-    }
-    TabManager.removeTabWithoutDestroy(savedSessionId);
-
-    // Close the source window
-    await invoke('allow_window_close', { windowLabel: getCurrentWindow().label });
-    await getCurrentWindow().close();
-  });
+  // Mark this window for closure when the persistent tab-transfer-complete handler fires.
+  // This avoids registering a second listener that races with the persistent one.
+  singleTabMergeWindowLabel = getCurrentWindow().label;
 
   await emit('tab-transfer-request', payload);
 }
@@ -225,6 +229,7 @@ function buildTransferPayload(tabId: string, targetLabel: string): TabTransferPa
     if (mt) mt._transferGrace = true;
     const isSSH = DrawerManager.has(leaf.sessionId);
     const sshInfo = isSSH ? DrawerManager.getServerInfo(leaf.sessionId) : undefined;
+    const jsInfo = jumpServerConfigMap.get(leaf.sessionId);
     return {
       sessionId: leaf.sessionId,
       clientId: mt?.clientId || null,
@@ -236,6 +241,8 @@ function buildTransferPayload(tabId: string, targetLabel: string): TabTransferPa
       isRemote: mt?.isRemote || false,
       remoteWsUrl: mt?.remoteWsUrl,
       remoteToken: mt?.remoteToken,
+      isJumpServer: !!jsInfo,
+      jumpServerInfo: jsInfo || undefined,
     };
   });
 
@@ -370,6 +377,7 @@ function onPointerMove(event: PointerEvent): void {
       } satisfies SingleTabDragLeavePayload);
       dragState.currentTarget = null;
     }
+    dragState.lastRaisedTarget = null;
 
     // Show drop indicator for same-window reorder
     const tabBarRect = tabBar.getBoundingClientRect();
@@ -416,7 +424,18 @@ function onPointerMove(event: PointerEvent): void {
       dragState.dropIndicator = null;
     }
 
-    // Check if cursor is over another window's tab bar
+    // Raise overlapping windows: when cursor enters another window's full area,
+    // bring it to front so its tab bar becomes accessible for drop targeting.
+    // This handles the case where window B's tab bar is hidden behind window A.
+    const fullTarget = findTargetWindow(event.screenX, event.screenY, dragState.windowGeometries, false);
+    if (fullTarget && fullTarget.label !== dragState.lastRaisedTarget) {
+      dragState.lastRaisedTarget = fullTarget.label;
+      void WebviewWindow.getByLabel(fullTarget.label).then(w => { if (w) void w.setFocus(); });
+    } else if (!fullTarget) {
+      dragState.lastRaisedTarget = null;
+    }
+
+    // Check if cursor is over another window's tab bar for drop indicator
     const target = findTargetWindow(event.screenX, event.screenY, dragState.windowGeometries, true);
     const prevTarget = dragState.currentTarget;
 
@@ -633,6 +652,7 @@ export function initTabDrag(tabElement: HTMLElement, sessionId: string): void {
       windowGeometries: [],
       dropIndicator: null,
       currentTarget: null,
+      lastRaisedTarget: null,
     };
 
     tabElement.setPointerCapture(event.pointerId);
@@ -715,17 +735,26 @@ export function setupTabTransferListener(
             }
           }
         },
-        (title) => {
-          const existingTab = TabManager.tabs.find((t) => t.id === newTabId);
-          if (existingTab) {
-            const focusedLeaf = findLeafById(existingTab.splitRoot, existingTab.focusedPaneId);
-            if (focusedLeaf && focusedLeaf.sessionId === sess.sessionId) {
-              existingTab.title = title || existingTab.title;
-              TabManager.notify();
-            }
+        sess.isJumpServer
+          ? () => {
+            // JumpServer sessions: keep asset name as tab title, ignore terminal title updates
           }
-        },
+          : (title) => {
+            const existingTab = TabManager.tabs.find((t) => t.id === newTabId);
+            if (existingTab) {
+              const focusedLeaf = findLeafById(existingTab.splitRoot, existingTab.focusedPaneId);
+              if (focusedLeaf && focusedLeaf.sessionId === sess.sessionId) {
+                existingTab.title = title || existingTab.title;
+                TabManager.notify();
+              }
+            }
+          },
       );
+
+      // Restore JumpServer config map so the icon renders correctly
+      if (sess.isJumpServer && sess.jumpServerInfo) {
+        jumpServerConfigMap.set(sess.sessionId, sess.jumpServerInfo);
+      }
 
       // Restore remote session state
       if (sess.isRemote) {
@@ -806,6 +835,15 @@ export function setupTabTransferListener(
 
     // Remove tab without destroying backend session
     TabManager.removeTabWithoutDestroy(payload.sessionId);
+
+    // If this is a single-tab merge, close the window instead of showing home view
+    if (singleTabMergeWindowLabel === currentLabel) {
+      singleTabMergeWindowLabel = null;
+      console.log('[TAB-DRAG] Single-tab merge complete, closing source window');
+      await invoke('allow_window_close', { windowLabel: currentLabel });
+      await getCurrentWindow().close();
+      return;
+    }
 
     // Activate next tab or show home
     if (TabManager.activeTabId) {

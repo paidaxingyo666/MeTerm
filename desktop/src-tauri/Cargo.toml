@@ -1,6 +1,6 @@
 [package]
 name = "meterm"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 
 [lib]
@@ -32,6 +32,13 @@ local-ip-address = "0.6.10"
 hostname = "0.4.2"
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 dirs = "6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.2", features = ["NSWindow", "NSResponder", "NSGraphics"] }
+objc2-foundation = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.55"
 
 [profile.release]
 strip = true

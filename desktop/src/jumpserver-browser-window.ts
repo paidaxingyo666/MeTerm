@@ -8,7 +8,8 @@
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage, t } from './i18n';
 import { escapeHtml } from './status-bar';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { createOverlayScrollbar } from './overlay-scrollbar';
+import { getCurrentWindow, LogicalSize, LogicalPosition } from '@tauri-apps/api/window';
 import { emit, listen } from '@tauri-apps/api/event';
 import {
   type JumpServerConfig,
@@ -86,6 +87,69 @@ const SVG_FOLDER = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
 const SVG_LIST = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`;
 const SVG_CHEVRON_RIGHT = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3.5 1.5L7 5L3.5 8.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const SVG_CHEVRON_DOWN = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 3.5L5 7L8.5 3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const SVG_FILTER = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 3h12L9.5 8.5V12l-3 1.5V8.5L2 3z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" fill="none"/></svg>`;
+const SVG_DOCK_IN = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M10 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 7l5-5M10 2h4v4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+// Snap/dock icon: a window snapping to the right edge
+const SVG_SNAP_DOCK = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2" width="13" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="2" x2="10" y2="14" stroke="currentColor" stroke-width="1.2"/><path d="M6 7l2 1.5L6 10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+// Expand icon: diagonal arrows pointing outward
+const SVG_EXPAND = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M9.5 2H14v4.5M6.5 14H2v-4.5M14 2L9.5 6.5M2 14l4.5-4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+// Shrink icon: diagonal arrows pointing inward
+const SVG_SHRINK = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M14 2l-4.5 4.5M10 2.5V6.5H14M2 14l4.5-4.5M6 13.5V9.5H2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+const DEFAULT_WIDTH = 720;
+const DEFAULT_HEIGHT = 520;
+
+const NARROW_BREAKPOINT = 500;
+
+// Track whether the window is currently in docked mode
+let isDocked = false;
+
+// ── Shrink-and-close animation for custom buttons ──
+let closeAnimating = false;
+function animateShrinkAndClose(win: Awaited<ReturnType<typeof getCurrentWindow>>) {
+  if (closeAnimating) return;
+  closeAnimating = true;
+  const factor = window.devicePixelRatio || 1;
+
+  void (async () => {
+    const size = await win.innerSize();
+    const pos = await win.outerPosition();
+    const fromW = Math.round(size.width / factor);
+    const fromH = Math.round(size.height / factor);
+    const fromX = pos.x / factor;
+    const fromY = pos.y / factor;
+    const minW = 100, minH = 60;
+    const toX = fromX + (fromW - minW) / 2;
+    const toY = fromY + (fromH - minH) / 2;
+
+    const duration = 200;
+    const start = performance.now();
+    const ease = (t: number) => 1 - Math.pow(1 - t, 3);
+
+    const step = async (now: number) => {
+      const elapsed = now - start;
+      const progress = Math.min(elapsed / duration, 1);
+      const e = ease(progress);
+      await win.setPosition(new LogicalPosition(
+        Math.round(fromX + (toX - fromX) * e),
+        Math.round(fromY + (toY - fromY) * e),
+      ));
+      await win.setSize(new LogicalSize(
+        Math.round(fromW + (minW - fromW) * e),
+        Math.round(fromH + (minH - fromH) * e),
+      ));
+      if (progress < 1) {
+        requestAnimationFrame(t => { void step(t); });
+      } else {
+        // Hide immediately then close — no onCloseRequested intercept needed
+        await win.hide();
+        closeAnimating = false;
+        void win.close();
+      }
+    };
+    requestAnimationFrame(t => { void step(t); });
+  })();
+}
 
 // ── Theme ──
 
@@ -134,7 +198,16 @@ export function initJumpServerBrowserWindow(): void {
   const settings = loadSettings();
   setLanguage(settings.language);
   document.documentElement.dataset.theme = resolveThemeAttr(settings.colorScheme);
-  document.documentElement.style.setProperty('--app-window-opacity', '1');
+  // Apply same opacity as main window
+  const opacityVal = Math.max(20, Math.min(100, settings.opacity ?? 100)) / 100;
+  document.documentElement.style.setProperty('--app-window-opacity', `${opacityVal}`);
+  // Clear all anti-flash backgrounds set by index.html to allow true transparency
+  document.documentElement.style.removeProperty('background-color');
+  document.body.style.backgroundColor = 'transparent';
+  // Remove the injected <style>body{background:...}</style> from index.html anti-flash script
+  document.querySelectorAll('style').forEach(el => {
+    if (el.textContent && /^body\s*\{background:/.test(el.textContent)) el.remove();
+  });
   document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);
 
   // Hide main app UI
@@ -163,13 +236,16 @@ export function initJumpServerBrowserWindow(): void {
 
   renderAssetBrowser(config);
 
-  // Listen for theme changes from settings window
+  // Listen for theme/opacity changes from settings window
   void listen('settings-changed', () => {
     const updated = loadSettings();
     setLanguage(updated.language);
     document.documentElement.dataset.theme = resolveThemeAttr(updated.colorScheme);
     const nativeTheme = resolveThemeAttr(updated.colorScheme) === 'light' ? 'light' as const : 'dark' as const;
     void getCurrentWindow().setTheme(nativeTheme);
+    // Sync opacity
+    const newOpacity = Math.max(20, Math.min(100, updated.opacity ?? 100)) / 100;
+    document.documentElement.style.setProperty('--app-window-opacity', `${newOpacity}`);
   });
 }
 
@@ -179,27 +255,193 @@ function renderAssetBrowser(config: JumpServerConfig): void {
   const container = document.createElement('div');
   container.className = 'js-browser-container';
 
-  // Search bar
+  // Search bar (with filter button slot for narrow mode)
   const searchBar = document.createElement('div');
   searchBar.className = 'js-asset-search';
+
+  const filterBtn = document.createElement('button');
+  filterBtn.className = 'js-narrow-filter-btn';
+  filterBtn.innerHTML = SVG_FILTER;
+  filterBtn.title = t('jsAllAssets');
+  searchBar.appendChild(filterBtn);
+
   const searchInput = document.createElement('input');
   searchInput.type = 'text';
   searchInput.className = 'ssh-input';
   searchInput.placeholder = t('jsSearchAssets');
   searchBar.appendChild(searchInput);
+
+  // "Expand/Shrink" button — smart resize relative to default size
+  const expandBtn = document.createElement('button');
+  expandBtn.className = 'js-narrow-filter-btn';
+  expandBtn.innerHTML = SVG_EXPAND;
+  expandBtn.title = 'Expand';
+  expandBtn.style.display = 'flex';
+
+  let snapDockBtnRef: HTMLButtonElement | null = null;
+  let dockInBtnRef: HTMLButtonElement | null = null;
+
+  const updateButtonStates = async () => {
+    const win = getCurrentWindow();
+    const factor = window.devicePixelRatio || 1;
+    const size = await win.innerSize();
+    const w = Math.round(size.width / factor);
+    const h = Math.round(size.height / factor);
+    const isDefault = Math.abs(w - DEFAULT_WIDTH) <= 5 && Math.abs(h - DEFAULT_HEIGHT) <= 5;
+    const isLarger = w > DEFAULT_WIDTH + 5 || h > DEFAULT_HEIGHT + 5;
+
+    // Expand/shrink: hidden at default size or when docked
+    expandBtn.style.display = (isDefault || isDocked) ? 'none' : 'flex';
+    expandBtn.innerHTML = isLarger ? SVG_SHRINK : SVG_EXPAND;
+    expandBtn.title = isLarger ? 'Shrink' : 'Expand';
+
+    // Snap dock: hidden when docked
+    if (snapDockBtnRef) snapDockBtnRef.style.display = isDocked ? 'none' : 'flex';
+
+    // Dock-in (back to main): always visible
+    if (dockInBtnRef) dockInBtnRef.style.display = 'flex';
+  };
+
+  // Animated window resize: easeOutCubic over ~250ms
+  let animating = false;
+  const animateResize = (
+    fromX: number, fromY: number, fromW: number, fromH: number,
+    toX: number, toY: number, toW: number, toH: number,
+    onComplete?: () => void,
+  ) => {
+    if (animating) return;
+    animating = true;
+    const win = getCurrentWindow();
+    const duration = 250;
+    const start = performance.now();
+    const ease = (t: number) => 1 - Math.pow(1 - t, 3); // easeOutCubic
+
+    const step = async (now: number) => {
+      const elapsed = now - start;
+      const progress = Math.min(elapsed / duration, 1);
+      const e = ease(progress);
+
+      const curW = Math.round(fromW + (toW - fromW) * e);
+      const curH = Math.round(fromH + (toH - fromH) * e);
+      const curX = Math.round(fromX + (toX - fromX) * e);
+      const curY = Math.round(fromY + (toY - fromY) * e);
+
+      await win.setPosition(new LogicalPosition(curX, curY));
+      await win.setSize(new LogicalSize(curW, curH));
+
+      if (progress < 1) {
+        requestAnimationFrame(t => { void step(t); });
+      } else {
+        animating = false;
+        void updateButtonStates();
+        onComplete?.();
+      }
+    };
+    requestAnimationFrame(t => { void step(t); });
+  };
+
+  expandBtn.addEventListener('click', async () => {
+    if (animating) return;
+    const win = getCurrentWindow();
+    const factor = window.devicePixelRatio || 1;
+    const size = await win.innerSize();
+    const w = Math.round(size.width / factor);
+    const h = Math.round(size.height / factor);
+
+    // Already at default size (within tolerance) — do nothing
+    if (Math.abs(w - DEFAULT_WIDTH) <= 5 && Math.abs(h - DEFAULT_HEIGHT) <= 5) return;
+
+    const pos = await win.outerPosition();
+    const px = pos.x / factor;
+    const py = pos.y / factor;
+
+    const toX = Math.max(0, Math.round(px - (DEFAULT_WIDTH - w) / 2));
+    const toY = Math.max(0, Math.round(py - (DEFAULT_HEIGHT - h) / 2));
+
+    void animateResize(px, py, w, h, toX, toY, DEFAULT_WIDTH, DEFAULT_HEIGHT);
+  });
+
+  // Update icon when window is resized
+  void getCurrentWindow().listen('tauri://resize', () => { void updateButtonStates(); });
+  void updateButtonStates();
+  searchBar.appendChild(expandBtn);
+
+  // "Snap dock" button — snap browser window to main window's right edge
+  const snapDockBtn = document.createElement('button');
+  snapDockBtnRef = snapDockBtn;
+  snapDockBtn.className = 'js-narrow-filter-btn js-snap-dock-btn';
+  snapDockBtn.innerHTML = SVG_SNAP_DOCK;
+  snapDockBtn.title = 'Snap to main window';
+  snapDockBtn.style.display = 'flex';
+  snapDockBtn.addEventListener('click', () => {
+    if (animating) return;
+    void emit('jumpserver-snap-dock', { configName: config.name });
+  });
+  searchBar.appendChild(snapDockBtn);
+
+  // Listen for snap target from main window — animate to docked position
+  void listen<{ x: number; y: number; w: number; h: number }>('jumpserver-snap-target', async (event) => {
+    if (animating) return;
+    const { x: toX, y: toY, w: toW, h: toH } = event.payload;
+    const win = getCurrentWindow();
+    const factor = window.devicePixelRatio || 1;
+    const size = await win.innerSize();
+    const pos = await win.outerPosition();
+    const fromW = Math.round(size.width / factor);
+    const fromH = Math.round(size.height / factor);
+    const fromX = pos.x / factor;
+    const fromY = pos.y / factor;
+    void animateResize(fromX, fromY, fromW, fromH, toX, toY, toW, toH);
+  });
+
+  // Listen for dock/undock state changes from main window
+  void listen('jumpserver-docked', () => {
+    isDocked = true;
+    void updateButtonStates();
+  });
+  void listen('jumpserver-undocked', () => {
+    isDocked = false;
+    void updateButtonStates();
+  });
+
+  // "Back to main window" button — close popup, open side panel in main window
+  const dockInBtn = document.createElement('button');
+  dockInBtnRef = dockInBtn;
+  dockInBtn.className = 'js-narrow-filter-btn js-dock-in-btn';
+  dockInBtn.innerHTML = SVG_DOCK_IN;
+  dockInBtn.title = 'Back to main window';
+  dockInBtn.style.display = 'flex';
+  dockInBtn.addEventListener('click', () => {
+    if (animating || closeAnimating) return;
+    void emit('jumpserver-dock-to-panel', { configName: config.name });
+    animateShrinkAndClose(getCurrentWindow());
+  });
+  searchBar.appendChild(dockInBtn);
+
   container.appendChild(searchBar);
+
+  // Floating node dropdown (narrow mode)
+  const nodeDropdown = document.createElement('div');
+  nodeDropdown.className = 'js-narrow-node-dropdown';
+  container.appendChild(nodeDropdown);
 
   // Content: sidebar (nodes) + main (assets)
   const content = document.createElement('div');
   content.className = 'js-asset-content';
 
+  const sidebarWrap = document.createElement('div');
+  sidebarWrap.className = 'js-asset-sidebar-wrap';
   const sidebar = document.createElement('div');
   sidebar.className = 'js-asset-sidebar';
   sidebar.innerHTML = `<div class="js-loading">${t('jsLoading')}</div>`;
+  sidebarWrap.appendChild(sidebar);
 
+  const mainWrap = document.createElement('div');
+  mainWrap.className = 'js-asset-main-wrap';
   const main = document.createElement('div');
   main.className = 'js-asset-main';
   main.innerHTML = `<div class="js-loading">${t('jsLoading')}</div>`;
+  mainWrap.appendChild(main);
 
   // Resizable split handle
   const splitHandle = document.createElement('div');
@@ -215,7 +457,7 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       if (!dragging) return;
       const rect = content.getBoundingClientRect();
       const newWidth = Math.max(120, Math.min(ev.clientX - rect.left, rect.width - 200));
-      sidebar.style.width = `${newWidth}px`;
+      sidebarWrap.style.width = `${newWidth}px`;
     };
     const onUp = () => {
       dragging = false;
@@ -227,10 +469,14 @@ function renderAssetBrowser(config: JumpServerConfig): void {
     splitHandle.addEventListener('pointerup', onUp);
   });
 
-  content.appendChild(sidebar);
+  content.appendChild(sidebarWrap);
   content.appendChild(splitHandle);
-  content.appendChild(main);
+  content.appendChild(mainWrap);
   container.appendChild(content);
+
+  // Attach overlay scrollbars (container = wrapper, not viewport)
+  createOverlayScrollbar({ viewport: sidebar, container: sidebarWrap });
+  createOverlayScrollbar({ viewport: main, container: mainWrap });
 
   // Status bar
   const statusBar = document.createElement('div');
@@ -241,10 +487,59 @@ function renderAssetBrowser(config: JumpServerConfig): void {
 
   // State
   let selectedNodeId = '';
+  let selectedNodeName = t('jsAllAssets');
   let currentAssets: JumpServerAsset[] = [];
   let currentPage = 1;
   let totalAssets = 0;
   let searchDebounce: ReturnType<typeof setTimeout> | null = null;
+  let isNarrow = false;
+
+  // Responsive: detect narrow mode via ResizeObserver
+  const ro = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const w = entry.contentRect.width;
+      const wasNarrow = isNarrow;
+      isNarrow = w < NARROW_BREAKPOINT;
+      if (wasNarrow !== isNarrow) {
+        container.classList.toggle('js-narrow', isNarrow);
+        // Re-render asset list to switch between table/cards
+        renderAssetList();
+      }
+    }
+  });
+  ro.observe(container);
+
+  // Filter button toggles floating node dropdown
+  let dropdownOpen = false;
+  filterBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    dropdownOpen = !dropdownOpen;
+    nodeDropdown.classList.toggle('js-dropdown-open', dropdownOpen);
+    filterBtn.classList.toggle('active', dropdownOpen);
+  });
+  // Close dropdown on outside click
+  document.addEventListener('click', () => {
+    if (dropdownOpen) {
+      dropdownOpen = false;
+      nodeDropdown.classList.remove('js-dropdown-open');
+      filterBtn.classList.remove('active');
+    }
+  });
+  nodeDropdown.addEventListener('click', (e) => e.stopPropagation());
+
+  // Node selection handler (shared between sidebar and dropdown)
+  const selectNode = (nodeId: string, nodeName: string) => {
+    selectedNodeId = nodeId;
+    selectedNodeName = nodeName;
+    currentPage = 1;
+    // Update filter button label in narrow mode
+    filterBtn.title = nodeName;
+    loadAssetList();
+    // Close dropdown
+    dropdownOpen = false;
+    nodeDropdown.classList.remove('js-dropdown-open');
+    filterBtn.classList.remove('active');
+  };
 
   // Load nodes
   const loadNodeTree = async () => {
@@ -255,15 +550,16 @@ function renderAssetBrowser(config: JumpServerConfig): void {
         return;
       }
       renderNodes(result.nodes);
+      renderNodeDropdown(result.nodes);
     } catch (err) {
       sidebar.innerHTML = `<div class="js-error">${escapeHtml(String(err))}</div>`;
     }
   };
 
+  // Render sidebar node tree (wide mode)
   const renderNodes = (nodes: JumpServerNode[]) => {
     sidebar.innerHTML = '';
 
-    // Sort nodes by key to ensure proper tree ordering ("0" < "0:1" < "0:1:2" < "0:2")
     const sorted = [...nodes].sort((a, b) => {
       const aParts = (a.key || '').split(':').map(Number);
       const bParts = (b.key || '').split(':').map(Number);
@@ -275,7 +571,6 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       return 0;
     });
 
-    // Build parent-child lookup: key → has children?
     const keySet = new Set(sorted.map(n => n.key || ''));
     const hasChildren = (key: string) => {
       if (!key) return false;
@@ -285,7 +580,6 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       return false;
     };
 
-    // Track expanded state (default: collapsed)
     const expanded = new Set<string>();
 
     // "All assets" item
@@ -296,13 +590,10 @@ function renderAssetBrowser(config: JumpServerConfig): void {
     allItem.onclick = () => {
       sidebar.querySelectorAll('.js-node-item').forEach(n => n.classList.remove('js-node-selected'));
       allItem.classList.add('js-node-selected');
-      selectedNodeId = '';
-      currentPage = 1;
-      loadAssetList();
+      selectNode('', t('jsAllAssets'));
     };
     sidebar.appendChild(allItem);
 
-    // Map of key → DOM element for visibility toggling
     const nodeElements = new Map<string, HTMLElement>();
 
     sorted.forEach(node => {
@@ -326,12 +617,8 @@ function renderAssetBrowser(config: JumpServerConfig): void {
         ${node.assets_amount ? `<span class="js-node-count">${node.assets_amount}</span>` : ''}
       `;
 
-      // Hide child nodes by default (depth > 0 means it's a child)
-      if (depth > 0) {
-        item.style.display = 'none';
-      }
+      if (depth > 0) item.style.display = 'none';
 
-      // Click on chevron toggles expand/collapse
       if (isParent) {
         const chevronEl = item.querySelector('.js-node-chevron')!;
         chevronEl.addEventListener('click', (e) => {
@@ -347,14 +634,10 @@ function renderAssetBrowser(config: JumpServerConfig): void {
         });
       }
 
-      // Click on node selects it (and expands if parent)
       item.addEventListener('click', () => {
         sidebar.querySelectorAll('.js-node-item').forEach(n => n.classList.remove('js-node-selected'));
         item.classList.add('js-node-selected');
-        selectedNodeId = node.id;
-        currentPage = 1;
-        loadAssetList();
-        // Also expand if it's a parent
+        selectNode(node.id, node.name);
         if (isParent && !expanded.has(key)) {
           expanded.add(key);
           const chevronEl = item.querySelector('.js-node-chevron');
@@ -367,23 +650,112 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       sidebar.appendChild(item);
     });
 
-    // Update visibility of child nodes based on expanded state
     const updateNodeVisibility = () => {
       for (const [key, el] of nodeElements) {
         const depth = key.split(':').length - 1;
-        if (depth === 0) {
-          el.style.display = '';
-          continue;
-        }
-        // Check if all ancestor keys are expanded
+        if (depth === 0) { el.style.display = ''; continue; }
         const parts = key.split(':');
         let visible = true;
         for (let i = 1; i < parts.length; i++) {
-          const ancestorKey = parts.slice(0, i).join(':');
-          if (!expanded.has(ancestorKey)) {
-            visible = false;
-            break;
+          if (!expanded.has(parts.slice(0, i).join(':'))) { visible = false; break; }
+        }
+        el.style.display = visible ? '' : 'none';
+      }
+    };
+  };
+
+  // Render floating node dropdown (narrow mode)
+  const renderNodeDropdown = (nodes: JumpServerNode[]) => {
+    nodeDropdown.innerHTML = '';
+
+    const sorted = [...nodes].sort((a, b) => {
+      const aParts = (a.key || '').split(':').map(Number);
+      const bParts = (b.key || '').split(':').map(Number);
+      for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+        const av = aParts[i] ?? -1;
+        const bv = bParts[i] ?? -1;
+        if (av !== bv) return av - bv;
+      }
+      return 0;
+    });
+
+    const keySet = new Set(sorted.map(n => n.key || ''));
+    const hasChildren = (key: string) => {
+      for (const k of keySet) {
+        if (k !== key && k.startsWith(key + ':')) return true;
+      }
+      return false;
+    };
+    const ddExpanded = new Set<string>();
+    const ddElements = new Map<string, HTMLElement>();
+
+    // "All" item
+    const allItem = document.createElement('div');
+    allItem.className = 'js-node-item js-node-selected';
+    allItem.innerHTML = `<span class="js-node-icon">${SVG_LIST}</span><span class="js-node-name">${escapeHtml(t('jsAllAssets'))}</span>`;
+    allItem.onclick = () => {
+      nodeDropdown.querySelectorAll('.js-node-item').forEach(n => n.classList.remove('js-node-selected'));
+      allItem.classList.add('js-node-selected');
+      selectNode('', t('jsAllAssets'));
+    };
+    nodeDropdown.appendChild(allItem);
+
+    sorted.forEach(node => {
+      const key = node.key || '';
+      const depth = key.split(':').length - 1;
+      const isParent = hasChildren(key);
+
+      const item = document.createElement('div');
+      item.className = 'js-node-item';
+      item.style.paddingLeft = `${8 + depth * 14}px`;
+
+      const chevron = isParent
+        ? `<span class="js-node-chevron">${SVG_CHEVRON_RIGHT}</span>`
+        : `<span class="js-node-chevron-spacer"></span>`;
+
+      item.innerHTML = `${chevron}<span class="js-node-icon">${SVG_FOLDER}</span><span class="js-node-name">${escapeHtml(node.name)}</span>${node.assets_amount ? `<span class="js-node-count">${node.assets_amount}</span>` : ''}`;
+
+      if (depth > 0) item.style.display = 'none';
+
+      if (isParent) {
+        const chevronEl = item.querySelector('.js-node-chevron')!;
+        chevronEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (ddExpanded.has(key)) {
+            ddExpanded.delete(key);
+            chevronEl.innerHTML = SVG_CHEVRON_RIGHT;
+          } else {
+            ddExpanded.add(key);
+            chevronEl.innerHTML = SVG_CHEVRON_DOWN;
           }
+          updateDdVisibility();
+        });
+      }
+
+      item.addEventListener('click', () => {
+        nodeDropdown.querySelectorAll('.js-node-item').forEach(n => n.classList.remove('js-node-selected'));
+        item.classList.add('js-node-selected');
+        selectNode(node.id, node.name);
+        if (isParent && !ddExpanded.has(key)) {
+          ddExpanded.add(key);
+          const chevronEl = item.querySelector('.js-node-chevron');
+          if (chevronEl) chevronEl.innerHTML = SVG_CHEVRON_DOWN;
+          updateDdVisibility();
+        }
+      });
+
+      ddElements.set(key, item);
+      nodeDropdown.appendChild(item);
+    });
+
+    const updateDdVisibility = () => {
+      for (const [key, el] of ddElements) {
+        const depth = key.split(':').length - 1;
+        if (depth === 0) { el.style.display = ''; continue; }
+        const parts = key.split(':');
+        let visible = true;
+        for (let i = 1; i < parts.length; i++) {
+          if (!ddExpanded.has(parts.slice(0, i).join(':'))) { visible = false; break; }
         }
         el.style.display = visible ? '' : 'none';
       }
@@ -420,6 +792,19 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       return;
     }
 
+    if (isNarrow) {
+      renderAssetCards();
+    } else {
+      renderAssetTable();
+    }
+
+    statusBar.textContent = `${totalAssets} ${t('jsAssetsTotal')}`;
+    statusBar.style.color = '';
+    renderPagination();
+  };
+
+  // Wide mode: table view
+  const renderAssetTable = () => {
     const table = document.createElement('table');
     table.className = 'js-asset-table';
     const thead = document.createElement('thead');
@@ -428,7 +813,6 @@ function renderAssetBrowser(config: JumpServerConfig): void {
     columns.forEach((label, i) => {
       const th = document.createElement('th');
       th.textContent = label;
-      // Add resize handle on resizable columns (not the last "actions" column)
       if (i < columns.length - 1) {
         const handle = document.createElement('div');
         handle.className = 'js-col-resize';
@@ -483,35 +867,70 @@ function renderAssetBrowser(config: JumpServerConfig): void {
     });
     table.appendChild(tbody);
     main.appendChild(table);
+  };
 
-    statusBar.textContent = `${totalAssets} ${t('jsAssetsTotal')}`;
-    statusBar.style.color = '';
+  // Narrow mode: card view
+  const renderAssetCards = () => {
+    const cardList = document.createElement('div');
+    cardList.className = 'js-narrow-card-list';
 
-    // Pagination
-    if (totalAssets > 50) {
-      const totalPages = Math.ceil(totalAssets / 50);
-      const pagination = document.createElement('div');
-      pagination.className = 'js-pagination';
-      if (currentPage > 1) {
-        const prev = document.createElement('button');
-        prev.className = 'ssh-btn ssh-btn-secondary';
-        prev.textContent = '‹';
-        prev.onclick = () => { currentPage--; loadAssetList(); };
-        pagination.appendChild(prev);
-      }
-      const info = document.createElement('span');
-      info.className = 'js-page-info';
-      info.textContent = `${currentPage} / ${totalPages}`;
-      pagination.appendChild(info);
-      if (currentPage < totalPages) {
-        const next = document.createElement('button');
-        next.className = 'ssh-btn ssh-btn-secondary';
-        next.textContent = '›';
-        next.onclick = () => { currentPage++; loadAssetList(); };
-        pagination.appendChild(next);
-      }
-      main.appendChild(pagination);
+    // Show selected node label
+    if (selectedNodeName && selectedNodeName !== t('jsAllAssets')) {
+      const nodeLabel = document.createElement('div');
+      nodeLabel.className = 'js-narrow-node-label';
+      nodeLabel.innerHTML = `${SVG_FOLDER} <span>${escapeHtml(selectedNodeName)}</span>`;
+      cardList.appendChild(nodeLabel);
     }
+
+    currentAssets.forEach(asset => {
+      const card = document.createElement('div');
+      card.className = 'js-narrow-card';
+      const name = asset.name || asset.address;
+      const platform = asset.platform?.name || '';
+      const comment = asset.comment || '';
+
+      const meta: string[] = [];
+      if (asset.address) meta.push(escapeHtml(asset.address));
+      if (platform) meta.push(escapeHtml(platform));
+
+      card.innerHTML = `
+        <div class="js-narrow-card-body">
+          <div class="js-narrow-card-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
+          <div class="js-narrow-card-meta">${meta.join(' · ')}</div>
+          ${comment ? `<div class="js-narrow-card-comment" title="${escapeHtml(comment)}">${escapeHtml(comment)}</div>` : ''}
+        </div>
+      `;
+      card.addEventListener('dblclick', () => handleAssetConnect(asset));
+      cardList.appendChild(card);
+    });
+    main.appendChild(cardList);
+  };
+
+  // Pagination (shared)
+  const renderPagination = () => {
+    if (totalAssets <= 50) return;
+    const totalPages = Math.ceil(totalAssets / 50);
+    const pagination = document.createElement('div');
+    pagination.className = 'js-pagination';
+    if (currentPage > 1) {
+      const prev = document.createElement('button');
+      prev.className = 'ssh-btn ssh-btn-secondary';
+      prev.textContent = '‹';
+      prev.onclick = () => { currentPage--; loadAssetList(); };
+      pagination.appendChild(prev);
+    }
+    const info = document.createElement('span');
+    info.className = 'js-page-info';
+    info.textContent = `${currentPage} / ${totalPages}`;
+    pagination.appendChild(info);
+    if (currentPage < totalPages) {
+      const next = document.createElement('button');
+      next.className = 'ssh-btn ssh-btn-secondary';
+      next.textContent = '›';
+      next.onclick = () => { currentPage++; loadAssetList(); };
+      pagination.appendChild(next);
+    }
+    main.appendChild(pagination);
   };
 
   // Handle asset connect
@@ -551,20 +970,18 @@ function renderAssetBrowser(config: JumpServerConfig): void {
     }
   };
 
-  // Account selection dialog
+  // Account selection dialog — adaptive to window width
   function showAccountSelection(accounts: JumpServerAccount[]): Promise<JumpServerAccount | null> {
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
-      overlay.className = 'ssh-modal-overlay';
-      overlay.style.zIndex = '10003';
+      overlay.className = 'js-account-overlay';
 
       const dialog = document.createElement('div');
-      dialog.className = 'ssh-modal';
-      dialog.style.maxWidth = '400px';
+      dialog.className = 'js-account-dialog';
 
-      const title = document.createElement('h3');
+      const title = document.createElement('div');
+      title.className = 'js-account-dialog-title';
       title.textContent = t('jsSelectAccount');
-      title.style.margin = '0 0 12px';
       dialog.appendChild(title);
 
       const list = document.createElement('div');
@@ -574,11 +991,9 @@ function renderAssetBrowser(config: JumpServerConfig): void {
         const item = document.createElement('div');
         item.className = 'js-account-item';
         item.innerHTML = `
-          <div class="js-account-info">
-            <span class="js-account-username">${escapeHtml(acc.username)}</span>
-            <span class="js-account-name">${escapeHtml(acc.name)}</span>
-            ${acc.privileged ? '<span class="js-account-badge">root</span>' : ''}
-          </div>
+          <span class="js-account-username">${escapeHtml(acc.username)}</span>
+          <span class="js-account-name">${escapeHtml(acc.name)}</span>
+          ${acc.privileged ? '<span class="js-account-badge">root</span>' : ''}
         `;
         item.onclick = () => { overlay.remove(); resolve(acc); };
         list.appendChild(item);
@@ -587,12 +1002,12 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       dialog.appendChild(list);
 
       const cancelBtn = document.createElement('button');
-      cancelBtn.className = 'ssh-btn ssh-btn-secondary';
-      cancelBtn.style.marginTop = '12px';
+      cancelBtn.className = 'js-account-cancel-btn';
       cancelBtn.textContent = t('sshUnsavedCancel');
       cancelBtn.onclick = () => { overlay.remove(); resolve(null); };
       dialog.appendChild(cancelBtn);
 
+      overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
       overlay.appendChild(dialog);
       document.body.appendChild(overlay);
     });

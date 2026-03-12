@@ -15,6 +15,7 @@ type LocalShellExecutor struct {
 	rows uint16
 
 	shell string
+	cwd   string
 	term  terminal.Terminal
 
 	mu      sync.Mutex
@@ -28,17 +29,16 @@ func NewLocalShellExecutor(cols, rows uint16) *LocalShellExecutor {
 }
 
 func NewLocalShellExecutorWithShell(cols, rows uint16, shell string) *LocalShellExecutor {
+	return NewLocalShellExecutorWithCwd(cols, rows, shell, "")
+}
+
+// NewLocalShellExecutorWithCwd creates a local shell executor with explicit shell and working directory.
+func NewLocalShellExecutorWithCwd(cols, rows uint16, shell, cwd string) *LocalShellExecutor {
 	if shell == "" {
 		shell = os.Getenv("SHELL")
 	}
 	if shell == "" {
 		if runtime.GOOS == "windows" {
-			// On Windows, prefer PowerShell over cmd.exe.
-			// resolveWindowsShell() in pty_windows.go handles the full
-			// priority chain (METERM_WINDOWS_SHELL → pwsh → powershell → cmd).
-			// Here we just need a reasonable default for the executor field;
-			// the actual resolution happens in PTYEngine. Pass empty to let
-			// PTYEngine's resolveWindowsShell() decide.
 			shell = ""
 		} else {
 			shell = "/bin/bash"
@@ -49,6 +49,7 @@ func NewLocalShellExecutorWithShell(cols, rows uint16, shell string) *LocalShell
 		cols:  cols,
 		rows:  rows,
 		shell: shell,
+		cwd:   cwd,
 	}
 }
 
@@ -60,7 +61,7 @@ func (e *LocalShellExecutor) Start() (terminal.Terminal, error) {
 		return nil, fmt.Errorf("executor already started")
 	}
 
-	term, err := terminal.NewPTYEngineWithShell(e.cols, e.rows, e.shell)
+	term, err := terminal.NewPTYEngineWithShellAndCwd(e.cols, e.rows, e.shell, e.cwd)
 	if err != nil {
 		return nil, err
 	}

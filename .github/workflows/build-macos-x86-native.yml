@@ -83,6 +83,39 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+      - name: Install create-dmg
+        run: |
+          if ! command -v create-dmg &>/dev/null; then
+            brew install create-dmg
+          fi
+
+      - name: Build & embed Finder Extension (x86_64)
+        run: |
+          APP_PATH=$(find desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          bash desktop/scripts/build-finder-extension.sh "$APP_PATH"
+
+      # Rebuild DMG after embedding Finder Extension
+      - name: Rebuild DMG with Finder Extension (x86_64)
+        run: |
+          DMG_DIR=desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/dmg
+          APP_PATH=$(find desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          if [ -n "$APP_PATH" ] && [ -d "$DMG_DIR" ]; then
+            APP_NAME=$(basename "$APP_PATH" .app)
+            OLD_DMG=$(find "$DMG_DIR" -name "*.dmg" -maxdepth 1 | head -1)
+            if [ -n "$OLD_DMG" ]; then
+              DMG_NAME=$(basename "$OLD_DMG")
+              rm -f "$OLD_DMG"
+              create-dmg \
+                --volname "$APP_NAME" \
+                --window-size 660 400 \
+                --icon-size 80 \
+                --icon "$APP_NAME.app" 180 170 \
+                --app-drop-link 480 170 \
+                "$DMG_DIR/$DMG_NAME" \
+                "$APP_PATH" || true
+            fi
+          fi
+
       - name: Upload DMG (x86_64)
         uses: actions/upload-artifact@v4
         with:

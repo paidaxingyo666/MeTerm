@@ -129,6 +129,7 @@ export interface Translations {
   noShellsFound: string;
   defaultShell: string;
   defaultShellSetting: string;
+  contextMenuIntegration: string;
   systemDefault: string;
   homeSavedConnections: string;
   homeEditConnection: string;
@@ -241,6 +242,13 @@ export interface Translations {
   shareLink: string;
   shareLinkCopied: string;
   settingsTabSharing: string;
+  settingsTabAbout: string;
+  aboutVersion: string;
+  aboutDescription: string;
+  aboutGitHub: string;
+  aboutLicense: string;
+  aboutCopyright: string;
+  aboutCheckUpdate: string;
   sshExportConnections: string;
   sshImportConnections: string;
   sshExportSuccess: string;
@@ -576,6 +584,7 @@ const translations: Record<Language, Translations> = {
     noShellsFound: 'No shells found',
     defaultShell: 'default',
     defaultShellSetting: 'Default Shell',
+    contextMenuIntegration: 'Add "Open in MeTerm" to context menu',
     systemDefault: 'System Default',
     homeSavedConnections: 'Saved Connections',
     homeEditConnection: 'Edit',
@@ -891,6 +900,13 @@ const translations: Record<Language, Translations> = {
     jsSelectAccount: 'Select Account',
     homeNewJumpServer: 'JumpServer',
     jsSaveAndConnect: 'Save & Connect',
+    settingsTabAbout: 'About',
+    aboutVersion: 'Version',
+    aboutDescription: 'A lightweight multi-session terminal client.',
+    aboutGitHub: 'GitHub',
+    aboutLicense: 'License',
+    aboutCopyright: 'Copyright',
+    aboutCheckUpdate: 'Check for Updates',
   },
   zh: {
     appName: 'MeTerm',
@@ -1021,6 +1037,7 @@ const translations: Record<Language, Translations> = {
     noShellsFound: '未找到可用的 Shell',
     defaultShell: '默认',
     defaultShellSetting: '默认 Shell',
+    contextMenuIntegration: '添加"在 MeTerm 中打开"到右键菜单',
     systemDefault: '跟随系统',
     homeSavedConnections: '已保存的连接',
     homeEditConnection: '编辑',
@@ -1336,6 +1353,13 @@ const translations: Record<Language, Translations> = {
     jsSelectAccount: '选择账户',
     homeNewJumpServer: 'JumpServer',
     jsSaveAndConnect: '保存并连接',
+    settingsTabAbout: '关于',
+    aboutVersion: '版本',
+    aboutDescription: '轻量的多会话终端客户端。',
+    aboutGitHub: 'GitHub',
+    aboutLicense: '许可协议',
+    aboutCopyright: '版权',
+    aboutCheckUpdate: '检查更新',
   },
 };
 

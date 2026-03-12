@@ -158,6 +158,22 @@ func (c *SFTPClient) SSHClient() *ssh.Client {
 	return c.sshClient
 }
 
+// RealPath resolves a path to an absolute path via SFTP server
+func (c *SFTPClient) RealPath(p string) (string, error) {
+	if c.closed.Load() {
+		return "", fmt.Errorf("client is closed")
+	}
+	return c.sftp.RealPath(p)
+}
+
+// Getwd returns the current working directory of the SFTP session
+func (c *SFTPClient) Getwd() (string, error) {
+	if c.closed.Load() {
+		return "", fmt.Errorf("client is closed")
+	}
+	return c.sftp.Getwd()
+}
+
 // Close closes the SFTP client (idempotent)
 func (c *SFTPClient) Close() error {
 	if c.closed.Swap(true) {

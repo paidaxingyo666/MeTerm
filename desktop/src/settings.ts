@@ -3,6 +3,7 @@ import { t } from './i18n';
 import { createGeneralTab } from './settings-general';
 import { createAITab } from './settings-ai';
 import { createSharingTab } from './settings-sharing';
+import { createAboutTab } from './settings-about';
 
 export interface SettingsPanelOptions {
   settings: AppSettings;
@@ -62,6 +63,7 @@ export function createSettingsPanel(options: SettingsPanelOptions): HTMLDivEleme
     { key: 'general', label: t('settingsTabGeneral') },
     { key: 'ai', label: t('settingsTabAI') },
     { key: 'sharing', label: t('settingsTabSharing') },
+    { key: 'about', label: t('settingsTabAbout') },
   ];
 
   const tabBar = document.createElement('div');
@@ -117,6 +119,11 @@ export function createSettingsPanel(options: SettingsPanelOptions): HTMLDivEleme
   const sharingContent = createSharingTab();
   const tabSharing = tabContents['sharing'];
   tabSharing.appendChild(sharingContent);
+
+  // ========== About Tab ==========
+  const aboutContent = createAboutTab();
+  const tabAbout = tabContents['about'];
+  tabAbout.appendChild(aboutContent);
 
   // Assemble: tab contents into wrapper
   for (const def of tabDefs) {

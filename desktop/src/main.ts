@@ -3,6 +3,7 @@ import './styles/themes.css';
 import './styles/base.css';
 import './styles/toolbar.css';
 import './styles/status-bar.css';
+import './styles/overlay-scrollbar.css';
 import './styles/terminal.css';
 import './styles/update.css';
 import './styles/home.css';
@@ -53,6 +54,7 @@ import {
 import {
   setSessionActionsCallbacks,
   closeAllSessions, ensureMeTermReady,
+  createNewSession,
 } from './session-actions';
 import {
   setTabRendererCallbacks,
@@ -126,8 +128,15 @@ async function init(): Promise<void> {
   void migrateSSHCredentials();
   void migrateRemoteCredentials();
 
-  // Setup JumpServer browser window event listener
-  import('./jumpserver-handler').then(({ setupJumpServerEventListener }) => {
+  // Setup JumpServer: restore state from localStorage (only for secondary windows, not on app restart)
+  import('./jumpserver-handler').then(({ setupJumpServerEventListener, restoreActiveJumpServersFromStorage, clearActiveJumpServersStorage }) => {
+    if (currentWindowLabel === 'main') {
+      // First window on app launch — clear stale JumpServer state from previous session
+      clearActiveJumpServersStorage();
+    } else {
+      // Secondary window — restore state from localStorage (main process still alive)
+      restoreActiveJumpServersFromStorage();
+    }
     setupJumpServerEventListener();
   });
   TerminalRegistry.setSettings(settings);
@@ -210,6 +219,17 @@ async function init(): Promise<void> {
   await invoke('mark_window_initialized', { windowLabel: currentWindowLabel });
 
   await ensureMeTermReady();
+
+  // Check if app was launched with a directory path (e.g., from Finder/Explorer context menu)
+  if (currentWindowLabel === 'main') {
+    try {
+      const initialPath = await invoke<string | null>('take_initial_open_path');
+      if (initialPath) {
+        await createNewSession(undefined, initialPath);
+        renderToolbarActions();
+      }
+    } catch { /* ignore */ }
+  }
 
   // Sync discoverable (LAN discovery) state from localStorage to tray menu
   const savedDiscoverable = localStorage.getItem('meterm-discoverable') === '1';

@@ -129,6 +129,15 @@ func handleFileListWithProgress(s *session.Session, sendFn func([]byte) bool, pa
 		return
 	}
 
+	// Resolve relative paths (e.g. ".") to absolute via SFTP RealPath
+	// so the frontend always gets an absolute currentPath for upload/download
+	resolvedPath := req.Path
+	if !path.IsAbs(req.Path) {
+		if absPath, err := s.SFTPClient.RealPath(req.Path); err == nil {
+			resolvedPath = absPath
+		}
+	}
+
 	fileInfos, err := s.SFTPClient.ListDir(req.Path)
 	if err != nil {
 		sendFn(encodeError("LIST_FAILED", fmt.Sprintf("Failed to list directory: %v", err)))
@@ -166,7 +175,7 @@ func handleFileListWithProgress(s *session.Session, sendFn func([]byte) bool, pa
 		}
 
 		resp := protocol.FileListResponse{
-			Path:  req.Path,
+			Path:  resolvedPath,
 			Files: files,
 		}
 		respData, _ := json.Marshal(resp)
@@ -186,7 +195,7 @@ func handleFileListWithProgress(s *session.Session, sendFn func([]byte) bool, pa
 		}
 
 		resp := protocol.FileListResponse{
-			Path:  req.Path,
+			Path:  resolvedPath,
 			Files: files,
 		}
 		respData, _ := json.Marshal(resp)

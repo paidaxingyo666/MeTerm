@@ -13,7 +13,7 @@ import { StatusBar } from './status-bar';
 import { t } from './i18n';
 import {
   showSSHConnectingPlaceholder, removeSSHConnectingPlaceholder,
-  showReconnectOverlay,
+  showReconnectOverlay, reclaimSessionIds, hideReclaimButton,
 } from './overlays';
 import { activateTab, showHomeView, setViewMode, hideHomeView, hideGalleryView } from './view-manager';
 import { ensureMeTermReady } from './session-actions';
@@ -86,6 +86,9 @@ export async function handleSSHConnect(config: SSHConnectionConfig): Promise<voi
         }
         // Show reconnect overlay when SSH session dies
         if ((status === 'ended' || status === 'disconnected' || status === 'notfound') && sshConfigMap.has(sessionId)) {
+          // Clear any stale reclaim overlay (can appear when WebSocket reconnects with viewer role)
+          reclaimSessionIds.delete(sessionId);
+          hideReclaimButton();
           showReconnectOverlay(sessionId, sshTabId);
         }
       },

@@ -16,18 +16,19 @@ import { SplitPaneManager } from './split-pane';
 import { StatusBar } from './status-bar';
 import {
   showSSHConnectingPlaceholder, removeSSHConnectingPlaceholder,
-  showReconnectOverlay,
+  showReconnectOverlay, reclaimSessionIds, hideReclaimButton,
 } from './overlays';
 import { activateTab, setViewMode, hideHomeView, hideGalleryView } from './view-manager';
 import { ensureMeTermReady } from './session-actions';
 import { renderTabs } from './tab-renderer';
 import { renderToolbarActions } from './toolbar';
 import { createSSHSession, type SSHConnectionConfig } from './ssh';
-import { listen } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   port, authToken,
   sshConfigMap, jumpServerConfigMap,
-  activeJumpServers,
+  activeJumpServers, lastFocusedMainWindowLabel,
 } from './app-state';
 import {
   type JumpServerConfig,
@@ -129,6 +130,8 @@ export async function handleJumpServerConnect(config: JumpServerConfig): Promise
 
     // Register as active JumpServer (enables toolbar button for re-opening asset browser)
     activeJumpServers.set(fullConfig.name, fullConfig);
+    syncActiveJumpServersToStorage();
+    void emit('jumpserver-state-changed');
     renderToolbarActions();
 
     // Step 4: Open standalone asset browser window
@@ -144,7 +147,7 @@ export async function handleJumpServerConnect(config: JumpServerConfig): Promise
  * 1. Create a connection token via JumpServer API
  * 2. SSH to Koko with username=JMS-{token} (bypasses MFA and interactive menu)
  */
-async function connectToAsset(
+export async function connectToAsset(
   config: JumpServerConfig,
   asset: JumpServerAsset,
   account: JumpServerAccount,
@@ -228,6 +231,9 @@ async function connectToAsset(
           TabManager.notify();
         }
         if ((status === 'ended' || status === 'disconnected' || status === 'notfound') && sshConfigMap.has(sessionId)) {
+          // Clear any stale reclaim overlay (can appear when WebSocket reconnects with viewer role)
+          reclaimSessionIds.delete(sessionId);
+          hideReclaimButton();
           showReconnectOverlay(sessionId, jsTabId);
         }
       },
@@ -282,21 +288,93 @@ function getSSHPort(asset: JumpServerAsset): number {
 }
 
 /**
+ * Persist activeJumpServers to localStorage so new windows can inherit the state.
+ * Also emits a Tauri event so existing windows can sync.
+ */
+export function syncActiveJumpServersToStorage(): void {
+  const data: Record<string, JumpServerConfig> = {};
+  for (const [name, config] of activeJumpServers) {
+    data[name] = config;
+  }
+  localStorage.setItem('meterm-active-jumpservers', JSON.stringify(data));
+}
+
+/**
+ * Clear stale JumpServer state from localStorage (called on app restart).
+ */
+export function clearActiveJumpServersStorage(): void {
+  localStorage.removeItem('meterm-active-jumpservers');
+  activeJumpServers.clear();
+}
+
+/**
+ * Restore activeJumpServers from localStorage (for new windows).
+ */
+export function restoreActiveJumpServersFromStorage(): void {
+  const saved = localStorage.getItem('meterm-active-jumpservers');
+  if (!saved) return;
+  try {
+    const data: Record<string, JumpServerConfig> = JSON.parse(saved);
+    for (const [name, config] of Object.entries(data)) {
+      if (!activeJumpServers.has(name)) {
+        activeJumpServers.set(name, config);
+      }
+    }
+  } catch { /* ignore parse errors */ }
+}
+
+/**
  * Listen for asset selection events from the standalone browser window.
  * Should be called once during main window initialization.
+ * Only the last-focused main window will handle the event.
  */
 export function setupJumpServerEventListener(): void {
   void listen<{
     configName: string;
     asset: JumpServerAsset;
     account: JumpServerAccount;
-  }>('jumpserver-connect-asset', (event) => {
+  }>('jumpserver-connect-asset', async (event) => {
+    // Only handle in the last-focused main window to avoid duplicate sessions
+    const currentLabel = getCurrentWindow().label;
+    if (currentLabel !== lastFocusedMainWindowLabel) return;
+
     const { configName, asset, account } = event.payload;
     const config = activeJumpServers.get(configName);
     if (!config) {
       console.error('[jumpserver] No active config found for:', configName);
       return;
     }
+
+    // Focus this main window before creating the session
+    await getCurrentWindow().setFocus();
     void connectToAsset(config, asset, account);
+  });
+
+  // Listen for dock-to-panel event — close popup, open side panel in main window
+  void listen<{ configName: string }>('jumpserver-dock-to-panel', async (event) => {
+    const currentLabel = getCurrentWindow().label;
+    if (currentLabel !== lastFocusedMainWindowLabel) return;
+
+    const { configName } = event.payload;
+    const config = activeJumpServers.get(configName);
+    if (!config) return;
+
+    await getCurrentWindow().setFocus();
+    const { openJumpServerPanel } = await import('./jumpserver-panel');
+    openJumpServerPanel(config);
+  });
+
+  // Listen for snap-dock event — reposition popup to main window's right edge
+  void listen<{ configName: string }>('jumpserver-snap-dock', async (event) => {
+    const currentLabel = getCurrentWindow().label;
+    if (currentLabel !== lastFocusedMainWindowLabel) return;
+
+    const { configName } = event.payload;
+    const config = activeJumpServers.get(configName);
+    if (!config) return;
+
+    await getCurrentWindow().setFocus();
+    const { startDockedBrowser } = await import('./jumpserver-panel');
+    await startDockedBrowser(config);
   });
 }

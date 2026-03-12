@@ -74,6 +74,11 @@ func (sm *SessionManager) CreateWithShell(shell string) (*Session, error) {
 	return sm.CreateWithExecutor(executor.NewLocalShellExecutorWithShell(80, 24, shell))
 }
 
+// CreateWithShellAndCwd allocates a new session with a specific shell and working directory.
+func (sm *SessionManager) CreateWithShellAndCwd(shell, cwd string) (*Session, error) {
+	return sm.CreateWithExecutor(executor.NewLocalShellExecutorWithCwd(80, 24, shell, cwd))
+}
+
 func (sm *SessionManager) CreateWithExecutor(exec executor.Executor) (*Session, error) {
 	if exec == nil {
 		return nil, fmt.Errorf("executor is nil")

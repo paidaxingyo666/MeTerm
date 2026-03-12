@@ -36,6 +36,12 @@ func NewPTYEngine(cols, rows uint16) (*PTYEngine, error) {
 // NewPTYEngineWithShell creates a PTY-backed shell with an explicit shell path.
 // If shell is empty, falls back to $SHELL or /bin/bash.
 func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) {
+	return NewPTYEngineWithShellAndCwd(cols, rows, shell, "")
+}
+
+// NewPTYEngineWithShellAndCwd creates a PTY-backed shell with explicit shell path and working directory.
+// If cwd is empty, falls back to user home directory.
+func NewPTYEngineWithShellAndCwd(cols, rows uint16, shell, cwd string) (*PTYEngine, error) {
 	if shell == "" {
 		shell = os.Getenv("SHELL")
 	}
@@ -84,7 +90,9 @@ func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) 
 		env = append(env, "TERM=xterm-256color")
 	}
 	cmd.Env = env
-	if home, err := os.UserHomeDir(); err == nil {
+	if cwd != "" {
+		cmd.Dir = cwd
+	} else if home, err := os.UserHomeDir(); err == nil {
 		cmd.Dir = home
 	}
 

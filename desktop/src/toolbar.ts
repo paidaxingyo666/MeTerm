@@ -24,7 +24,7 @@ import { createNewSession, createNewPrivateSession, closeAllSessions, createNewW
 import { renderTabs } from './tab-renderer';
 import { pendingUpdateVersion, openUpdaterWindow } from './updater';
 import { settings, isHomeView, isGalleryView, isWindowsPlatform, activeJumpServers } from './app-state';
-import { openJumpServerBrowserWindow } from './jumpserver-browser';
+import { toggleJumpServerPanel, isJumpServerPanelOpen } from './jumpserver-panel';
 import appIconUrl from '../src-tauri/icons/icon.svg';
 
 // ── DOM elements (lazily cached) ──
@@ -299,14 +299,14 @@ export function renderToolbarActions(): void {
   // JumpServer asset browser button — only visible when authenticated JS connections exist
   if (activeJumpServers.size > 0) {
     const jsBtn = document.createElement('button');
-    jsBtn.className = 'toolbar-icon-btn';
+    jsBtn.className = `toolbar-icon-btn${isJumpServerPanelOpen() ? ' active' : ''}`;
     jsBtn.type = 'button';
     jsBtn.title = 'JumpServer';
     jsBtn.innerHTML = `<span class="tab-icon">${icon('jumpserver')}</span>`;
     jsBtn.onclick = () => {
       if (activeJumpServers.size === 1) {
         const config = activeJumpServers.values().next().value;
-        if (config) void openJumpServerBrowserWindow(config);
+        if (config) toggleJumpServerPanel(config);
       } else {
         showJumpServerDropdown(jsBtn);
       }
@@ -406,7 +406,7 @@ function showJumpServerDropdown(anchor: HTMLElement): void {
     item.textContent = name;
     item.onclick = () => {
       cleanup();
-      void openJumpServerBrowserWindow(config);
+      toggleJumpServerPanel(config);
     };
     menu.appendChild(item);
   }

@@ -98,6 +98,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+      - name: Build & embed Finder Extension (arm64)
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          APP_PATH=$(find desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          SIGN_ID="${APPLE_SIGNING_IDENTITY:--}"
+          bash desktop/scripts/build-finder-extension.sh "$APP_PATH" "$SIGN_ID"
+
       # 可选: 代码签名
       - name: Code sign (optional)
         if: ${{ inputs.sign && env.APPLE_SIGNING_IDENTITY != '' }}
@@ -112,12 +120,55 @@ jobs:
             codesign --verify --verbose=2 "$APP_PATH"
           fi
 
+      # Rebuild updater .tar.gz after embedding Finder Extension (Tauri creates it before we embed)
+      - name: Rebuild updater artifact with Finder Extension (arm64)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          BUNDLE_DIR=desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos
+          APP_NAME=$(basename "$(find "$BUNDLE_DIR" -name "*.app" -maxdepth 1 | head -1)")
+          if [ -n "$APP_NAME" ] && [ -f "$BUNDLE_DIR/${APP_NAME}.tar.gz" ]; then
+            echo "Rebuilding ${APP_NAME}.tar.gz with Finder Extension..."
+            cd "$BUNDLE_DIR"
+            rm -f "${APP_NAME}.tar.gz"
+            tar czf "${APP_NAME}.tar.gz" "$APP_NAME"
+            # Re-sign with Tauri updater key if available
+            if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+              npx --yes @tauri-apps/cli signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
+                ${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:+-p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"} \
+                "${APP_NAME}.tar.gz"
+            fi
+          fi
+
       - name: Rename updater artifacts (arm64)
         run: |
           BUNDLE_DIR=desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos
           if [ -f "$BUNDLE_DIR/MeTerm.app.tar.gz" ]; then
             mv "$BUNDLE_DIR/MeTerm.app.tar.gz" "$BUNDLE_DIR/MeTerm_aarch64.app.tar.gz"
             mv "$BUNDLE_DIR/MeTerm.app.tar.gz.sig" "$BUNDLE_DIR/MeTerm_aarch64.app.tar.gz.sig"
+          fi
+
+      # Rebuild DMG after embedding Finder Extension
+      - name: Rebuild DMG with Finder Extension (arm64)
+        run: |
+          DMG_DIR=desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg
+          APP_PATH=$(find desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          if [ -n "$APP_PATH" ] && [ -d "$DMG_DIR" ]; then
+            APP_NAME=$(basename "$APP_PATH" .app)
+            OLD_DMG=$(find "$DMG_DIR" -name "*.dmg" -maxdepth 1 | head -1)
+            if [ -n "$OLD_DMG" ]; then
+              DMG_NAME=$(basename "$OLD_DMG")
+              rm -f "$OLD_DMG"
+              create-dmg \
+                --volname "$APP_NAME" \
+                --window-size 660 400 \
+                --icon-size 80 \
+                --icon "$APP_NAME.app" 180 170 \
+                --app-drop-link 480 170 \
+                "$DMG_DIR/$DMG_NAME" \
+                "$APP_PATH" || true
+            fi
           fi
 
       - name: Upload DMG (arm64)
@@ -209,6 +260,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+      - name: Build & embed Finder Extension (x86_64)
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          APP_PATH=$(find desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          SIGN_ID="${APPLE_SIGNING_IDENTITY:--}"
+          bash desktop/scripts/build-finder-extension.sh "$APP_PATH" "$SIGN_ID"
+
       # 可选: 代码签名
       - name: Code sign (optional)
         if: ${{ inputs.sign && env.APPLE_SIGNING_IDENTITY != '' }}
@@ -223,12 +282,54 @@ jobs:
             codesign --verify --verbose=2 "$APP_PATH"
           fi
 
+      # Rebuild updater .tar.gz after embedding Finder Extension
+      - name: Rebuild updater artifact with Finder Extension (x86_64)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          BUNDLE_DIR=desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos
+          APP_NAME=$(basename "$(find "$BUNDLE_DIR" -name "*.app" -maxdepth 1 | head -1)")
+          if [ -n "$APP_NAME" ] && [ -f "$BUNDLE_DIR/${APP_NAME}.tar.gz" ]; then
+            echo "Rebuilding ${APP_NAME}.tar.gz with Finder Extension..."
+            cd "$BUNDLE_DIR"
+            rm -f "${APP_NAME}.tar.gz"
+            tar czf "${APP_NAME}.tar.gz" "$APP_NAME"
+            if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+              npx --yes @tauri-apps/cli signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
+                ${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:+-p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"} \
+                "${APP_NAME}.tar.gz"
+            fi
+          fi
+
       - name: Rename updater artifacts (x86_64)
         run: |
           BUNDLE_DIR=desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos
           if [ -f "$BUNDLE_DIR/MeTerm.app.tar.gz" ]; then
             mv "$BUNDLE_DIR/MeTerm.app.tar.gz" "$BUNDLE_DIR/MeTerm_x86_64.app.tar.gz"
             mv "$BUNDLE_DIR/MeTerm.app.tar.gz.sig" "$BUNDLE_DIR/MeTerm_x86_64.app.tar.gz.sig"
+          fi
+
+      # Rebuild DMG after embedding Finder Extension
+      - name: Rebuild DMG with Finder Extension (x86_64)
+        run: |
+          DMG_DIR=desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg
+          APP_PATH=$(find desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          if [ -n "$APP_PATH" ] && [ -d "$DMG_DIR" ]; then
+            APP_NAME=$(basename "$APP_PATH" .app)
+            OLD_DMG=$(find "$DMG_DIR" -name "*.dmg" -maxdepth 1 | head -1)
+            if [ -n "$OLD_DMG" ]; then
+              DMG_NAME=$(basename "$OLD_DMG")
+              rm -f "$OLD_DMG"
+              create-dmg \
+                --volname "$APP_NAME" \
+                --window-size 660 400 \
+                --icon-size 80 \
+                --icon "$APP_NAME.app" 180 170 \
+                --app-drop-link 480 170 \
+                "$DMG_DIR/$DMG_NAME" \
+                "$APP_PATH" || true
+            fi
           fi
 
       - name: Upload DMG (x86_64)

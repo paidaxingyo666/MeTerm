@@ -280,6 +280,37 @@ export function createGeneralTab(
   }
   updateFontToggles();
 
+  // --- Context Menu Integration ---
+  const ctxMenuSection = document.createElement('div');
+  ctxMenuSection.className = 'settings-section settings-inline';
+  ctxMenuSection.innerHTML = `
+    <label>${t('contextMenuIntegration')}</label>
+    <label class="settings-toggle">
+      <input type="checkbox" id="context-menu-toggle">
+      <span class="settings-toggle-slider"></span>
+    </label>
+  `;
+  const ctxMenuToggle = ctxMenuSection.querySelector('#context-menu-toggle') as HTMLInputElement;
+
+  // Check initial state
+  invoke<boolean>('is_context_menu_registered').then((registered) => {
+    ctxMenuToggle.checked = registered;
+  }).catch(() => { /* ignore */ });
+
+  ctxMenuToggle.onchange = async () => {
+    try {
+      if (ctxMenuToggle.checked) {
+        await invoke('register_context_menu');
+      } else {
+        await invoke('unregister_context_menu');
+      }
+    } catch (err) {
+      console.error('Context menu toggle failed:', err);
+      ctxMenuToggle.checked = !ctxMenuToggle.checked; // revert on failure
+    }
+  };
+  tabGeneral.appendChild(ctxMenuSection);
+
   // --- Divider: Terminal / Other ---
   const divider2 = document.createElement('hr');
   divider2.className = 'settings-divider';

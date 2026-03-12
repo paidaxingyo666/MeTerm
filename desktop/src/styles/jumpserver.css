@@ -76,11 +76,20 @@
   overflow: hidden;
 }
 
-/* Sidebar (node tree) */
-.js-asset-sidebar {
+/* Sidebar wrapper (for overlay scrollbar positioning) */
+.js-asset-sidebar-wrap {
+  position: relative;
   width: 200px;
   min-width: 160px;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Sidebar (node tree) */
+.js-asset-sidebar {
+  flex: 1;
   overflow-y: auto;
   padding: 6px 0;
 }
@@ -146,6 +155,16 @@
   color: var(--text-secondary);
   margin-left: auto;
   flex-shrink: 0;
+}
+
+/* Main area wrapper */
+.js-asset-main-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
 }
 
 /* Main area (asset table) */
@@ -322,23 +341,24 @@
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: rgb(var(--bg-primary));
+  background: transparent;
   color: var(--text-primary);
-}
-
-html:not(.platform-windows) .js-browser-window-mode {
-  padding-top: 28px;
 }
 
 .js-browser-container {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 28px);
+  height: 100vh;
   padding: 0 12px;
+  background: rgba(var(--bg-primary), var(--app-window-opacity, 1));
+}
+
+html:not(.platform-windows) .js-browser-container {
+  padding-top: 28px;
 }
 
 html.platform-windows .js-browser-container {
-  height: calc(100vh - 33px);
+  padding-top: 33px;
 }
 
 /* macOS overlay drag region (same as settings) */
@@ -366,15 +386,19 @@ html.platform-windows .js-browser-container {
 }
 
 .js-browser-container .js-asset-sidebar {
-  background: rgba(var(--bg-toolbar), 0.5);
+  background: transparent;
 }
 
 .js-browser-container .js-asset-main {
-  background: rgba(var(--bg-toolbar), 0.3);
+  background: transparent;
 }
 
 .js-browser-container .js-asset-table thead th {
-  background: rgba(var(--bg-toolbar), 0.9);
+  background: rgba(var(--bg-primary), 0.85);
+  backdrop-filter: none;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .js-browser-container .js-asset-status {
@@ -434,7 +458,6 @@ html.platform-windows .js-browser-container {
 }
 .js-browser-container .js-asset-table thead th {
   padding: 4px 8px;
-  position: relative;
 }
 
 /* Column resize handle */
@@ -450,4 +473,591 @@ html.platform-windows .js-browser-container {
 .js-col-resize:hover,
 .js-col-resize.active {
   background: var(--accent-primary, rgba(59, 130, 246, 0.5));
+}
+
+/* ============================================================================
+   JumpServer — Embedded Side Panel
+   ============================================================================ */
+
+/* Resize handle between terminal and panel */
+.js-panel-resize-handle {
+  width: 8px;
+  min-width: 8px;
+  margin: 0 -3.5px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+.js-panel-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--border-subtle);
+  transition: width 0.15s, left 0.15s, background 0.15s;
+}
+.js-panel-resize-handle:hover::after,
+.js-panel-resizing .js-panel-resize-handle::after {
+  width: 3px;
+  left: calc(50% - 1px);
+  background: var(--accent-primary, rgba(59, 130, 246, 0.5));
+}
+.js-panel-resizing {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Panel container */
+#jumpserver-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-width: 240px;
+  max-width: 600px;
+  height: 100%;
+  border-left: 1px solid var(--border-subtle);
+  background: rgba(var(--bg-primary), var(--app-window-opacity));
+  overflow: hidden;
+  position: relative;
+}
+#jumpserver-panel .js-narrow-node-dropdown {
+  top: 70px;
+  left: 6px;
+  right: 6px;
+  max-height: 45vh;
+}
+
+/* Panel header */
+.js-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.js-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.js-panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.js-panel-header-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+}
+.js-panel-header-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+[data-theme="light"] .js-panel-header-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* Panel search */
+.js-panel-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.js-panel-search .js-narrow-filter-btn {
+  display: flex;
+  flex-shrink: 0;
+}
+.js-panel-search-input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: rgba(var(--bg-input, 0, 0, 0), 0.3);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+.js-panel-search-input:focus {
+  border-color: var(--accent-primary, #3b82f6);
+}
+.js-panel-search-input::placeholder {
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.35));
+}
+
+/* Panel body */
+.js-panel-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Panel sidebar (node tree) */
+.js-panel-sidebar {
+  flex-shrink: 0;
+  max-height: 35%;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.js-panel-sidebar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.js-panel-sidebar-toggle:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.js-panel-sidebar-toggle svg {
+  flex-shrink: 0;
+}
+.js-panel-node-list {
+  padding: 0 0 4px;
+}
+
+/* Assets list */
+.js-panel-assets {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.js-panel-asset-list {
+  padding: 4px 0;
+}
+.js-panel-asset-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  gap: 8px;
+  cursor: default;
+}
+.js-panel-asset-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+[data-theme="light"] .js-panel-asset-item:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+.js-panel-asset-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+}
+.js-panel-asset-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.js-panel-asset-addr {
+  font-size: 10px;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.4));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.js-panel-connect-btn {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 3px;
+  background: var(--accent-primary, #3b82f6);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.js-panel-asset-item:hover .js-panel-connect-btn {
+  opacity: 1;
+}
+.js-panel-connect-btn:hover {
+  filter: brightness(1.15);
+}
+
+/* Panel status bar */
+.js-panel-status {
+  height: 22px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.4));
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* Panel pagination */
+.js-panel-page-btn {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.js-panel-page-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Panel account picker overlay */
+.js-panel-account-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+.js-panel-account-dialog {
+  background: rgba(var(--bg-toolbar), 0.95);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 12px;
+  width: calc(100% - 32px);
+  max-width: 280px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+.js-panel-account-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.js-panel-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.js-panel-account-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.js-panel-account-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+[data-theme="light"] .js-panel-account-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* ============================================================================
+   JumpServer — Narrow/Docked Window Mode (< 500px)
+   ============================================================================ */
+
+/* Filter button (hidden in wide mode, shown in narrow) */
+.js-narrow-filter-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  background: rgba(var(--bg-toolbar), 0.6);
+  backdrop-filter: blur(12px) saturate(1.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+.js-narrow-filter-btn:hover,
+.js-narrow-filter-btn.active {
+  background: rgba(var(--bg-toolbar), 0.8);
+  color: var(--text-primary);
+}
+[data-theme="light"] .js-narrow-filter-btn:hover,
+[data-theme="light"] .js-narrow-filter-btn.active {
+  background: rgba(var(--bg-toolbar), 0.75);
+}
+
+/* Floating node dropdown (hidden by default) */
+.js-narrow-node-dropdown {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 8px;
+  right: 8px;
+  max-height: 50vh;
+  overflow-y: auto;
+  background: rgba(var(--bg-toolbar), 0.96);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 100;
+  padding: 4px 0;
+}
+.js-narrow-node-dropdown.js-dropdown-open {
+  display: block;
+}
+
+/* Narrow mode: show filter btn, hide sidebar+splitHandle, search row flex */
+.js-narrow .js-narrow-filter-btn {
+  display: flex;
+}
+.js-narrow .js-asset-search {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.js-narrow .js-asset-search .ssh-input {
+  flex: 1;
+  min-width: 0;
+}
+.js-narrow .js-asset-sidebar-wrap,
+.js-narrow .js-split-handle {
+  display: none !important;
+}
+.js-narrow .js-asset-main-wrap {
+  width: 100%;
+}
+
+/* Node label in narrow card list */
+.js-narrow-node-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.js-narrow-node-label svg {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+/* Card list */
+.js-narrow-card-list {
+  padding: 0;
+}
+
+/* Asset card */
+.js-narrow-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.js-narrow-card:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+[data-theme="light"] .js-narrow-card:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+.js-narrow-card:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.js-narrow-card-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.js-narrow-card-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.js-narrow-card-meta {
+  font-size: 10.5px;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.4));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.js-narrow-card-comment {
+  font-size: 10px;
+  color: var(--text-tertiary, rgba(255, 255, 255, 0.3));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+  font-style: italic;
+}
+
+
+/* Dock-in button (always visible in browser window search bar) */
+.js-dock-in-btn {
+  display: flex !important;
+}
+
+/* Search bar layout for browser window with buttons */
+.js-browser-container .js-asset-search {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.js-browser-container .js-asset-search .ssh-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Position dropdown relative to container */
+.js-browser-container {
+  position: relative;
+}
+.js-narrow .js-narrow-node-dropdown {
+  top: 44px;
+}
+html:not(.platform-windows) .js-narrow .js-narrow-node-dropdown {
+  top: 44px;
+}
+
+/* ============================================================================
+   JumpServer — Account Selection Dialog (adaptive)
+   ============================================================================ */
+
+.js-account-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 10003;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.js-account-dialog {
+  background: rgba(var(--bg-toolbar), 0.92);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+  padding: 12px;
+  width: 100%;
+  max-width: 340px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.js-account-dialog-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-heading);
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+/* Account items — compact for narrow windows */
+.js-account-dialog .js-account-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+  overflow: hidden;
+}
+.js-account-dialog .js-account-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+[data-theme="light"] .js-account-dialog .js-account-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+.js-account-dialog .js-account-username {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.js-account-dialog .js-account-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.js-account-cancel-btn {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  height: 28px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.js-account-cancel-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+[data-theme="light"] .js-account-cancel-btn:hover {
+  background: rgba(0, 0, 0, 0.04);
 }

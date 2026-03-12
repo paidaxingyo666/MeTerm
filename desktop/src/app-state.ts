@@ -53,6 +53,10 @@ export let nextRemoteTabNumber = 1;
 export function setNextRemoteTabNumber(v: number): void { nextRemoteTabNumber = v; }
 export function incrementNextRemoteTabNumber(): number { return nextRemoteTabNumber++; }
 
+// ── Last-focused main window tracking (for JumpServer multi-window routing) ──
+export let lastFocusedMainWindowLabel = 'main';
+export function setLastFocusedMainWindowLabel(label: string): void { lastFocusedMainWindowLabel = label; }
+
 // ── Platform detection ──
 export const ua = navigator.userAgent.toLowerCase();
 export const isWindowsPlatform = ua.includes('windows');

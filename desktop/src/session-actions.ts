@@ -69,14 +69,14 @@ export async function doSplitPane(
   }
 }
 
-export async function createNewSession(shell?: string): Promise<void> {
+export async function createNewSession(shell?: string, cwd?: string): Promise<void> {
   const ready = await ensureMeTermReady();
   if (!ready) {
     return;
   }
   // Use configured default shell when no specific shell is requested
   const effectiveShell = shell || settings.defaultShell || undefined;
-  await TabManager.addTab(port, authToken, effectiveShell);
+  await TabManager.addTab(port, authToken, effectiveShell, cwd);
   if (TabManager.activeTabId) {
     await activateTab(TabManager.activeTabId);
     StatusBar.setConnection('connected', 'Local');

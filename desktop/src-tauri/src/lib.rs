@@ -66,11 +66,14 @@ pub struct AppLifecycleState {
     current_language: Mutex<String>,
     discoverable: Mutex<bool>,
     pending_update: Mutex<Option<String>>,
+    /// Path from CLI args — consumed once by frontend on first load.
+    initial_open_path: Mutex<Option<String>>,
 }
 
 impl AppLifecycleState {
-    fn new() -> Self {
+    fn new_with_path(path: Option<String>) -> Self {
         Self {
+            initial_open_path: Mutex::new(path),
             has_open_tabs: Mutex::new(false),
             is_quitting: AtomicBool::new(false),
             last_menu_event: Mutex::new(None),
@@ -132,6 +135,15 @@ impl AppLifecycleState {
         self.initialized_windows
             .lock()
             .map(|guard| guard.contains(label))
+            .unwrap_or(false)
+    }
+
+    /// Returns true if any main (non-utility) window has been initialized.
+    fn has_any_initialized_main_window(&self) -> bool {
+        const UTILITY_WINDOWS: &[&str] = &["settings", "tray-dialog", "updater", "about"];
+        self.initialized_windows
+            .lock()
+            .map(|guard| guard.iter().any(|l| !UTILITY_WINDOWS.contains(&l.as_str())))
             .unwrap_or(false)
     }
 
@@ -500,13 +512,13 @@ fn handle_menu_event(app: &tauri::AppHandle, raw_id: &str) {
 	debug_log!("[DEBUG] Normalized action: {}", action);
 	let lifecycle = app.state::<AppLifecycleState>();
 
-	// Block window-creating actions until the main window has fully initialized.
+	// Block window-creating actions until at least one main window has fully initialized.
 	// During startup, Tauri/Windows may fire spurious menu events that should not
 	// create new windows.
 	if (action == "new_window" || action == "new_terminal" || action == "new_private_terminal")
-		&& !lifecycle.is_window_initialized("main")
+		&& !lifecycle.has_any_initialized_main_window()
 	{
-		debug_log!("[DEBUG] Blocked {} during startup (main window not yet initialized)", action);
+		debug_log!("[DEBUG] Blocked {} during startup (no initialized main window)", action);
 		return;
 	}
 
@@ -518,14 +530,40 @@ fn handle_menu_event(app: &tauri::AppHandle, raw_id: &str) {
 	dispatch_menu_action(app, action);
 }
 
+/// Extract the first directory path from CLI args (skip the binary path at index 0).
+fn extract_open_path(args: &[String]) -> Option<String> {
+    for arg in args.iter().skip(1) {
+        // Skip flags
+        if arg.starts_with('-') {
+            continue;
+        }
+        let path = std::path::Path::new(arg);
+        if path.is_dir() {
+            return Some(arg.clone());
+        }
+        // Also accept files — open terminal at parent directory
+        if path.exists() {
+            if let Some(parent) = path.parent() {
+                return Some(parent.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = *APP_START; // initialize timer
     startup_log_reset();
     startup_log("=== App starting ===");
 
+    // Parse CLI args for "open in terminal" path
+    let cli_args: Vec<String> = std::env::args().collect();
+    let initial_path = extract_open_path(&cli_args);
+    startup_log(&format!("CLI args: {:?}, initial_path: {:?}", cli_args, initial_path));
+
     let meterm = MeTermProcess::new();
-    let lifecycle = AppLifecycleState::new();
+    let lifecycle = AppLifecycleState::new_with_path(initial_path);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -535,6 +573,12 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
+
+                // If the second instance was launched with a path argument, emit open-path event
+                if let Some(path) = extract_open_path(&args) {
+                    startup_log(&format!("Single-instance: emitting open-path: {}", path));
+                    let _ = app.emit("open-path", path);
+                }
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -673,6 +717,8 @@ pub fn run() {
             commands::get_all_window_geometries,
             commands::create_window_at_position,
             commands::get_window_position,
+            commands::dock_child_window,
+            commands::undock_child_window,
             commands::toggle_lan_sharing,
             commands::store_credential,
             commands::get_credential,
@@ -699,6 +745,10 @@ pub fn run() {
             commands::stat_path,
             commands::open_path,
             commands::list_dir_names,
+            commands::take_initial_open_path,
+            commands::register_context_menu,
+            commands::unregister_context_menu,
+            commands::is_context_menu_registered,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application")

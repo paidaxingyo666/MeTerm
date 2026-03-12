@@ -177,6 +177,8 @@ export function showReconnectOverlay(sessionId: string, tabId: string): void {
           }
         },
         (title) => {
+          // JumpServer sessions: keep asset name as tab title, ignore terminal title updates
+          if (jumpServerConfigMap.has(newSessionId)) return;
           const t = TabManager.tabs.find((t) => t.id === tabId);
           if (t) {
             t.title = title || t.title;

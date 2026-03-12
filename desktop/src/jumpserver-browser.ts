@@ -6,7 +6,7 @@
  */
 
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { loadSettings, resolveIsDark, windowBgColor } from './themes';
+import { loadSettings, resolveIsDark } from './themes';
 import { t } from './i18n';
 import { port, authToken } from './app-state';
 import type { JumpServerConfig } from './jumpserver-api';
@@ -41,7 +41,6 @@ export async function openJumpServerBrowserWindow(config: JumpServerConfig): Pro
   };
   const themeStr = resolveTheme(settings.colorScheme);
   const nativeTheme = themeStr === 'light' ? 'light' as const : 'dark' as const;
-  const bgColor = windowBgColor(settings.colorScheme, themeStr);
   const baseUrl = window.location.origin + window.location.pathname;
 
   const win = new WebviewWindow(label, {
@@ -53,13 +52,22 @@ export async function openJumpServerBrowserWindow(config: JumpServerConfig): Pro
     center: true,
     visible: false,
     decorations: !isWindowsPlatform,
-    transparent: false,
+    transparent: true,
     theme: nativeTheme,
-    backgroundColor: bgColor,
+    // No backgroundColor — must be omitted for transparent window to work
     ...(isMac ? { titleBarStyle: 'overlay' as const, hiddenTitle: true } : {}),
   });
 
+  // Window starts hidden (visible:false). Callers control when to show.
+  // For direct open (not docked), show after a brief delay for rendering.
   win.once('tauri://created', () => {
+    // Check if startDockedBrowser will manage visibility (it sets a flag in localStorage)
+    const dockedMode = localStorage.getItem('meterm-js-browser-docked');
+    if (dockedMode === 'true') {
+      localStorage.removeItem('meterm-js-browser-docked');
+      // startDockedBrowser will show the window after positioning
+      return;
+    }
     setTimeout(() => { void win.show().then(() => win.setFocus()); }, 150);
   });
   win.once('tauri://error', (e: unknown) => {

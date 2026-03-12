@@ -320,19 +320,21 @@ func RegisterRoutes(mux *http.ServeMux, sm *session.SessionManager, auth *Authen
 
 func handleCreateSession(sm *session.SessionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Accept optional shell parameter from request body
-		var shell string
+		// Accept optional shell and cwd parameters from request body
+		var shell, cwd string
 		if r.Body != nil && r.ContentLength > 0 {
 			var req struct {
 				Shell string `json:"shell"`
+				Cwd   string `json:"cwd"`
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, 1024)
 			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 				shell = req.Shell
+				cwd = req.Cwd
 			}
 		}
 
-		s, err := sm.CreateWithShell(shell)
+		s, err := sm.CreateWithShellAndCwd(shell, cwd)
 		if err != nil {
 			log.Printf("[handler] session create error: %v", err)
 			w.Header().Set("Content-Type", "application/json")

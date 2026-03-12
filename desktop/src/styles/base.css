@@ -15,3 +15,10 @@ body {
   background: transparent;
 }
 
+#main-content {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+

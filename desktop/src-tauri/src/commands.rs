@@ -342,14 +342,22 @@ pub fn get_pairing_info(state: State<'_, MeTermProcess>) -> Result<String, Strin
 pub async fn create_session(
     state: State<'_, MeTermProcess>,
     shell: Option<String>,
+    cwd: Option<String>,
 ) -> Result<String, String> {
     let port = state.port();
     let url = format!("http://127.0.0.1:{}/api/sessions", port);
     let client = auth_client(&state)?;
 
-    let mut req = client.post(&url);
+    let mut body = serde_json::Map::new();
     if let Some(s) = shell {
-        req = req.json(&serde_json::json!({ "shell": s }));
+        body.insert("shell".into(), serde_json::Value::String(s));
+    }
+    if let Some(c) = cwd {
+        body.insert("cwd".into(), serde_json::Value::String(c));
+    }
+    let mut req = client.post(&url);
+    if !body.is_empty() {
+        req = req.json(&serde_json::Value::Object(body));
     }
 
     let resp = req.send().await.map_err(|e| e.to_string())?;
@@ -1139,6 +1147,47 @@ pub fn get_window_position(window: tauri::Window) -> Result<(f64, f64), String> 
     Ok((pos.x as f64 / scale, pos.y as f64 / scale))
 }
 
+/// Attach a child window to a parent so it follows the parent's movement (macOS native).
+/// On non-macOS platforms this is a no-op.
+#[tauri::command]
+pub fn dock_child_window(app: AppHandle, parent_label: String, child_label: String) -> Result<(), String> {
+    let _parent = app.get_webview_window(&parent_label)
+        .ok_or_else(|| format!("parent window '{}' not found", parent_label))?;
+    let _child = app.get_webview_window(&child_label)
+        .ok_or_else(|| format!("child window '{}' not found", child_label))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSWindow, NSWindowOrderingMode};
+        let parent_ptr = _parent.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
+        let child_ptr = _child.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
+        unsafe {
+            (*parent_ptr).addChildWindow_ordered(&*child_ptr, NSWindowOrderingMode::NSWindowAbove);
+        }
+    }
+    Ok(())
+}
+
+/// Detach a child window from its parent so it can move independently.
+#[tauri::command]
+pub fn undock_child_window(app: AppHandle, parent_label: String, child_label: String) -> Result<(), String> {
+    let _parent = app.get_webview_window(&parent_label)
+        .ok_or_else(|| format!("parent window '{}' not found", parent_label))?;
+    let _child = app.get_webview_window(&child_label)
+        .ok_or_else(|| format!("child window '{}' not found", child_label))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWindow;
+        let parent_ptr = _parent.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
+        let child_ptr = _child.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
+        unsafe {
+            (*parent_ptr).removeChildWindow(&*child_ptr);
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_discoverable_state(app: AppHandle, checked: bool) -> Result<(), String> {
     let lifecycle = app.state::<crate::AppLifecycleState>();
@@ -1153,7 +1202,10 @@ pub fn set_discoverable_state(app: AppHandle, checked: bool) -> Result<(), Strin
 pub fn get_main_window_count(app: AppHandle) -> u32 {
     app.webview_windows()
         .keys()
-        .filter(|k| k.as_str() != "settings")
+        .filter(|k| {
+            let s = k.as_str();
+            s != "settings" && s != "jumpserver-browser" && s != "about"
+        })
         .count() as u32
 }
 
@@ -1786,6 +1838,14 @@ pub fn open_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Take and return the initial open path from CLI args (consumed once).
+#[tauri::command]
+pub fn take_initial_open_path(
+    state: State<'_, AppLifecycleState>,
+) -> Option<String> {
+    state.initial_open_path.lock().ok().and_then(|mut guard| guard.take())
+}
+
 /// List file/directory names in a directory. Returns Vec<(name, is_dir)>.
 #[tauri::command]
 pub fn list_dir_names(path: String) -> Result<Vec<(String, bool)>, String> {
@@ -1798,4 +1858,169 @@ pub fn list_dir_names(path: String) -> Result<Vec<(String, bool)>, String> {
         result.push((name, is_dir));
     }
     Ok(result)
+}
+
+// ── Context Menu Integration ──
+
+/// Register system context menu ("Open in MeTerm") for Finder/Explorer.
+#[tauri::command]
+pub fn register_context_menu() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        register_macos_quick_action()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        register_windows_context_menu()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Err("Context menu registration is not supported on Linux yet".into())
+    }
+}
+
+/// Unregister system context menu.
+#[tauri::command]
+pub fn unregister_context_menu() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        unregister_macos_quick_action()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        unregister_windows_context_menu()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Err("Context menu registration is not supported on Linux yet".into())
+    }
+}
+
+/// Check if context menu is registered.
+#[tauri::command]
+pub fn is_context_menu_registered() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        is_finder_extension_enabled()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::RegKey;
+        use winreg::enums::HKEY_CLASSES_ROOT;
+        RegKey::predef(HKEY_CLASSES_ROOT)
+            .open_subkey(r"Directory\shell\MeTerm")
+            .is_ok()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+const FINDER_EXT_BUNDLE_ID: &str = "com.meterm.dev.finder-extension";
+
+#[cfg(target_os = "macos")]
+fn is_finder_extension_enabled() -> bool {
+    // Check if the extension is registered and enabled via pluginkit
+    let output = std::process::Command::new("pluginkit")
+        .args(["-m", "-i", FINDER_EXT_BUNDLE_ID])
+        .output();
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            // pluginkit -m returns a line with "+" if enabled, "-" if disabled
+            stdout.contains("+")
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn register_macos_quick_action() -> Result<(), String> {
+    // Check if .appex is bundled (release mode)
+    let app_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let appex_exists = app_path
+        .parent() // MacOS
+        .and_then(|p| p.parent()) // Contents
+        .map(|p| p.join("PlugIns/MeTermFinder.appex").exists())
+        .unwrap_or(false);
+
+    if !appex_exists {
+        return Err("Finder Extension 仅在正式构建版本中可用（dev 模式不支持）".into());
+    }
+
+    // Enable the bundled Finder Extension via pluginkit
+    let output = std::process::Command::new("pluginkit")
+        .args(["-e", "use", "-i", FINDER_EXT_BUNDLE_ID])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("pluginkit enable failed: {}", stderr));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn unregister_macos_quick_action() -> Result<(), String> {
+    // Disable the Finder Extension via pluginkit
+    let output = std::process::Command::new("pluginkit")
+        .args(["-e", "ignore", "-i", FINDER_EXT_BUNDLE_ID])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("pluginkit disable failed: {}", stderr));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn register_windows_context_menu() -> Result<(), String> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
+
+    let exe_path = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .to_string();
+
+    // Register for directories: Directory\shell\MeTerm
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let base = r"Software\Classes\Directory\shell\MeTerm";
+    let (key, _) = hkcu.create_subkey(base).map_err(|e| e.to_string())?;
+    key.set_value("", &"Open in MeTerm").map_err(|e| e.to_string())?;
+    key.set_value("Icon", &exe_path).map_err(|e| e.to_string())?;
+
+    let (cmd_key, _) = hkcu.create_subkey(&format!(r"{}\command", base))
+        .map_err(|e| e.to_string())?;
+    cmd_key.set_value("", &format!("\"{}\" \"%V\"", exe_path))
+        .map_err(|e| e.to_string())?;
+
+    // Register for directory background: Directory\Background\shell\MeTerm
+    let bg_base = r"Software\Classes\Directory\Background\shell\MeTerm";
+    let (bg_key, _) = hkcu.create_subkey(bg_base).map_err(|e| e.to_string())?;
+    bg_key.set_value("", &"Open in MeTerm").map_err(|e| e.to_string())?;
+    bg_key.set_value("Icon", &exe_path).map_err(|e| e.to_string())?;
+
+    let (bg_cmd_key, _) = hkcu.create_subkey(&format!(r"{}\command", bg_base))
+        .map_err(|e| e.to_string())?;
+    bg_cmd_key.set_value("", &format!("\"{}\" \"%V\"", exe_path))
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn unregister_windows_context_menu() -> Result<(), String> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+    let _ = hkcu.delete_subkey_all(r"Software\Classes\Directory\shell\MeTerm");
+    let _ = hkcu.delete_subkey_all(r"Software\Classes\Directory\Background\shell\MeTerm");
+
+    Ok(())
 }

@@ -19,8 +19,9 @@ import { updateSSHHomeView, exportConnectionsToJSON, importConnectionsFromJSON, 
 import { showRemoteConnectDialog, type RemoteServerInfo } from './remote';
 import { StatusBar } from './status-bar';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { save, open as openDialog } from '@tauri-apps/plugin-dialog';
 import { confirmSystem, showInfoSystem, showAboutDialog, showHideToTrayDialog, requestQuitWithConfirm, syncTrayLanguage } from './window-lifecycle';
 import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
@@ -64,7 +65,9 @@ import {
   isHomeView, isGalleryView,
   sshConfigMap, remoteInfoMap, sessionProgressMap,
   isWindowsPlatform,
+  setLastFocusedMainWindowLabel,
 } from './app-state';
+import { restoreActiveJumpServersFromStorage } from './jumpserver-handler';
 
 // ── Lazy-cached DOM elements ──────────────────────────────────────
 
@@ -407,6 +410,24 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
     return event.target_window === currentWindowLabel || event.target_window === 'all';
   };
 
+  // ── Last-focused main window tracking (for JumpServer multi-window routing) ──
+  // When this window gains focus, broadcast to all windows
+  void getCurrentWindow().listen('tauri://focus', () => {
+    setLastFocusedMainWindowLabel(currentWindowLabel);
+    void emit('main-window-focused', { label: currentWindowLabel });
+  });
+  // When another main window broadcasts its focus
+  void listen<{ label: string }>('main-window-focused', (event) => {
+    setLastFocusedMainWindowLabel(event.payload.label);
+  });
+
+  // ── Sync activeJumpServers state across windows ──
+  // When another window authenticates a JumpServer, re-read from localStorage
+  void listen('jumpserver-state-changed', () => {
+    restoreActiveJumpServersFromStorage();
+    renderToolbarActions();
+  });
+
   // Handle individual window close (red X button)
   // Must be registered BEFORE ensureMeTermReady() so windows can always be closed
   void listen<{ target_window: string }>('window-close-requested', async (event) => {
@@ -437,10 +458,24 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
       const shouldClose = await confirmSystem(t('confirmCloseWindowWithSessions'));
       if (shouldClose) {
         await closeAllSessions();
+        // Close auxiliary windows when the last main window is closing
+        if (mainWindowCount <= 1) {
+          for (const label of ['jumpserver-browser', 'about']) {
+            const w = await WebviewWindow.getByLabel(label);
+            if (w) void w.close();
+          }
+        }
         await invoke('allow_window_close', { windowLabel: currentWindowLabel });
         await getCurrentWindow().close();
       }
     } else {
+      // Close auxiliary windows when the last main window is closing
+      if (mainWindowCount <= 1) {
+        for (const label of ['jumpserver-browser', 'about']) {
+          const w = await WebviewWindow.getByLabel(label);
+          if (w) void w.close();
+        }
+      }
       await invoke('allow_window_close', { windowLabel: currentWindowLabel });
       await getCurrentWindow().close();
     }
@@ -460,6 +495,18 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
     await getCurrentWindow().show();
     await getCurrentWindow().setFocus();
     await createNewSession();
+    renderToolbarActions();
+  });
+
+  // Open a terminal session at a specific directory (from CLI args or context menu)
+  void listen<string>('open-path', async (event) => {
+    const path = event.payload;
+    if (!path) return;
+    // Only handle on the main window
+    if (getCurrentWindow().label !== 'main') return;
+    await getCurrentWindow().show();
+    await getCurrentWindow().setFocus();
+    await createNewSession(undefined, path);
     renderToolbarActions();
   });
 

@@ -62,6 +62,12 @@ func NewPTYEngine(cols, rows uint16) (*PTYEngine, error) {
 // NewPTYEngineWithShell creates a ConPTY-backed shell with an explicit shell path.
 // If shell is empty, falls back to resolveWindowsShell().
 func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) {
+	return NewPTYEngineWithShellAndCwd(cols, rows, shell, "")
+}
+
+// NewPTYEngineWithShellAndCwd creates a ConPTY-backed shell with explicit shell path and working directory.
+// If cwd is empty, falls back to user home directory.
+func NewPTYEngineWithShellAndCwd(cols, rows uint16, shell, cwd string) (*PTYEngine, error) {
 	var shellPath string
 	var shellArgs []string
 	var err error
@@ -104,7 +110,9 @@ func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) 
 	}
 
 	var workDir string
-	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
+	if cwd != "" {
+		workDir = cwd
+	} else if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
 		workDir = home
 	}
 

@@ -72,8 +72,8 @@ class TabManagerClass {
     }
   }
 
-  async addTab(port: number, token: string, shell?: string): Promise<void> {
-    const raw = await invoke<string>('create_session', { shell: shell || null });
+  async addTab(port: number, token: string, shell?: string, cwd?: string): Promise<void> {
+    const raw = await invoke<string>('create_session', { shell: shell || null, cwd: cwd || null });
     let parsed: SessionCreateResponse;
     try {
       parsed = JSON.parse(raw) as SessionCreateResponse;
