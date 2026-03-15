@@ -1,5 +1,7 @@
 mod commands;
 mod sidecar;
+mod tldr;
+mod vibrancy;
 
 /// Debug logging macro - only emits in debug builds, stripped from release.
 macro_rules! debug_log {
@@ -28,7 +30,7 @@ struct WindowEvent {
 }
 use sidecar::MeTermProcess;
 
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::io::Write;
 
 fn get_log_path() -> Option<std::path::PathBuf> {
@@ -63,6 +65,8 @@ pub struct AppLifecycleState {
     last_menu_event: Mutex<Option<(String, Instant)>>,
     windows_allowed_to_close: Mutex<HashSet<String>>,
     initialized_windows: Mutex<HashSet<String>>,
+    /// Tracks when each window was created for grace period protection
+    window_created_at: Mutex<HashMap<String, Instant>>,
     current_language: Mutex<String>,
     discoverable: Mutex<bool>,
     pending_update: Mutex<Option<String>>,
@@ -79,6 +83,7 @@ impl AppLifecycleState {
             last_menu_event: Mutex::new(None),
             windows_allowed_to_close: Mutex::new(HashSet::new()),
             initialized_windows: Mutex::new(HashSet::new()),
+            window_created_at: Mutex::new(HashMap::new()),
             current_language: Mutex::new("en".to_string()),
             discoverable: Mutex::new(false),
             pending_update: Mutex::new(None),
@@ -151,6 +156,26 @@ impl AppLifecycleState {
         if let Ok(mut guard) = self.initialized_windows.lock() {
             guard.remove(label);
         }
+        if let Ok(mut guard) = self.window_created_at.lock() {
+            guard.remove(label);
+        }
+    }
+
+    /// Record when a window was created (for grace period protection).
+    pub fn track_window_created(&self, label: &str) {
+        if let Ok(mut guard) = self.window_created_at.lock() {
+            guard.insert(label.to_string(), Instant::now());
+        }
+    }
+
+    /// Check if a window was created less than `grace` duration ago.
+    fn is_within_grace_period(&self, label: &str, grace: Duration) -> bool {
+        self.window_created_at
+            .lock()
+            .map(|guard| {
+                guard.get(label).is_some_and(|t| t.elapsed() < grace)
+            })
+            .unwrap_or(false)
     }
 
     pub fn set_language(&self, language: String) {
@@ -230,6 +255,7 @@ fn normalize_menu_id(raw: &str) -> Option<&'static str> {
 		"export_connections" => Some("export_connections"),
 		"lan_discover" => Some("lan_discover"),
 		"check_updates" => Some("check_updates"),
+		"pip_toggle" => Some("pip_toggle"),
 		_ => None,
 	}
 }
@@ -360,6 +386,8 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
 					match builder.build() {
 						Ok(new_window) => {
 							debug_log!("[DEBUG] Successfully created new window: {}", new_window_label);
+							let lifecycle = app.state::<AppLifecycleState>();
+							lifecycle.track_window_created(&new_window_label);
 							let _ = new_window.show();
 							let _ = new_window.set_focus();
 						}
@@ -499,6 +527,10 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
 			let _ = window.set_focus();
 			let _ = app.emit("menu-check-updates", WindowEvent { target_window: "main".to_string() });
 		}
+		"pip_toggle" => {
+			let payload = WindowEvent { target_window: window_label.clone() };
+			let _ = app.emit("menu-pip-toggle", payload);
+		}
 		_ => {}
 	}
 }
@@ -591,6 +623,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(meterm)
         .manage(lifecycle)
+        .manage(tldr::TldrState::new())
         .setup(|app| {
             startup_log("Setup: begin");
 
@@ -600,9 +633,15 @@ pub fn run() {
             {
                 let _ = notify_rust::set_application("com.meterm.dev");
             }
-            // Log all windows that exist at this point
+            // Log all windows that exist at this point and track their creation time
             let win_labels: Vec<String> = app.webview_windows().keys().cloned().collect();
             startup_log(&format!("Setup: existing windows = {:?}", win_labels));
+            {
+                let lifecycle = app.state::<AppLifecycleState>();
+                for lbl in &win_labels {
+                    lifecycle.track_window_created(lbl);
+                }
+            }
 
             let meterm = app.state::<MeTermProcess>();
             let port = match meterm.start(app.handle()) {
@@ -630,6 +669,7 @@ pub fn run() {
             let new_terminal_item = MenuItem::with_id(app, "new_terminal", "New Terminal", true, None::<&str>)?;
             let new_private_terminal_item = MenuItem::with_id(app, "new_private_terminal", "New Private Terminal", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+            let pip_toggle_item = MenuItem::with_id(app, "pip_toggle", "Picture-in-Picture", true, None::<&str>)?;
             let import_connections_item = MenuItem::with_id(app, "import_connections", "Import Connections", true, None::<&str>)?;
             let export_connections_item = MenuItem::with_id(app, "export_connections", "Export Connections", true, None::<&str>)?;
             let close_all_sessions_item = MenuItem::with_id(app, "close_all_sessions", "Close All Sessions", true, None::<&str>)?;
@@ -650,6 +690,7 @@ pub fn run() {
                     &new_terminal_item,
                     &new_private_terminal_item,
                     &settings_item,
+                    &pip_toggle_item,
                     &separator3,
                     &lan_discover_item,
                     &separator2,
@@ -693,6 +734,22 @@ pub fn run() {
             commands::set_app_menu_language(app.handle(), "en")
                 .map_err(|e| format!("Failed to set app menu: {}", e))?;
 
+            // Register minimize-restore anti-flash for vibrancy
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(main_win) = app.get_webview_window("main") {
+                    match vibrancy::register_vibrancy_anti_flash(&main_win) {
+                        Ok(guard) => {
+                            std::mem::forget(guard);
+                            startup_log("Setup: vibrancy anti-flash registered");
+                        }
+                        Err(e) => {
+                            startup_log(&format!("Setup: vibrancy anti-flash failed: {}", e));
+                        }
+                    }
+                }
+            }
+
             startup_log("Setup: complete");
             Ok(())
         })
@@ -714,6 +771,7 @@ pub fn run() {
             commands::hide_main_window,
             commands::allow_window_close,
             commands::mark_window_initialized,
+            commands::track_window_created_ts,
             commands::get_all_window_geometries,
             commands::create_window_at_position,
             commands::get_window_position,
@@ -749,6 +807,13 @@ pub fn run() {
             commands::register_context_menu,
             commands::unregister_context_menu,
             commands::is_context_menu_registered,
+            commands::create_transparent_window,
+            commands::set_window_vibrancy,
+            commands::set_traffic_lights_visible,
+            tldr::tldr_init,
+            tldr::tldr_query,
+            tldr::tldr_status,
+            tldr::tldr_list_commands,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application")
@@ -781,8 +846,17 @@ pub fn run() {
                         // When a utility window is destroyed, skip the main-window check
                         let is_utility = label == "settings" || label == "tray-dialog" || label == "updater" || label == "about";
                         if !is_utility {
+                            const UTIL_LABELS: &[&str] = &["settings", "tray-dialog", "updater", "about"];
+                            let lifecycle = app_handle.state::<AppLifecycleState>();
                             let has_main_windows = app_handle.webview_windows().keys()
-                                .any(|k| k.as_str() != "settings" && k.as_str() != "tray-dialog" && k.as_str() != "updater" && k.as_str() != "about");
+                                .any(|k| {
+                                    let s = k.as_str();
+                                    // Skip utility windows
+                                    if UTIL_LABELS.contains(&s) { return false; }
+                                    // Count windows that are initialized OR still within grace period
+                                    lifecycle.is_window_initialized(s) ||
+                                        lifecycle.is_within_grace_period(s, Duration::from_secs(3))
+                                });
 
                             if !has_main_windows {
                                 // Last main window closed — close all utility windows
@@ -816,9 +890,16 @@ pub fn run() {
                             return;
                         }
 
-                        // Allow close if JS hasn't initialized yet (blank/failed window)
+                        // Allow close if JS hasn't initialized yet (blank/failed window),
+                        // BUT protect windows within a 3-second grace period after creation
+                        // to prevent race conditions where WebView2 hasn't finished loading yet.
                         if !lifecycle.is_window_initialized(&label) {
-                            debug_log!("[DEBUG] Window {} close allowed (not initialized)", label);
+                            if lifecycle.is_within_grace_period(&label, Duration::from_secs(3)) {
+                                api.prevent_close();
+                                debug_log!("[DEBUG] Window {} close prevented (within grace period)", label);
+                                return;
+                            }
+                            debug_log!("[DEBUG] Window {} close allowed (not initialized, past grace period)", label);
                             return;
                         }
 

@@ -15,6 +15,7 @@ export interface AICapsuleInstance {
   history: HistoryEntry[];
   lineBuffer: string;
   unsubInput: (() => void) | null;
+  unsubShellIdle: (() => void) | null;
   historyOpen: boolean;
   // AI chat state
   agent: AIAgent;

@@ -346,11 +346,13 @@ func handleJumpServerConnectionToken() http.HandlerFunc {
 		}
 
 		var req struct {
-			BaseURL   string `json:"base_url"`
-			AssetID   string `json:"asset_id"`
-			Account   string `json:"account"`
-			AccountID string `json:"account_id"`
-			Protocol  string `json:"protocol"`
+			BaseURL      string `json:"base_url"`
+			AssetID      string `json:"asset_id"`
+			Account      string `json:"account"`        // Account.Username
+			AccountName  string `json:"account_name"`   // Account.Name
+			AccountAlias string `json:"account_alias"`  // Account.Alias (v4 uses this — often UUID)
+			AccountID    string `json:"account_id"`     // Account.ID (UUID)
+			Protocol     string `json:"protocol"`
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 2048)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -358,13 +360,13 @@ func handleJumpServerConnectionToken() http.HandlerFunc {
 			return
 		}
 
-		if req.BaseURL == "" || req.AssetID == "" || (req.Account == "" && req.AccountID == "") {
+		if req.BaseURL == "" || req.AssetID == "" || (req.Account == "" && req.AccountName == "" && req.AccountAlias == "" && req.AccountID == "") {
 			http.Error(w, "base_url, asset_id, and account are required", http.StatusBadRequest)
 			return
 		}
 
 		client := getJSClient(req.BaseURL)
-		ct, err := client.CreateConnectionToken(req.AssetID, req.Account, req.AccountID, req.Protocol)
+		ct, err := client.CreateConnectionToken(req.AssetID, req.AccountName, req.Account, req.AccountAlias, req.AccountID, req.Protocol)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)

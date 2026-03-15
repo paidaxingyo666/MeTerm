@@ -8,6 +8,8 @@ import type { ManagedTerminal } from './terminal-types';
 export interface OscHandlerCallbacks {
   /** Called when shell state transitions to idle (OSC 7768) */
   onShellIdle: (sessionId: string) => void;
+  /** Called when Go-installed hook reports its shell type via OSC 7766 meterm_init */
+  onShellTypeDetected?: (sessionId: string, shellType: string) => void;
 }
 
 /**
@@ -34,6 +36,17 @@ export function registerOscHandlers(
     if (sep === -1) return true;
     const markerId = data.slice(0, sep);
     const exitCode = parseInt(data.slice(sep + 1), 10);
+    // Handle Go-installed hook's shell type report (meterm_init marker).
+    // Uses callback to avoid circular dependency (terminal-osc → ai-tools → terminal).
+    if (markerId === 'meterm_init') {
+      const shellTypes = ['bash', 'zsh', 'fish', 'powershell'] as const;
+      const code = isNaN(exitCode) ? -1 : exitCode;
+      if (code >= 0 && code < shellTypes.length) {
+        callbacks.onShellTypeDetected?.(mt.id, shellTypes[code]);
+      }
+      mt.shellState.hookInjected = true;
+      return true;
+    }
     const resolver = mt._oscMarkerResolvers.get(markerId);
     if (resolver) {
       mt._oscMarkerResolvers.delete(markerId);
@@ -77,15 +90,22 @@ export function registerOscHandlers(
   }
 
   // OSC 7768: shell state machine (prompt hook).
-  // The injected __meterm_precmd sends `\033]7768;EXIT_CODE;CWD\007` before each prompt.
+  // The injected __meterm_precmd sends `\033]7768;EXIT_CODE;CWD;LAST_CMD\007` before each prompt.
   terminal.parser.registerOscHandler(7768, (data: string) => {
     const sep = data.indexOf(';');
     if (sep === -1) return true;
     const exitCode = parseInt(data.slice(0, sep), 10);
-    const cwd = data.slice(sep + 1);
+    const rest = data.slice(sep + 1);
+    const sep2 = rest.indexOf(';');
+    const cwd = sep2 === -1 ? rest : rest.slice(0, sep2);
+    const lastCmd = sep2 === -1 ? '' : rest.slice(sep2 + 1);
     mt.shellState.lastExitCode = isNaN(exitCode) ? -1 : exitCode;
     mt.shellState.cwd = cwd;
+    mt.shellState.lastCommand = lastCmd;
     mt.shellState.phase = 'ready';
+    // Mark hook as working on first OSC 7768 — covers both Go-installed
+    // hooks (ZDOTDIR/--rcfile) and frontend-injected hooks.
+    mt.shellState.hookInjected = true;
     if (includePrefetch) {
       prefetchDirCache(cwd);
     }

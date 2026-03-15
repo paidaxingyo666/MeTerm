@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 
 	"github.com/paidaxingyo666/meterm/executor"
+	"github.com/paidaxingyo666/meterm/internal/buildinfo"
 	"github.com/paidaxingyo666/meterm/session"
 	"github.com/paidaxingyo666/meterm/terminal"
 	"github.com/paidaxingyo666/meterm/web"
@@ -587,7 +588,7 @@ func handleInfo(sm *session.SessionManager) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"name":     hostname,
-			"version":  "0.0.3",
+			"version":  buildinfo.Version,
 			"sessions": len(sessions),
 		})
 	}

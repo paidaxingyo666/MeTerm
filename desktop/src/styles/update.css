@@ -11,7 +11,7 @@
   gap: 12px;
   padding: 10px 16px 10px 52px; /* left padding for macOS traffic lights */
   background: rgba(var(--bg-toolbar), 0.97);
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: none;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   font-size: 13px;
@@ -40,28 +40,29 @@
 }
 .update-banner-btn {
   padding: 5px 14px;
-  border-radius: 6px;
+  border-radius: 9999px;
   font-size: 12px;
   font-family: inherit;
   cursor: pointer;
-  border: 1px solid var(--border-subtle);
-  background: transparent;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-primary);
-  transition: background 0.15s ease, border-color 0.15s ease;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.2);
+  transition: background 0.15s, box-shadow 0.15s;
   white-space: nowrap;
 }
 .update-banner-btn:hover {
-  background: rgba(var(--bg-button-hover), 0.6);
-  border-color: var(--border-primary);
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.3);
 }
 .update-banner-btn.primary {
-  background: var(--accent, #4c7eff);
-  color: #fff;
-  border-color: transparent;
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.28);
+  color: var(--accent);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.15);
 }
 .update-banner-btn.primary:hover {
-  filter: brightness(1.1);
-  background: var(--accent, #4c7eff);
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.38);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.25);
 }
 
 /* ── Update modal ────────────────────────────────────────────────────────────── */
@@ -85,9 +86,9 @@
 }
 .update-modal {
   background: rgba(var(--bg-settings), 1);
-  border: 1px solid var(--border-subtle);
+  border: none;
   border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
   width: 440px;
   max-width: calc(100vw - 48px);
   max-height: 80vh;
@@ -118,8 +119,7 @@
   font-size: 12px;
   color: var(--text-dim);
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
 }
 .update-modal-notes-body {
   margin: 0;
@@ -178,26 +178,28 @@
 }
 .update-modal-btn {
   padding: 7px 18px;
-  border-radius: 7px;
+  border-radius: 9999px;
   font-size: 13px;
   font-family: inherit;
   cursor: pointer;
-  border: 1px solid var(--border-subtle);
-  background: transparent;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-primary);
-  transition: background 0.15s ease, border-color 0.15s ease;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.2);
+  transition: background 0.15s, box-shadow 0.15s;
 }
 .update-modal-btn:hover {
-  background: rgba(var(--bg-button-hover), 0.6);
-  border-color: var(--border-primary);
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.3);
 }
 .update-modal-btn.primary {
-  background: var(--accent, #4c7eff);
-  color: #fff;
-  border-color: transparent;
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.28);
+  color: var(--accent);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.15);
 }
 .update-modal-btn.primary:hover {
-  filter: brightness(1.1);
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.38);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.25);
 }
 
 /* ── Update status toast (checking / up-to-date / error) ────────────────────── */
@@ -208,7 +210,7 @@
   transform: translateX(-50%) translateY(12px);
   background: rgba(var(--bg-secondary), 0.92);
   color: var(--text-primary);
-  border: 1px solid rgba(var(--border-color), 0.5);
+  border: none;
   border-radius: 8px;
   padding: 10px 20px;
   font-size: 13px;
@@ -218,7 +220,7 @@
   pointer-events: none;
   transition: opacity 0.2s ease, transform 0.2s ease;
   white-space: nowrap;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.18), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
 }
 .update-toast.visible {
   opacity: 1;
@@ -226,11 +228,9 @@
   pointer-events: auto;
 }
 .update-toast.success {
-  border-color: rgba(80, 180, 100, 0.5);
   color: var(--text-primary);
 }
 .update-toast.error {
-  border-color: rgba(220, 80, 80, 0.5);
   color: #e05252;
 }
 

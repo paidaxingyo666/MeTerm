@@ -1,0 +1,265 @@
+/* file-editor.css — Editor window */
+
+.editor-window-mode {
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#editor-window-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Tab bar — overlaps with overlay titlebar area, like main window toolbar */
+.editor-tab-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  min-height: 32px;
+  box-sizing: border-box;
+  background: rgba(var(--bg-toolbar, 33, 33, 35), var(--app-window-opacity, 1));
+  border-bottom: 1px solid var(--border-toolbar, rgba(128, 128, 128, 0.15));
+  -webkit-user-select: none;
+  user-select: none;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* Drag layer — absolute behind tabs, same as #window-toolbar-drag-layer */
+.editor-tab-bar-drag {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  -webkit-app-region: drag;
+  app-region: drag;
+  pointer-events: auto;
+}
+
+/* Tabs area — sits above drag layer */
+.editor-tabs-area {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 0 78px; /* left padding for macOS traffic lights */
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  z-index: 2;
+  position: relative;
+}
+
+html.platform-windows .editor-tabs-area {
+  padding-left: 8px;
+}
+
+.editor-tabs-area::-webkit-scrollbar {
+  height: 0;
+}
+
+/* Tab buttons need no-drag so clicks work */
+.editor-tabs-area .title-tab {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Content area */
+.editor-content {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  min-height: 0;
+}
+
+/* Per-tab wrapper — fills content area, hidden when inactive */
+.editor-tab-content {
+  position: absolute;
+  inset: 0;
+}
+
+.editor-tab-content .cm-editor,
+.editor-content .cm-editor {
+  height: 100%;
+  font-size: 13px;
+}
+
+.editor-content .cm-editor .cm-gutters {
+  background: transparent;
+  border-right-color: rgba(128, 128, 128, 0.15);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+.editor-content .cm-scroller {
+  overflow: auto;
+}
+
+
+.editor-loading,
+.editor-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 13px;
+  color: var(--text-secondary, #a8a8a8);
+}
+
+.editor-error {
+  color: #e74c3c;
+}
+
+/* Status bar */
+.editor-statusbar {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  min-height: 24px;
+  padding: 0 12px;
+  font-size: 11px;
+  color: var(--text-secondary, #a8a8a8);
+  background: rgba(var(--bg-toolbar, 33, 33, 35), var(--app-window-opacity, 1));
+  border-top: 1px solid var(--border-toolbar, rgba(128, 128, 128, 0.1));
+  white-space: nowrap;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.editor-info { opacity: 0.8; }
+.editor-status { margin-left: auto; opacity: 0.8; }
+
+/* Language selector button in status bar */
+.editor-lang-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #a8a8a8);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.editor-lang-btn:hover {
+  background: rgba(128, 128, 128, 0.2);
+  color: var(--text-primary, #d0d0d0);
+}
+
+/* Save button */
+.editor-save-btn {
+  border: none;
+  background: rgba(128, 128, 128, 0.15);
+  color: var(--text-secondary, #a8a8a8);
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-left: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.editor-save-btn:hover {
+  background: rgba(128, 128, 128, 0.3);
+  color: var(--text-primary, #d0d0d0);
+}
+
+.editor-save-btn.saving {
+  color: #ffb74d;
+}
+
+.editor-save-btn.success {
+  color: #66bb6a;
+  background: rgba(102, 187, 106, 0.12);
+}
+
+.editor-save-btn.error {
+  color: #ef5350;
+  background: rgba(239, 83, 80, 0.12);
+}
+
+/* Language picker popup */
+.editor-lang-picker {
+  position: fixed;
+  z-index: 1000;
+  background: rgba(var(--bg-toolbar, 33, 33, 35), 0.97);
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 6px;
+  padding: 4px 0;
+  max-height: 300px;
+  overflow-y: auto;
+  min-width: 140px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.editor-lang-item {
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-primary, #d0d0d0);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.editor-lang-item:hover {
+  background: rgba(128, 128, 128, 0.15);
+}
+
+.editor-lang-item.active {
+  color: #4fc3f7;
+}
+
+/* Picker scrollbar */
+.editor-lang-picker::-webkit-scrollbar {
+  width: 4px;
+}
+
+.editor-lang-picker::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+
+[data-theme="light"] .editor-lang-picker {
+  background: rgba(var(--bg-toolbar, 238, 238, 240), 0.97);
+}
+
+[data-theme="light"] .editor-lang-picker::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+}
+
+/* Vibrancy — make all areas transparent so system blur shows through */
+html.vibrancy-active .editor-tab-bar {
+  background: rgba(var(--vibrancy-toolbar, var(--bg-toolbar)), var(--vibrancy-tint, 0.55));
+}
+html.vibrancy-active .editor-statusbar {
+  background: rgba(var(--vibrancy-toolbar, var(--bg-toolbar)), var(--vibrancy-tint, 0.55));
+}
+html.vibrancy-active .editor-content .cm-editor {
+  background: transparent;
+}
+html.vibrancy-active .editor-content .cm-editor .cm-activeLineGutter,
+html.vibrancy-active .editor-content .cm-editor .cm-activeLine {
+  background: rgba(128, 128, 128, 0.1);
+}
+html.vibrancy-active .editor-tab-content {
+  background: transparent;
+}
+html.vibrancy-active .editor-content {
+  background: transparent;
+}
+html.vibrancy-active #editor-window-container {
+  background: transparent;
+}

@@ -103,15 +103,18 @@ export async function handleSSHConnect(config: SSHConnectionConfig): Promise<voi
 
     TabManager.notify();
     DrawerManager.create(sessionId, 'ssh');
-
-    // Remove placeholder and activate real terminal
-    removeSSHConnectingPlaceholder();
-    await activateTab(sshTabId);
+    // 必须在 activateTab 之前设置 serverConnectionInfo，
+    // 否则 WebSocket onopen 触发 setWebSocket 时 serverConnectionInfo 还是 null，
+    // 导致 SSH 会话错误地用 '/' 而非 '.' 作为初始路径
     DrawerManager.updateServerInfo(sessionId, {
       host: config.host,
       username: config.username,
       port: config.port
     });
+
+    // Remove placeholder and activate real terminal
+    removeSSHConnectingPlaceholder();
+    await activateTab(sshTabId);
     StatusBar.setConnection('connected', `${config.username}@${config.host}`);
     renderTabs();
   } catch (err) {

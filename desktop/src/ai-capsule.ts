@@ -2,7 +2,11 @@ import { TerminalRegistry } from './terminal';
 import { DrawerManager } from './drawer';
 import { writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { t } from './i18n';
+import { globalCompletionIndex } from './cmd-completion-data';
 import { loadSettings, saveSettings } from './themes';
+import { injectShellHook } from './ai-tools';
+import { createOverlayScrollbar } from './overlay-scrollbar';
+import { jumpServerConfigMap } from './app-state';
 import { AIAgent, AgentCallbacks } from './ai-agent';
 import { escapeHtml } from './status-bar';
 import { resolveActiveModel, resolveModel } from './ai-provider';
@@ -76,6 +80,7 @@ class AICapsuleManagerClass {
       history: this.loadHistory(historyKey),
       lineBuffer: '',
       unsubInput: null,
+      unsubShellIdle: null,
       historyOpen: false,
       agent: new AIAgent(),
       chatPanel: null,
@@ -206,6 +211,7 @@ class AICapsuleManagerClass {
     const chatHistPanel = document.createElement('div');
     chatHistPanel.className = 'ai-bar-chat-history-panel';
     chatHistPanel.style.display = 'none';
+    createOverlayScrollbar({ viewport: chatHistPanel, container: chatHistPanel });
 
     // History button
     const histBtn = document.createElement('button');
@@ -217,6 +223,7 @@ class AICapsuleManagerClass {
     const histPanel = document.createElement('div');
     histPanel.className = 'ai-bar-history-panel';
     histPanel.style.display = 'none';
+    createOverlayScrollbar({ viewport: histPanel, container: histPanel });
 
     bar.appendChild(modelSelect);
     bar.appendChild(inputWrap);
@@ -410,9 +417,11 @@ class AICapsuleManagerClass {
     const messages = document.createElement('div');
     messages.className = 'ai-chat-messages';
 
+    panel.style.position = 'relative';
     panel.appendChild(resizeHandle);
     panel.appendChild(header);
     panel.appendChild(messages);
+    createOverlayScrollbar({ viewport: messages, container: panel });
 
     // Bind context menu on the messages container (event delegation)
     this.bindChatContextMenu(instance, messages);
@@ -803,6 +812,9 @@ class AICapsuleManagerClass {
     instance.lineBuffer = '';
     let escState: 'none' | 'esc' | 'csi' | 'ss3' | 'str_seq' | 'str_esc' = 'none';
 
+    // Track user input for lineBuffer (used by completion), but NOT for history recording.
+    // History is now recorded via shell hook (OSC 7768 lastCommand) which captures the
+    // actual executed command including shell completions.
     instance.unsubInput = TerminalRegistry.onInput(instance.sessionId, (data) => {
       for (const ch of data) {
         const code = ch.charCodeAt(0);
@@ -833,8 +845,13 @@ class AICapsuleManagerClass {
         if (ch === '\x1b') { escState = 'esc'; continue; }
 
         if (ch === '\r' || ch === '\n') {
-          const cmd = instance.lineBuffer.trim();
-          if (cmd) this.addHistory(instance, cmd, 'manual');
+          // Fallback history: when hook is not installed (SSH without injection),
+          // record from lineBuffer. Won't capture Tab completions but works everywhere.
+          const mt = TerminalRegistry.get(instance.sessionId);
+          if (!mt?.shellState.hookInjected && instance.lineBuffer.trim()) {
+            this.addHistory(instance, instance.lineBuffer.trim(), 'manual');
+            globalCompletionIndex.addHistoryEntry(instance.lineBuffer.trim());
+          }
           instance.lineBuffer = '';
         } else if (ch === '\x7f' || ch === '\b') {
           instance.lineBuffer = instance.lineBuffer.slice(0, -1);
@@ -847,6 +864,44 @@ class AICapsuleManagerClass {
         }
       }
     });
+
+    // Record history from shell hook — captures the actual executed command
+    // (including shell completions, unlike the lineBuffer approach).
+    instance.unsubShellIdle = TerminalRegistry.onShellIdle(instance.sessionId, () => {
+      const mt = TerminalRegistry.get(instance.sessionId);
+      const lastCmd = mt?.shellState.lastCommand?.trim();
+      if (lastCmd) {
+        this.addHistory(instance, lastCmd, 'manual');
+        globalCompletionIndex.addHistoryEntry(lastCmd);
+      }
+    });
+
+    // Shell hook injection:
+    // - Local shells: Go sidecar pre-installs via ZDOTDIR/--rcfile (zero frontend involvement)
+    // - SSH/remote: ONLY if user explicitly enabled in Settings > AI (default OFF)
+    //   Industry consensus (iTerm2, VS Code, Windows Terminal): don't auto-inject on SSH.
+    //   Agent still works without hook via OSC 7766 marker fallback.
+    // - JumpServer: never inject (Koko proxy incompatible)
+    const sid = instance.sessionId;
+    if (!jumpServerConfigMap.has(sid) && loadSettings().shellHookInjection) {
+      // User opted in — inject after shell settles (2s of output silence)
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      const tryInject = () => {
+        unsubOutput();
+        const mt = TerminalRegistry.get(sid);
+        if (mt && !mt.shellState.hookInjected) injectShellHook(sid);
+      };
+      const resetTimer = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(tryInject, 2000);
+      };
+      const unsubOutput = TerminalRegistry.onOutput(sid, () => {
+        const mt = TerminalRegistry.get(sid);
+        if (mt?.shellState.hookInjected) { unsubOutput(); return; }
+        resetTimer();
+      });
+      resetTimer();
+    }
   }
 
   // ─── History management (delegated to ai-capsule-history.ts) ──
@@ -1442,6 +1497,7 @@ class AICapsuleManagerClass {
     const inst = this.capsules.get(sessionId);
     if (!inst) return;
     if (inst.unsubInput) inst.unsubInput();
+    if (inst.unsubShellIdle) inst.unsubShellIdle();
     inst.agent.abort();
     inst.element.remove();
     this.capsules.delete(sessionId);

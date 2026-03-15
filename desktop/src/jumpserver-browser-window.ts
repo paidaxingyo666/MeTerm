@@ -7,6 +7,7 @@
 
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage, t } from './i18n';
+import { applyVibrancy } from './appearance';
 import { escapeHtml } from './status-bar';
 import { createOverlayScrollbar } from './overlay-scrollbar';
 import { getCurrentWindow, LogicalSize, LogicalPosition } from '@tauri-apps/api/window';
@@ -201,6 +202,7 @@ export function initJumpServerBrowserWindow(): void {
   // Apply same opacity as main window
   const opacityVal = Math.max(20, Math.min(100, settings.opacity ?? 100)) / 100;
   document.documentElement.style.setProperty('--app-window-opacity', `${opacityVal}`);
+  void applyVibrancy(settings.enableVibrancy);
   // Clear all anti-flash backgrounds set by index.html to allow true transparency
   document.documentElement.style.removeProperty('background-color');
   document.body.style.backgroundColor = 'transparent';

@@ -1,4 +1,7 @@
 import { t } from './i18n';
+import { loadSettings } from './themes';
+import { extractCommand, queryTldr } from './tldr-help';
+import { createTldrCard } from './tldr-card';
 
 export const DANGER_PATTERNS = [
   /\brm\s+(-[^\s]*\s+)*-[^\s]*r/,   // rm -r, rm -rf, rm -fr, etc.
@@ -77,6 +80,22 @@ export function confirmDangerousCommand(cmd: string): Promise<boolean> {
     dialog.appendChild(title);
     dialog.appendChild(msg);
     dialog.appendChild(cmdPreview);
+
+    // Embed tldr help if available
+    const settings = loadSettings();
+    if (settings.tldrEnabled) {
+      const cmdName = extractCommand(cmd);
+      if (cmdName) {
+        queryTldr(cmdName).then((result) => {
+          if (result.found && result.page) {
+            const card = createTldrCard(result.page, { compact: true });
+            card.style.marginTop = '8px';
+            dialog.insertBefore(card, actions);
+          }
+        }).catch(() => { /* ignore */ });
+      }
+    }
+
     dialog.appendChild(actions);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);

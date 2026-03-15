@@ -130,7 +130,8 @@ function buildSystemPrompt(ctx: TerminalContext, hasTools: boolean): string {
 9. When suggesting commands in text (not via tool calls), put each command in its own \`\`\`bash block — one command per block, NO comments inside the block.
 10. For monitoring running commands or handling interactive prompts (Y/n, password, etc.), use watch_terminal to observe output and send_input to respond. This enables auto-interaction with installers, package managers, and other interactive programs.
 11. web_search (if available): Only use when the user asks to search, you encounter an unknown error/command, or need real-time info. Do NOT search for basic knowledge. Always specify relevant sites when the context is clear.
-12. ${langInstr}`
+12. command_help (if available): Use to look up command syntax, flags, and usage examples from the tldr database. Useful when you need to recall exact syntax for a command.
+13. ${langInstr}`
     : `Instructions:
 1. Each shell command MUST be in its own separate \`\`\`bash code block — one command per block, never combine multiple commands in a single block.
 2. NEVER put comments or non-executable text inside \`\`\`bash blocks. All explanations go in plain text outside the code blocks.
@@ -443,11 +444,11 @@ export class ToolAgent {
         }))
       : [];
 
-    // Inject shell integration hook on first tool-enabled interaction
+    // Inject shell integration hook on first tool-enabled interaction (synchronous, non-blocking).
     if (useTools) {
       const mt = TerminalRegistry.get(sessionId);
       if (mt && !mt.shellState.hookInjected) {
-        await injectShellHook(sessionId);
+        injectShellHook(sessionId);
       }
     }
 
@@ -743,14 +744,17 @@ export class ToolAgent {
     return this.safeExecute(handler, args, toolCtx);
   }
 
-  /** Execute a tool handler with error boundary. */
+  /** Execute a tool handler with error boundary + 60s timeout. */
   private async safeExecute(
     handler: { execute: (args: Record<string, unknown>, ctx: ReturnType<typeof buildToolContext>) => Promise<string> },
     args: Record<string, unknown>,
     ctx: ReturnType<typeof buildToolContext>,
   ): Promise<{ result: string; isError: boolean }> {
     try {
-      const result = await handler.execute(args, ctx);
+      const toolTimeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Tool execution timed out (60s)')), 60_000),
+      );
+      const result = await Promise.race([handler.execute(args, ctx), toolTimeout]);
       return { result, isError: false };
     } catch (e) {
       return { result: (e as Error).message, isError: true };

@@ -162,10 +162,19 @@ func (s *Session) AddClient(client *Client) error {
 }
 
 // RemoveClient disconnects a client but keeps it for grace-period reconnection.
-func (s *Session) RemoveClient(clientID string) {
+// connGen is the connection generation at the time the goroutine started; if the
+// client has since been reconnected (generation changed), this is a stale cleanup
+// and the disconnect is skipped. Pass 0 to force unconditional disconnect.
+func (s *Session) RemoveClient(clientID string, connGen uint64) {
 	s.mu.Lock()
 	client, ok := s.Clients[clientID]
 	if !ok {
+		s.mu.Unlock()
+		return
+	}
+
+	// Skip if the client was reconnected after this goroutine started.
+	if connGen > 0 && client.ConnGen() != connGen {
 		s.mu.Unlock()
 		return
 	}
@@ -207,8 +216,13 @@ func (s *Session) ReconnectClient(clientID string, conn *websocket.Conn, grace t
 		return nil, fmt.Errorf("client not found")
 	}
 	if client.Connected {
-		return nil, fmt.Errorf("client already connected")
+		// Old connection is stale (e.g. system sleep / reconnectAll race).
+		// Force-disconnect old socket so this reconnect can proceed.
+		// The old goroutine's deferred RemoveClient will be a no-op
+		// because connGen has changed.
+		client.Disconnect()
 	}
+	// After force-disconnect, LastSeen is just set to now, so grace check passes.
 	if grace > 0 && !client.LastSeen.IsZero() && time.Since(client.LastSeen) > grace {
 		return nil, fmt.Errorf("client reconnect grace expired")
 	}

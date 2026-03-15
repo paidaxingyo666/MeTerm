@@ -20,13 +20,29 @@ import {
 import {
   sshConfigMap, remoteInfoMap, sessionProgressMap, remoteTabNumbers,
   jumpServerConfigMap,
+  settings,
 } from './app-state';
+import { showQuickHelp } from './tldr-card';
+import { togglePip, isPipActive } from './pip';
 
 export function setupKeyboardShortcuts(): void {
   document.addEventListener('keydown', async (event) => {
     const isMac = navigator.userAgent.includes('Mac');
     const mod = isMac ? event.metaKey : event.ctrlKey;
     if (!mod) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+
+    // PiP toggle (Cmd/Ctrl+Shift+P) — must be checked BEFORE the Windows
+    // terminal-focus guard below, because Ctrl+Shift+P doesn't conflict
+    // with any TUI app and must work even when the terminal is focused.
+    if (key === 'p' && event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      void togglePip();
       return;
     }
 
@@ -42,8 +58,6 @@ export function setupKeyboardShortcuts(): void {
           (target as HTMLElement).closest('.xterm') !== null);
       if (inTerminal) return;
     }
-
-    const key = event.key.toLowerCase();
 
     if (key === 't') {
       event.preventDefault();
@@ -161,6 +175,19 @@ export function setupKeyboardShortcuts(): void {
           renderTabs();
         })();
       }
+      return;
+    }
+
+    // PiP mode: block all other shortcuts except Cmd+W (close) and
+    // Cmd/Ctrl+Shift+P (PiP toggle, handled above the terminal-focus guard)
+    if (isPipActive()) return;
+
+    // ⌘⇧H or Ctrl+Shift+H: tldr quick help
+    if (key === 'h' && event.shiftKey && settings.tldrEnabled) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      showQuickHelp();
       return;
     }
 

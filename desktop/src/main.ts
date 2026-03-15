@@ -23,18 +23,21 @@ import './styles/osc-progress.css';
 import './styles/viewer-popup.css';
 import './styles/toast.css';
 import './styles/misc.css';
+import './styles/pip.css';
 import '@xterm/xterm/css/xterm.css';
 
 import { TabManager } from './tabs';
 import { TerminalRegistry } from './terminal';
 import { loadSettings } from './themes';
-import { applyWindowOpacity, applyAiBarOpacity, applyColorScheme, applyBackgroundImage } from './appearance';
+import { applyWindowOpacity, applyAiBarOpacity, applyColorScheme, applyBackgroundImage, applyVibrancy } from './appearance';
 import { setHomeViewSettings } from './home';
 import { setGalleryViewSettings, setGalleryProgressGetter } from './gallery';
 import { initSettingsWindow } from './settings-window';
 import { initUpdaterWindow } from './updater-window';
 import { initAboutWindow } from './about-window';
 import { initJumpServerBrowserWindow } from './jumpserver-browser-window';
+import { initEditorWindowShell } from './file-editor-init';
+import { initPip } from './pip';
 import { initLanguage, setLanguage } from './i18n';
 import { setSSHConnectHandler, migrateSSHCredentials } from './ssh';
 import { setRemoteConnectHandler, migrateRemoteCredentials } from './remote';
@@ -79,6 +82,8 @@ import {
   isWindowsPlatform,
 } from './app-state';
 import { setupDomEventListeners, setupTauriEventListeners, setupPostReadyEventListeners } from './event-listeners';
+import { initTldr, getTldrCommands } from './tldr-help';
+import { globalCompletionIndex } from './cmd-completion-data';
 
 // Prevent unhandled promise rejections from crashing the Tauri webview.
 // On macOS, unhandled rejections in WKWebView can silently kill the window.
@@ -106,6 +111,13 @@ async function init(): Promise<void> {
   }
   if (params.get('window') === 'jumpserver-browser') {
     initJumpServerBrowserWindow();
+    return;
+  }
+  if (params.get('window') === 'editor') {
+    // Shell setup MUST be synchronous — WKWebView only registers drag regions during initial load
+    initEditorWindowShell();
+    // Load CodeMirror + editor content async
+    import('./file-editor').then(m => m.initEditorContent());
     return;
   }
 
@@ -147,6 +159,7 @@ async function init(): Promise<void> {
   applyAiBarOpacity(settings.aiBarOpacity);
   applyColorScheme(settings);
   applyBackgroundImage(settings, terminalPanelEl);
+  void applyVibrancy(settings.enableVibrancy);
 
   if (settings.rememberWindowSize && settings.windowWidth > 0 && settings.windowHeight > 0) {
     // Windows-only guard: dynamically created secondary windows can stall on
@@ -166,6 +179,12 @@ async function init(): Promise<void> {
   setupTauriEventListeners(currentWindowLabel);
   setupKeyboardShortcuts();
   setupToolbarDrag();
+  initPip();
+
+  // Mark initialized early — right after close handler is registered, BEFORE
+  // heavy async work (StatusBar, ensureMeTermReady, tldr).  This prevents
+  // the Rust side from auto-closing a window that is still loading.
+  await invoke('mark_window_initialized', { windowLabel: currentWindowLabel });
 
   // StatusBar initialization
   const statusEl = document.getElementById('status') as HTMLDivElement;
@@ -214,11 +233,35 @@ async function init(): Promise<void> {
   renderTabs();
   renderToolbarActions();
 
-  // Mark this window as initialized AFTER close handler is registered.
-  // Rust allows uninitialised windows to close immediately (blank/failed windows).
-  await invoke('mark_window_initialized', { windowLabel: currentWindowLabel });
-
   await ensureMeTermReady();
+
+  // Initialize tldr help data + completion index (async, non-blocking)
+  if (settings.tldrEnabled) {
+    initTldr().then(async () => {
+      if (settings.cmdCompletionEnabled) {
+        try {
+          const cmds = await getTldrCommands();
+          globalCompletionIndex.loadTldr(cmds);
+        } catch { /* ignore */ }
+      }
+    }).catch(() => { /* ignore tldr init errors */ });
+  }
+  // Load history into completion index
+  if (settings.cmdCompletionEnabled) {
+    try {
+      const raw = localStorage.getItem('meterm-ai-history');
+      if (raw) {
+        const allHistory: Record<string, { command: string }[]> = JSON.parse(raw);
+        const commands: string[] = [];
+        for (const entries of Object.values(allHistory)) {
+          for (const e of entries) {
+            if (e.command) commands.push(e.command);
+          }
+        }
+        globalCompletionIndex.loadHistory(commands);
+      }
+    } catch { /* ignore */ }
+  }
 
   // Check if app was launched with a directory path (e.g., from Finder/Explorer context menu)
   if (currentWindowLabel === 'main') {

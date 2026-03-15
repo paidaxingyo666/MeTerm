@@ -6,13 +6,10 @@
  */
 
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { loadSettings, resolveIsDark } from './themes';
+import { createUtilityWindow } from './window-utils';
 import { t } from './i18n';
 import { port, authToken } from './app-state';
 import type { JumpServerConfig } from './jumpserver-api';
-
-const isWindowsPlatform = navigator.userAgent.toLowerCase().includes('windows');
-const isMac = !isWindowsPlatform && navigator.userAgent.includes('Mac');
 
 /**
  * Open the JumpServer asset browser window (single-instance).
@@ -33,44 +30,30 @@ export async function openJumpServerBrowserWindow(config: JumpServerConfig): Pro
     return;
   }
 
-  const settings = loadSettings();
-  const resolveTheme = (c: string) => {
-    if (c === 'light') return 'light';
-    if (c === 'auto') return resolveIsDark('auto') ? 'dark' : 'light';
-    return 'dark';
-  };
-  const themeStr = resolveTheme(settings.colorScheme);
-  const nativeTheme = themeStr === 'light' ? 'light' as const : 'dark' as const;
-  const baseUrl = window.location.origin + window.location.pathname;
-
-  const win = new WebviewWindow(label, {
-    url: `${baseUrl}?window=jumpserver-browser`,
-    title: `${config.name} — ${t('jsAssetBrowser')}`,
-    width: 720,
-    height: 520,
-    resizable: true,
-    center: true,
-    visible: false,
-    decorations: !isWindowsPlatform,
-    transparent: true,
-    theme: nativeTheme,
-    // No backgroundColor — must be omitted for transparent window to work
-    ...(isMac ? { titleBarStyle: 'overlay' as const, hiddenTitle: true } : {}),
-  });
-
-  // Window starts hidden (visible:false). Callers control when to show.
-  // For direct open (not docked), show after a brief delay for rendering.
-  win.once('tauri://created', () => {
-    // Check if startDockedBrowser will manage visibility (it sets a flag in localStorage)
-    const dockedMode = localStorage.getItem('meterm-js-browser-docked');
-    if (dockedMode === 'true') {
-      localStorage.removeItem('meterm-js-browser-docked');
-      // startDockedBrowser will show the window after positioning
-      return;
+  try {
+    await createUtilityWindow({
+      label,
+      url: '?window=jumpserver-browser',
+      title: `${config.name} — ${t('jsAssetBrowser')}`,
+      width: 720,
+      height: 520,
+      resizable: true,
+    });
+    const win = await WebviewWindow.getByLabel(label);
+    if (win) {
+      // Check if startDockedBrowser will manage visibility (it sets a flag in localStorage)
+      const dockedMode = localStorage.getItem('meterm-js-browser-docked');
+      if (dockedMode === 'true') {
+        localStorage.removeItem('meterm-js-browser-docked');
+        // startDockedBrowser will show the window after positioning
+        return;
+      }
+      setTimeout(async () => {
+        const w = await WebviewWindow.getByLabel(label);
+        if (w) void w.show().then(() => w.setFocus());
+      }, 150);
     }
-    setTimeout(() => { void win.show().then(() => win.setFocus()); }, 150);
-  });
-  win.once('tauri://error', (e: unknown) => {
-    console.error('[jumpserver-browser] Failed to create window:', e);
-  });
+  } catch (e) {
+    console.error('Failed to create jumpserver-browser window:', e);
+  }
 }

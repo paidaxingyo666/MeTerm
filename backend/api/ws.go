@@ -91,7 +91,10 @@ func handleWebSocket(sm *session.SessionManager, bm *BanManager) http.HandlerFun
 			}
 		}
 
-		defer s.RemoveClient(client.ID)
+		// Save connGen so the deferred RemoveClient becomes a no-op if the
+		// client is reconnected (connGen incremented) before this goroutine exits.
+		connGen := client.ConnGen()
+		defer s.RemoveClient(client.ID, connGen)
 
 		client.Send(protocol.EncodeHello(client.ID, client.Role.String(), 1, s.LastCols, s.LastRows))
 		client.Send(client.RoleMessage())
@@ -230,7 +233,19 @@ func handleWebSocket(sm *session.SessionManager, bm *BanManager) http.HandlerFun
 			case protocol.MsgSetEncoding:
 				encodingName := string(payload)
 				s.SetEncoding(encodingName)
-			case protocol.MsgMasterRequest:
+			case protocol.MsgFileReadRequest:
+			if client.Role != session.RoleMaster {
+				continue
+			}
+			payloadCopy := append([]byte(nil), payload...)
+			go handleFileRead(s, client.SendBlocking, payloadCopy)
+		case protocol.MsgFileSaveRequest:
+			if client.Role != session.RoleMaster {
+				continue
+			}
+			payloadCopy := append([]byte(nil), payload...)
+			go handleFileSave(s, client.SendBlocking, payloadCopy)
+		case protocol.MsgMasterRequest:
 				s.ForwardMasterRequest(client.ID)
 			case protocol.MsgMasterApproval:
 				if len(payload) >= 2 {

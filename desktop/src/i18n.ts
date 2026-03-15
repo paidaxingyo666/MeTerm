@@ -8,6 +8,7 @@ export interface Translations {
   settingsTabGeneral: string;
   theme: string;
   opacity: string;
+  enableVibrancy: string;
   fontSize: string;
   fontFamily: string;
   enableNerdFont: string;
@@ -68,6 +69,7 @@ export interface Translations {
   colorSchemeLight: string;
   rememberWindowSize: string;
   rememberDrawerLayout: string;
+  pipScale: string;
   sessionsGallery: string;
   sshConnect: string;
   sshHost: string;
@@ -246,9 +248,19 @@ export interface Translations {
   aboutVersion: string;
   aboutDescription: string;
   aboutGitHub: string;
+  aboutGitee: string;
   aboutLicense: string;
   aboutCopyright: string;
   aboutCheckUpdate: string;
+  aboutOpenSource: string;
+  aboutLicenses: string;
+  aboutAckXterm: string;
+  aboutAckTauri: string;
+  aboutAckConpty: string;
+  aboutAckJumpserver: string;
+  aboutAckTldr: string;
+  aboutAckSearxng: string;
+  aboutAckCodemirror: string;
   sshExportConnections: string;
   sshImportConnections: string;
   sshExportSuccess: string;
@@ -410,6 +422,22 @@ export interface Translations {
   fileLinkLocalConfirmMsg: string;
   fileLinkConfirmOpen: string;
   fileLinkSkipConfirmSetting: string;
+  // tldr & command completion
+  tldrHelp: string;
+  tldrEnable: string;
+  tldrNoData: string;
+  tldrUpdating: string;
+  tldrLastUpdated: string;
+  tldrUpdateNow: string;
+  tldrPageCount: string;
+  tldrExamples: string;
+  cmdCompletionEnable: string;
+  cmdCompletionHint: string;
+  cmdCompletionHistoryHint: string;
+  // Shell hook injection
+  shellHookInjection: string;
+  shellHookEnable: string;
+  shellHookHint: string;
   // JumpServer
   jsEditServer: string;
   jsAddServer: string;
@@ -452,6 +480,43 @@ export interface Translations {
   jsSelectAccount: string;
   homeNewJumpServer: string;
   jsSaveAndConnect: string;
+  homeSearchPlaceholder: string;
+  homeGroupDefault: string;
+  homeGroupUngrouped: string;
+  homeGroupManage: string;
+  homeGroupNew: string;
+  homeGroupRename: string;
+  homeGroupDelete: string;
+  homeGroupDeleteConfirm: string;
+  homeGroupMoveToGroup: string;
+  homeGroupNodeCount: string;
+  homeGroupColor: string;
+  homeGroupColorClear: string;
+  homeGroupCollapse: string;
+  homeGroupExpand: string;
+  homeGroupDuplicate: string;
+  homeGroupNewName: string;
+  homeRecentActivity: string;
+  homeFooterVersion: string;
+  homeFooterGitHub: string;
+  homeNoConnections: string;
+  homeSearchHint: string;
+  homeSearchConnections: string;
+  homeSearchWeb: string;
+  homeSearchTldr: string;
+  homeSearching: string;
+  homeSearchLoadMore: string;
+  homeSearchPerPage: string;
+  homeNoResults: string;
+  editorLargeFileWarning: string;
+  editorLargeFileTitle: string;
+  editorUnsavedChanges: string;
+  editorSaving: string;
+  editorSaved: string;
+  editorSaveFailed: string;
+  editorDisconnected: string;
+  editorReadOnly: string;
+  editorLoading: string;
 }
 
 const translations: Record<Language, Translations> = {
@@ -463,6 +528,7 @@ const translations: Record<Language, Translations> = {
     settingsTabGeneral: 'General',
     theme: 'Terminal Theme',
     opacity: 'Background Opacity',
+    enableVibrancy: 'Background Blur (Vibrancy)',
     fontSize: 'Font Size',
     fontFamily: 'Font',
     enableNerdFont: 'Nerd Font Icons',
@@ -523,6 +589,7 @@ const translations: Record<Language, Translations> = {
     colorSchemeLight: 'Light',
     rememberWindowSize: 'Remember Window Size',
     rememberDrawerLayout: 'Remember Drawer Layout',
+    pipScale: 'PiP Window Scale',
     sessionsGallery: 'Sessions',
     sshConnect: 'SSH Connection',
     sshHost: 'Host',
@@ -900,13 +967,75 @@ const translations: Record<Language, Translations> = {
     jsSelectAccount: 'Select Account',
     homeNewJumpServer: 'JumpServer',
     jsSaveAndConnect: 'Save & Connect',
+    homeSearchPlaceholder: 'Search connections, commands or docs',
+    homeGroupDefault: 'Default',
+    homeGroupUngrouped: 'Ungrouped',
+    homeGroupManage: 'Manage Groups',
+    homeGroupNew: 'New Group',
+    homeGroupRename: 'Rename',
+    homeGroupDelete: 'Delete Group',
+    homeGroupDeleteConfirm: 'Delete this group? Connections will be moved to Ungrouped.',
+    homeGroupMoveToGroup: 'Move to Group',
+    homeGroupNodeCount: '{count} Nodes',
+    homeGroupColor: 'Color',
+    homeGroupColorClear: 'Clear Color',
+    homeGroupCollapse: 'Collapse',
+    homeGroupExpand: 'Expand',
+    homeGroupDuplicate: 'Duplicate Group',
+    homeGroupNewName: 'Group Name',
+    homeRecentActivity: 'Recent Activity',
+    homeFooterVersion: 'MeTerm v{version}',
+    homeFooterGitHub: 'GitHub',
+    homeNoConnections: 'No connections yet',
+    homeSearchHint: 'Type to search connections, web, and command docs',
+    homeSearchConnections: 'Connections',
+    homeSearchWeb: 'Web Search',
+    homeSearchTldr: 'Command Docs',
+    homeSearching: 'Searching...',
+    homeSearchLoadMore: 'Load more',
+    homeSearchPerPage: '/page',
+    homeNoResults: 'No results',
     settingsTabAbout: 'About',
     aboutVersion: 'Version',
     aboutDescription: 'A lightweight multi-session terminal client.',
     aboutGitHub: 'GitHub',
+    aboutGitee: 'Gitee',
     aboutLicense: 'License',
     aboutCopyright: 'Copyright',
     aboutCheckUpdate: 'Check for Updates',
+    aboutOpenSource: 'Open Source (in no particular order)',
+    aboutLicenses: 'Licenses',
+    aboutAckXterm: 'Terminal emulator',
+    aboutAckTauri: 'Desktop framework',
+    aboutAckConpty: 'Windows ConPTY',
+    aboutAckJumpserver: 'Bastion host API',
+    aboutAckTldr: 'Command documentation',
+    aboutAckSearxng: 'Web search API',
+    aboutAckCodemirror: 'Code editor',
+    // tldr & command completion
+    tldrHelp: 'Command Help',
+    tldrEnable: 'Enable tldr command help',
+    tldrNoData: 'No help data available. Click "Update Now" to download.',
+    tldrUpdating: 'Updating help data…',
+    tldrLastUpdated: 'Last updated: {date}',
+    tldrUpdateNow: 'Update Now',
+    tldrPageCount: '{count} commands indexed',
+    tldrExamples: 'Examples',
+    cmdCompletionEnable: 'Enable command completion (inline ghost text)',
+    cmdCompletionHint: 'Shows gray suggestion text in terminal, press → to accept',
+    cmdCompletionHistoryHint: 'Based on command history (priority) and tldr command index',
+    shellHookInjection: 'Shell Hook Injection',
+    shellHookEnable: 'Auto-inject shell hook on SSH/remote sessions',
+    shellHookHint: 'Injects a shell hook via PTY command on SSH sessions for full command history (including Tab completions). Without this, history is recorded from keyboard input only.\n\u26A0\uFE0F Windows: NOT recommended — may cause window freeze or console flash due to ConPTY/WebView2 limitations.\n\u2705 macOS/Linux: Safe to enable.',
+    editorLargeFileWarning: 'This file is {size} MB. Opening large files may cause lag or crashes. Continue?',
+    editorLargeFileTitle: 'Large File Warning',
+    editorUnsavedChanges: 'You have unsaved changes. Discard and close?',
+    editorSaving: 'Saving...',
+    editorSaved: 'Saved',
+    editorSaveFailed: 'Save failed',
+    editorDisconnected: 'Session disconnected',
+    editorReadOnly: 'Read-only',
+    editorLoading: 'Loading...',
   },
   zh: {
     appName: 'MeTerm',
@@ -916,6 +1045,7 @@ const translations: Record<Language, Translations> = {
     settingsTabGeneral: '通用',
     theme: '终端主题',
     opacity: '背景透明度',
+    enableVibrancy: '背景模糊（毛玻璃）',
     fontSize: '字体大小',
     fontFamily: '字体',
     enableNerdFont: 'Nerd Font 图标',
@@ -976,6 +1106,7 @@ const translations: Record<Language, Translations> = {
     colorSchemeLight: '浅色',
     rememberWindowSize: '记住窗口大小',
     rememberDrawerLayout: '记住抽屉布局',
+    pipScale: '画中画窗口缩放比例',
     sessionsGallery: '会话总览',
     sshConnect: 'SSH 连接',
     sshHost: '主机地址',
@@ -1353,13 +1484,75 @@ const translations: Record<Language, Translations> = {
     jsSelectAccount: '选择账户',
     homeNewJumpServer: 'JumpServer',
     jsSaveAndConnect: '保存并连接',
+    homeSearchPlaceholder: '搜索连接、指令或文档',
+    homeGroupDefault: '默认',
+    homeGroupUngrouped: '未分组',
+    homeGroupManage: '管理分组',
+    homeGroupNew: '新建分组',
+    homeGroupRename: '重命名',
+    homeGroupDelete: '删除分组',
+    homeGroupDeleteConfirm: '删除该分组？连接将移至未分组。',
+    homeGroupMoveToGroup: '移动到分组',
+    homeGroupNodeCount: '{count} 个节点',
+    homeGroupColor: '颜色',
+    homeGroupColorClear: '清除颜色',
+    homeGroupCollapse: '折叠',
+    homeGroupExpand: '展开',
+    homeGroupDuplicate: '复制分组',
+    homeGroupNewName: '分组名称',
+    homeRecentActivity: '最近活跃',
+    homeFooterVersion: 'MeTerm v{version}',
+    homeFooterGitHub: 'GitHub',
+    homeNoConnections: '暂无连接',
+    homeSearchHint: '输入关键词搜索连接、网页和命令文档',
+    homeSearchConnections: '连接',
+    homeSearchWeb: '网络搜索',
+    homeSearchTldr: '命令文档',
+    homeSearching: '搜索中...',
+    homeSearchLoadMore: '加载更多',
+    homeSearchPerPage: '/页',
+    homeNoResults: '无结果',
     settingsTabAbout: '关于',
     aboutVersion: '版本',
     aboutDescription: '轻量的多会话终端客户端。',
     aboutGitHub: 'GitHub',
+    aboutGitee: 'Gitee',
     aboutLicense: '许可协议',
     aboutCopyright: '版权',
     aboutCheckUpdate: '检查更新',
+    aboutOpenSource: '开源致谢（排名不分先后）',
+    aboutLicenses: '开源致谢',
+    aboutAckXterm: '终端模拟器',
+    aboutAckTauri: '桌面应用框架',
+    aboutAckConpty: 'Windows 伪控制台',
+    aboutAckJumpserver: '堡垒机 API',
+    aboutAckTldr: '命令文档',
+    aboutAckSearxng: '网络搜索 API',
+    aboutAckCodemirror: '代码编辑器',
+    // tldr & 命令补全
+    tldrHelp: '命令帮助',
+    tldrEnable: '启用 tldr 命令帮助',
+    tldrNoData: '暂无帮助数据，请点击"立即更新"下载。',
+    tldrUpdating: '正在更新帮助数据…',
+    tldrLastUpdated: '上次更新：{date}',
+    tldrUpdateNow: '立即更新',
+    tldrPageCount: '已索引 {count} 个命令',
+    tldrExamples: '示例',
+    cmdCompletionEnable: '启用命令补全（行内提示文字）',
+    cmdCompletionHint: '在终端中自动显示灰色建议文字，按 → 接受',
+    cmdCompletionHistoryHint: '基于历史命令（优先）和 tldr 命令索引',
+    shellHookInjection: 'Shell Hook 注入',
+    shellHookEnable: 'SSH/远程会话自动注入 Shell Hook',
+    shellHookHint: '通过 PTY 命令在 SSH 会话中注入 Shell Hook，实现完整命令历史记录（含 Tab 补全）。关闭时仅通过键盘输入记录历史。\n⚠️ Windows：不建议开启 — ConPTY/WebView2 限制可能导致窗口冻结或控制台窗口闪现。\n✅ macOS/Linux：可以安全开启。',
+    editorLargeFileWarning: '该文件大小为 {size} MB，打开大文件可能导致卡顿或崩溃。是否继续？',
+    editorLargeFileTitle: '大文件警告',
+    editorUnsavedChanges: '有未保存的更改，是否丢弃并关闭？',
+    editorSaving: '保存中...',
+    editorSaved: '已保存',
+    editorSaveFailed: '保存失败',
+    editorDisconnected: '会话已断开',
+    editorReadOnly: '只读',
+    editorLoading: '加载中...',
   },
 };
 

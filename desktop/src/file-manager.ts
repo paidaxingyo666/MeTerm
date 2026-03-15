@@ -15,6 +15,7 @@ import {
   MsgFileDownloadPause,
   MsgFileDownloadContinue,
   MsgFileDownloadCancel,
+  MsgFileReadResponse,
   type FileInfo,
   type FileListResponse,
   type FileOperationRequest,
@@ -22,7 +23,9 @@ import {
   type FileListProgressResponse,
   type ServerInfoResponse,
 } from './protocol';
-import { getFileIcon } from './icons';
+import { getFileIcon, isEditableFile } from './icons';
+import { openFileInEditor, handleFileReadResponse, handleSaveResponse } from './file-editor-bridge';
+import { sshConfigMap } from './app-state';
 import { escapeHtml } from './status-bar';
 import { formatSize, formatSpeed, formatElapsed, encodeMessage, getDiskErrorMessage, validateFileName } from './file-utils';
 import { showUploadConflictDialog as _showUploadConflictDialog, showDirConflictDialog as _showDirConflictDialog } from './file-conflict-dialog';
@@ -34,8 +37,9 @@ import {
 } from './file-upload';
 import {
   type DownloadState,
+  type DownloadQueueItem,
   createDownloadState,
-  downloadFile as _downloadFile,
+  startDownloadFromQueue as _startDownloadFromQueue,
   handleDownloadChunk as _handleDownloadChunk,
   cleanupDownloadState as _cleanupDownloadState,
   resumeDownload as _resumeDownload,
@@ -56,6 +60,8 @@ export class FileManager {
   private pathInput: HTMLInputElement;
   // 下载状态（委托到 file-download 模块）
   private _dlState: DownloadState = createDownloadState();
+  private downloadQueue: DownloadQueueItem[] = [];
+  private _isProcessingDownload: boolean = false;
   private pendingUpload: { path: string; content: Uint8Array; offset: number } | null = null;
   // Number of upload chunks sent to server but not yet ACKed.
   private inFlightChunks: number = 0;
@@ -64,7 +70,7 @@ export class FileManager {
   private pipelineSize: number = 2;
   // ACK count since last pipeline increase (used for linear phase).
   private pipelineAckCount: number = 0;
-  private uploadQueue: Array<{ path: string; content: Uint8Array; filename: string; size: number }> = [];
+  private uploadQueue: Array<{ path: string; content: Uint8Array; filename: string; size: number; transferId: string }> = [];
   private isUploadPaused: boolean = false;
   private pendingPartCleanup: boolean = false;
   private isLoadingDirectory: boolean = false;
@@ -138,6 +144,21 @@ export class FileManager {
 
   setWebSocket(ws: WebSocket): void {
     this.ws = ws;
+
+    // 重置加载状态：旧的 WebSocket 断开后，之前的加载请求不会收到响应
+    // 必须在 setupMessageHandler 之前重置，否则后续 loadDirectory 会被防抖跳过
+    if (this.isLoadingDirectory) {
+      this.isLoadingDirectory = false;
+      this.hideLoading();
+    }
+    if (this.loadingTimeout) {
+      clearTimeout(this.loadingTimeout);
+      this.loadingTimeout = null;
+    }
+    // 重置真实进度状态
+    this.useRealProgress = false;
+    this.totalFiles = 0;
+
     this.setupMessageHandler();
 
     // Attempt to resume interrupted transfers instead of discarding them
@@ -149,6 +170,9 @@ export class FileManager {
     }
     if (this._dlState.pendingDownload) {
       this.resumeDownload();
+    } else if (this.downloadQueue.length > 0) {
+      // Reconnected between downloads — kick the queue
+      this.processNextDownload();
     }
   }
 
@@ -163,8 +187,8 @@ export class FileManager {
       if (event.data instanceof ArrayBuffer) {
         const view = new DataView(event.data);
         const msgType = view.getUint8(0);
-        // File manager message types (0x0a-0x16): don't forward to terminal handler
-        handled = msgType >= 0x0a && msgType <= 0x16;
+        // File manager message types (0x0a-0x16, 0x31): don't forward to terminal handler
+        handled = (msgType >= 0x0a && msgType <= 0x16) || msgType === MsgFileReadResponse;
 
         if (msgType === MsgError) {
           const payload = new Uint8Array(event.data, 1);
@@ -213,6 +237,9 @@ export class FileManager {
           } catch (e) {
             console.error('Failed to parse server info:', e);
           }
+        } else if (msgType === MsgFileReadResponse) {
+          const payload = new Uint8Array(event.data, 1);
+          handleFileReadResponse(payload);
         }
       }
 
@@ -396,6 +423,12 @@ export class FileManager {
         return;
       }
 
+      // 保存操作的错误：通知 bridge 保存失败（错误走 MsgError 不走 MsgFileOperationResp）
+      if (error.code === 'WRITE_FAILED' || error.code === 'INVALID_PATH' || error.code === 'INVALID_REQUEST' || error.code === 'SFTP_NOT_AVAILABLE') {
+        // Try to match any pending save and notify failure
+        handleSaveResponse('', false, `${error.code}: ${error.message}`);
+      }
+
       // stat 操作的 NOT_FOUND 错误由 pendingStatCallback 处理
       if (error.code === 'NOT_FOUND' && this.pendingStatCallback) {
         const cb = this.pendingStatCallback;
@@ -430,6 +463,11 @@ export class FileManager {
         }
         this.cleanupDownload();
       }
+      // 清理队列中等待下载的文件：标记为失败
+      for (const item of this.downloadQueue) {
+        this.updateTransferProgress(item.transferId, 0, 'failed', error.message);
+      }
+      this.downloadQueue = [];
 
       // 清理 pending 上传状态
       if (this.pendingUpload) {
@@ -439,6 +477,11 @@ export class FileManager {
           this.currentUploadId = null;
         }
       }
+      // 清理队列中等待上传的文件：标记为失败
+      for (const item of this.uploadQueue) {
+        this.updateTransferProgress(item.transferId, 0, 'failed', error.message);
+      }
+      this.uploadQueue = [];
 
       // 显示用户友好的错误提示
       let userMessage = error.message;
@@ -549,22 +592,30 @@ export class FileManager {
         row.classList.add('selected');
       });
 
-      // 双击：进入文件夹或下载文件
+      // 双击：进入文件夹、打开编辑器或下载文件
       row.addEventListener('dblclick', async () => {
-        console.log('文件行被双击');
         const path = row.dataset.path;
         const isDir = row.dataset.isDir === 'true';
-        console.log('双击项:', path, '是否为目录:', isDir);
 
         if (isDir && path) {
           const newPath = this.currentPath === '/'
             ? `/${path}`
             : `${this.currentPath}/${path}`;
-          console.log('准备进入目录:', newPath);
           await this.loadDirectory(newPath);
         } else if (!isDir && path) {
-          console.log('准备下载文件:', path);
-          await this.downloadFile(path);
+          if (isEditableFile(path) && this.ws) {
+            // Open text file in editor window
+            const fileInfo = this.files.find(f => f.name === path);
+            const fileSize = fileInfo?.size || 0;
+            const fullPath = this.currentPath === '/'
+              ? `/${path}`
+              : `${this.currentPath}/${path}`;
+            const sshCfg = sshConfigMap.get(this.sessionId);
+            const host = sshCfg ? (sshCfg.name || sshCfg.host) : this.sessionId;
+            void openFileInEditor(this.sessionId, fullPath, path, fileSize, this.ws, host);
+          } else {
+            await this.downloadFile(path);
+          }
         }
       });
     });
@@ -746,8 +797,9 @@ export class FileManager {
       // action === 'overwrite' 则继续使用原路径
     }
 
-    // 入队
-    this.uploadQueue.push({ path: targetPath, content, filename: actualFilename, size: content.length });
+    // 入队并立即创建 pending 传输记录，让用户在传输列表中看到排队状态
+    const transferId = this.addTransferRecord('upload', actualFilename, targetPath, content.length);
+    this.uploadQueue.push({ path: targetPath, content, filename: actualFilename, size: content.length, transferId });
 
     // 如果没有正在进行的上传，立即开始处理队列
     if (!this.pendingUpload) {
@@ -762,11 +814,19 @@ export class FileManager {
       return;
     }
     if (this.pendingUpload) return;
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      // WebSocket 不可用，将队列中所有等待文件标记为失败
+      for (const item of this.uploadQueue) {
+        this.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
+      }
+      this.uploadQueue = [];
+      return;
+    }
 
     const item = this.uploadQueue.shift()!;
 
-    this.currentUploadId = this.addTransferRecord('upload', item.filename, item.path, item.size);
+    // 复用入队时已创建的 pending 传输记录，切换为 inprogress
+    this.currentUploadId = item.transferId;
     this.updateTransferProgress(this.currentUploadId, 0, 'inprogress');
 
     this.pendingUpload = { path: item.path, content: item.content, offset: 0 };
@@ -940,6 +1000,12 @@ export class FileManager {
     try {
       const response = JSON.parse(new TextDecoder().decode(payload));
 
+      // save 操作的响应转发给编辑器 bridge
+      if (response.operation === 'save') {
+        handleSaveResponse(response.path || '', response.success, response.message);
+        return;
+      }
+
       // stat 操作的响应由 pendingStatCallback 处理
       if (response.operation === 'stat' && this.pendingStatCallback) {
         const cb = this.pendingStatCallback;
@@ -1016,7 +1082,68 @@ export class FileManager {
   private currentUploadId: string | null = null;
 
   private async downloadFile(filename: string, isDir: boolean = false): Promise<void> {
-    this._dlState = await _downloadFile(filename, this.currentPath, this.files, this.ws, this._dlState, this._dlCallbacks(), isDir);
+    const filePath = this.currentPath === '/'
+      ? `/${filename}`
+      : `${this.currentPath}/${filename}`;
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.error('WebSocket not ready');
+      return;
+    }
+
+    // 弹出保存对话框（必须在入队前完成用户交互）
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const defaultName = isDir ? `${filename}.zip` : filename;
+      const savePath = await save({
+        defaultPath: defaultName,
+        filters: isDir
+          ? [{ name: 'ZIP 压缩文件', extensions: ['zip'] }]
+          : []
+      });
+      if (!savePath) return;
+
+      // 保存对话框期间 WebSocket 可能已断开
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        alert('连接已断开，请稍后重试');
+        return;
+      }
+
+      // 获取文件大小
+      const fileInfo = this.files.find(f => f.name === filename);
+      const fileSize = fileInfo ? fileInfo.size : 0;
+
+      // 入队并立即创建 pending 传输记录
+      const transferId = this.addTransferRecord('download', filename, filePath, fileSize, savePath);
+      const queueItem: DownloadQueueItem = { filename, remotePath: filePath, savePath, fileSize, transferId, isDir };
+      this.downloadQueue.push(queueItem);
+
+      // 如果没有正在进行的下载，立即开始
+      if (!this._dlState.pendingDownload && !this._isProcessingDownload) {
+        this.processNextDownload();
+      }
+    } catch (err) {
+      console.error('Download failed:', err);
+      alert(`下载失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async processNextDownload(): Promise<void> {
+    if (this.downloadQueue.length === 0) return;
+    if (this._dlState.pendingDownload || this._isProcessingDownload) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      // WebSocket 不可用，将队列中所有等待文件标记为失败
+      for (const item of this.downloadQueue) {
+        this.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
+      }
+      this.downloadQueue = [];
+      return;
+    }
+
+    this._isProcessingDownload = true;
+    const item = this.downloadQueue.shift()!;
+    this._dlState = await _startDownloadFromQueue(item, this.ws, this._dlState, this._dlCallbacks());
+    this._isProcessingDownload = false;
   }
 
   private async cleanupDownload(): Promise<void> {
@@ -1031,6 +1158,9 @@ export class FileManager {
       },
       addTransferRecord: (type: 'upload' | 'download', filename: string, path: string, size: number, savePath?: string) => {
         return this.addTransferRecord(type, filename, path, size, savePath);
+      },
+      onDownloadFinished: () => {
+        this.processNextDownload();
       },
     };
   }
@@ -1432,6 +1562,22 @@ export class FileManager {
     this._transferHistory!.renderTransferHistory();
   }
 
+  setTransferFilter(type: 'upload' | 'download' | null): void {
+    this._transferHistory!.setFilter(type);
+  }
+
+  getTransferFilter(): 'upload' | 'download' | null {
+    return this._transferHistory!.getFilter();
+  }
+
+  setTransferStatusFilter(status: 'active' | 'completed' | 'failed' | null): void {
+    this._transferHistory!.setStatusFilter(status);
+  }
+
+  setTransferSearchQuery(query: string): void {
+    this._transferHistory!.setSearchQuery(query);
+  }
+
   // 暂停当前传输
   pauseTransfer(id: string): void {
     const record = this._transferHistory!.findRecord(id);
@@ -1473,7 +1619,7 @@ export class FileManager {
   }
 
   // 取消传输
-  cancelTransfer(id: string): void {
+  async cancelTransfer(id: string): Promise<void> {
     const record = this._transferHistory!.findRecord(id);
     if (!record || (record.status !== 'inprogress' && record.status !== 'paused' && record.status !== 'pending')) return;
 
@@ -1487,18 +1633,30 @@ export class FileManager {
         this.deleteRemotePartFile(record.path);
         this.processNextUpload();
       } else {
-        const queueIdx = this.uploadQueue.findIndex(item => item.path === record.path);
+        // 用 transferId 精确匹配队列项（path 可能重复）
+        const queueIdx = this.uploadQueue.findIndex(item => item.transferId === id);
         if (queueIdx !== -1) {
           this.uploadQueue.splice(queueIdx, 1);
         }
         this.updateTransferProgress(id, 0, 'cancelled', '用户取消');
       }
-    } else if (record.type === 'download' && this._dlState.currentDownloadId === id) {
-      this._dlState.isDownloadPaused = false;
-      this.sendDownloadCtrl(MsgFileDownloadCancel);
-      this._dlState.currentDownloadId = null;
-      this.updateTransferProgress(id, record.progress, 'cancelled', '用户取消');
-      this.cleanupDownload();
+    } else if (record.type === 'download') {
+      if (this._dlState.currentDownloadId === id) {
+        // 取消正在进行的下载
+        this._dlState.isDownloadPaused = false;
+        this.sendDownloadCtrl(MsgFileDownloadCancel);
+        this._dlState.currentDownloadId = null;
+        this.updateTransferProgress(id, record.progress, 'cancelled', '用户取消');
+        await this.cleanupDownload();
+        this.processNextDownload();
+      } else {
+        // 取消队列中等待的下载
+        const queueIdx = this.downloadQueue.findIndex(item => item.transferId === id);
+        if (queueIdx !== -1) {
+          this.downloadQueue.splice(queueIdx, 1);
+        }
+        this.updateTransferProgress(id, 0, 'cancelled', '用户取消');
+      }
     }
   }
 

@@ -8,6 +8,7 @@ import { DrawerManager } from './drawer';
 import { readTextFile, writeTextFile, stat, mkdir, exists } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { loadSettings } from './themes';
+import { queryTldr, formatTldrForAgent } from './tldr-help';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -149,34 +150,49 @@ function escapeShellSingle(s: string): string {
 
 /**
  * Build the one-line precmd hook script for a given shell type.
- * Sole responsibility: emit OSC 7768;EXIT_CODE;CWD before each prompt.
+ * Emits OSC 7768;EXIT_CODE;CWD;LAST_CMD before each prompt.
+ * LAST_CMD is the actual command executed (after shell completion),
+ * obtained via `fc -ln -1` (zsh/bash) or `$argv` (fish).
+ *
+ * All hooks skip lastCommand on first run (__meterm_hook_ready flag)
+ * to avoid reporting the injection command itself as history.
  */
 function buildShellHook(shellType: string): string {
   switch (shellType) {
     case 'zsh':
       return [
         `__meterm_precmd(){ local e=$?;`,
-        `printf '\\033]7768;%d;%s\\007' "$e" "$PWD"; };`,
+        `local c;if [ -z "$__meterm_hook_ready" ];then export __meterm_hook_ready=1;c='';`,
+        `else c=$(fc -ln -1 2>/dev/null);fi;`,
+        `printf '\\033]7768;%d;%s;%s\\007' "$e" "$PWD" "$c"; };`,
         `autoload -Uz add-zsh-hook 2>/dev/null&&add-zsh-hook precmd __meterm_precmd`,
       ].join('');
     case 'fish':
       return [
         `function __meterm_postcmd --on-event fish_postexec;`,
-        `printf '\\033]7768;%d;%s\\007' $status "$PWD";`,
+        `if not set -q __meterm_hook_ready;set -gx __meterm_hook_ready 1;`,
+        `printf '\\033]7768;%d;%s;\\007' $status "$PWD";`,
+        `else;`,
+        `printf '\\033]7768;%d;%s;%s\\007' $status "$PWD" "$argv";`,
+        `end;`,
         `end`,
       ].join('');
     case 'powershell':
       return [
         `function prompt {`,
         `$e=$LASTEXITCODE;`,
-        `[Console]::Write("$([char]0x1b)]7768;$e;$(Get-Location)$([char]7)");`,
+        `if (-not $env:__meterm_hook_ready){$env:__meterm_hook_ready='1';$c=''}`,
+        `else{$c=(Get-History -Count 1).CommandLine};`,
+        `[Console]::Write("$([char]0x1b)]7768;$e;$(Get-Location);$c$([char]7)");`,
         `return "PS> "`,
         `}`,
       ].join('');
     default: // bash
       return [
         `__meterm_precmd(){ local e=$?;`,
-        `printf '\\033]7768;%d;%s\\007' "$e" "$PWD"; };`,
+        `local c;if [ -z "$__meterm_hook_ready" ];then export __meterm_hook_ready=1;c='';`,
+        `else c=$(fc -ln -1 2>/dev/null);fi;`,
+        `printf '\\033]7768;%d;%s;%s\\007' "$e" "$PWD" "$c"; };`,
         `PROMPT_COMMAND="__meterm_precmd\${PROMPT_COMMAND:+;$PROMPT_COMMAND}"`,
       ].join('');
   }
@@ -201,68 +217,85 @@ function waitForOscMarker(
 }
 
 /**
- * Inject the shell prompt hook into the terminal session.
+ * Inject the shell prompt hook into the terminal session (SSH/remote fallback).
  *
- * Two-phase approach for invisible injection:
- *   Phase 1: detect shell type via $0, emit OSC 7766 marker
- *   Phase 2: DEC restore cursor + erase Phase 1 echo + eval hook (pure telemetry)
+ * For local shells, the Go sidecar pre-installs the hook via ZDOTDIR (zsh) or
+ * --rcfile (bash), making this function a no-op (hookInjected is already true
+ * from the first OSC 7768 received).
  *
- * Auto-detects bash/zsh from $0. Fish/PowerShell fall through to marker fallback.
- * Agent commands display normally — hook only emits OSC 7768 for state tracking.
+ * For SSH/remote shells, uses the xterm.js **alternate screen buffer**:
+ *   1. Switch to alt screen (main screen with MOTD/prompt is preserved)
+ *   2. Send injection command (all echo goes to alt screen)
+ *   3. Wait for completion
+ *   4. Switch back to main screen (alt screen discarded)
+ *
+ * Result: MOTD preserved, no cursor glitches, no erase artifacts, no flash.
  */
-export async function injectShellHook(
+// Tracks sessions where injection has been attempted (success or failure).
+// Ensures injection is tried at most ONCE per session — prevents repeated
+// alt-screen switches that freeze the window on every AI message.
+const _injectionAttempted = new Set<string>();
+
+export function injectShellHook(
   sessionId: string,
-): Promise<boolean> {
+): boolean {
   const mt = TerminalRegistry.get(sessionId);
   if (!mt || mt.shellState.hookInjected) return mt?.shellState.hookInjected ?? false;
+  if (_injectionAttempted.has(sessionId)) return false; // already tried
+  // Check settings — user can disable SSH hook injection
+  if (!loadSettings().shellHookInjection) return false;
+  _injectionAttempted.add(sessionId);
+  return _injectShellHookImpl(sessionId, mt);
+}
 
-  // DEC save cursor — restored by Phase 2 printf to erase all injection echo
+function _injectShellHookImpl(
+  sessionId: string,
+  mt: ReturnType<typeof TerminalRegistry.get> & {},
+): boolean {
+
+  const zshHook = buildShellHook('zsh');
+  const bashHook = buildShellHook('bash');
+  const fishHook = buildShellHook('fish');
+  const detectId = `det_${Date.now().toString(36)}`;
+
+  // Single-line polyglot: `test -n` guards ensure only the matching branch runs.
+  // __meterm_hook_ready guard: skip if Go sidecar already installed the hook.
+  // Compact polyglot: only shell builtins, no subprocess forks (no sed/pipes).
+  // This command is for SSH/remote only — local shells use Go sidecar env var injection.
+  const cmd = [
+    ` test -n "$ZSH_VERSION" && test -z "$__meterm_hook_ready" &&`,
+    `printf '\\033]7766;${detectId};1\\007' &&`,
+    `eval '${escapeShellSingle(zshHook)}' &&`,
+    `setopt HIST_IGNORE_SPACE 2>/dev/null;`,
+    `test -n "$BASH_VERSION" && test -z "$__meterm_hook_ready" &&`,
+    `printf '\\033]7766;${detectId};0\\007' &&`,
+    `eval '${escapeShellSingle(bashHook)}' &&`,
+    `history -d $HISTCMD 2>/dev/null;`,
+    `export HISTCONTROL="\${HISTCONTROL:+\$HISTCONTROL:}ignorespace";`,
+    `test -n "$FISH_VERSION" && test -z "$__meterm_hook_ready" &&`,
+    `printf '\\033]7766;${detectId};2\\007' &&`,
+    `eval '${escapeShellSingle(fishHook)}';`,
+    `printf '\\0338\\033[0J\\033[0m\\r\\033[2K'`,
+  ].join(' ');
+
+  // DEC save cursor position BEFORE sending — the command's printf will restore to here
   mt.terminal.write('\x1b7');
 
-  // ── Phase 1: detect shell type ──
-  // Encode shell type as integer for OSC 7766: 0=bash, 1=zsh, 2=fish
-  // This POSIX command works in bash/zsh; fish/powershell will timeout → fallback.
-  const detectId = `det_${Date.now().toString(36)}`;
-  const phase1 = ` case $(basename "\${0#-}") in zsh) __st=1;; fish) __st=2;; *) __st=0;; esac; printf '\\033]7766;${detectId};%d\\007' "$__st"; unset __st`;
+  // Fire-and-forget via sendInput (not sendAgentCommand which sets phase='agent_executing').
+  // Leading \x15 (Ctrl+U) clears partial input, leading space suppresses shell history.
+  TerminalRegistry.sendInput(sessionId, '\x15' + cmd + '\n');
 
-  TerminalRegistry.sendAgentCommand(sessionId, phase1);
-  const shellCode = await waitForOscMarker(sessionId, detectId, 3000);
+  // Listen for marker asynchronously — set hookInjected when it arrives
+  const timeout = setTimeout(() => unsub(), 3000);
+  const unsub = TerminalRegistry.onOscMarker(sessionId, detectId, (code) => {
+    clearTimeout(timeout);
+    if (code !== -1) {
+      setShellType(sessionId, code === 1 ? 'zsh' : code === 2 ? 'fish' : 'bash');
+      mt.shellState.hookInjected = true;
+    }
+  });
 
-  if (shellCode === -1) {
-    // Detection timed out (likely fish/powershell) — bail, use marker fallback
-    return false;
-  }
-
-  const shellType = shellCode === 1 ? 'zsh' : shellCode === 2 ? 'fish' : 'bash';
-  setShellType(sessionId, shellType);
-
-  // ── Phase 2: DEC restore cursor + erase + move to col 0 + eval hook ──
-  // \0338         = ESC 8: DEC Restore Cursor (back to saved position)
-  // \033[0J       = CSI 0J: Erase from cursor to end of screen (removes Phase 1 echo)
-  // \r\033[2K     = CR + CSI 2K: move to column 0 and erase current line
-  //                 This is critical: without it, zsh sees cursor at col N (after "$ ")
-  //                 and prints PROMPT_EOL_MARK "%" before the next prompt.
-  // IMPORTANT: eval uses single quotes so $e/$PWD expand at precmd runtime, not now.
-  const hook = buildShellHook(shellType);
-  // Erase sequence:
-  //   \0338       = ESC 8: DEC restore cursor (back to after "$ ")
-  //   \033[0J     = erase from cursor to end of screen (removes Phase 1 echo below)
-  //   \r\033[2K   = CR + erase current line (second prompt line, e.g. "$ ")
-  //   \033[A      = cursor up 1 (to first prompt line, e.g. oh-my-zsh header)
-  //   \033[2K     = erase first prompt line
-  //   \r          = col 0 — prevents zsh PROMPT_SP from printing "%" marker
-  const phase2 = ` printf '\\0338\\033[0J\\r\\033[2K\\033[A\\033[2K\\r'; eval '${escapeShellSingle(hook)}'`;
-
-  const idlePromise = waitForIdle(sessionId, 8);
-  TerminalRegistry.sendAgentCommand(sessionId, phase2);
-  const result = await idlePromise;
-
-  if (result.exitCode !== -1 || result.cwd) {
-    mt.shellState.hookInjected = true;
-    return true;
-  }
-
-  return false;
+  return false; // hookInjected will be set asynchronously via callback
 }
 
 /**
@@ -277,6 +310,7 @@ async function waitForIdle(
   return new Promise((resolve) => {
     let outputBuffer = '';
     let resolved = false;
+    let lastOutputTime = Date.now();
 
     const cleanup = () => {
       if (resolved) return;
@@ -284,6 +318,7 @@ async function waitForIdle(
       unsubOutput();
       unsubIdle();
       clearTimeout(deadline);
+      clearInterval(silenceCheck);
     };
 
     const deadline = setTimeout(() => {
@@ -295,6 +330,22 @@ async function waitForIdle(
       });
     }, timeoutSec * 1000);
 
+    // Silence fallback: if no output for 15s and no OSC idle signal,
+    // assume the command finished (OSC marker may have been lost on Windows).
+    const SILENCE_THRESHOLD_MS = 15_000;
+    const silenceCheck = setInterval(() => {
+      if (resolved) return;
+      if (outputBuffer.length > 0 && Date.now() - lastOutputTime > SILENCE_THRESHOLD_MS) {
+        cleanup();
+        const mt = TerminalRegistry.get(sessionId);
+        resolve({
+          output: stripAnsi(outputBuffer) + '\n[No OSC idle signal received — returning captured output]',
+          exitCode: mt?.shellState.lastExitCode ?? -1,
+          cwd: mt?.shellState.cwd ?? '',
+        });
+      }
+    }, 3_000);
+
     // Capture raw output text
     const unsubOutput = TerminalRegistry.onOutput(sessionId, (data) => {
       if (resolved) return;
@@ -304,6 +355,7 @@ async function waitForIdle(
         return;
       }
       outputBuffer += data;
+      lastOutputTime = Date.now();
     });
 
     // Wait for shell idle (OSC 7768)
@@ -332,6 +384,7 @@ async function waitForMarkerFallback(
   return new Promise((resolve) => {
     let outputBuffer = '';
     let resolved = false;
+    let lastOutputTime = Date.now();
 
     const cleanup = () => {
       if (resolved) return;
@@ -339,6 +392,7 @@ async function waitForMarkerFallback(
       unsubOutput();
       unsubOsc();
       clearTimeout(deadline);
+      clearInterval(silenceCheck);
     };
 
     const deadline = setTimeout(() => {
@@ -349,6 +403,20 @@ async function waitForMarkerFallback(
       });
     }, timeoutSec * 1000);
 
+    // Silence fallback: if no output for 15s and no OSC marker received,
+    // assume the command finished (OSC marker may have been lost).
+    const SILENCE_THRESHOLD_MS = 15_000;
+    const silenceCheck = setInterval(() => {
+      if (resolved) return;
+      if (outputBuffer.length > 0 && Date.now() - lastOutputTime > SILENCE_THRESHOLD_MS) {
+        cleanup();
+        resolve({
+          output: stripAnsi(outputBuffer) + '\n[No OSC marker received — returning captured output]',
+          exitCode: -1,
+        });
+      }
+    }, 3_000);
+
     const unsubOutput = TerminalRegistry.onOutput(sessionId, (data) => {
       if (resolved) return;
       if (signal?.aborted) {
@@ -357,6 +425,7 @@ async function waitForMarkerFallback(
         return;
       }
       outputBuffer += data;
+      lastOutputTime = Date.now();
     });
 
     const unsubOsc = TerminalRegistry.onOscMarker(sessionId, markerId, (exitCode) => {
@@ -388,15 +457,18 @@ async function executeAgentCommand(
   if (!mt?.shellState.hookInjected || shellType === 'powershell') {
     const markerId = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const resultPromise = waitForMarkerFallback(sessionId, markerId, timeoutSec, signal);
+    // Leading space to suppress shell history (HIST_IGNORE_SPACE / ignorespace / fish private)
     if (shellType === 'powershell') {
       TerminalRegistry.sendAgentCommand(sessionId,
-        `${cmd}; $__ec=$LASTEXITCODE; [Console]::Write("$([char]0x1b)]7766;${markerId};$__ec$([char]7)")`);
+        ` ${cmd}; $__ec=$LASTEXITCODE; [Console]::Write("$([char]0x1b)]7766;${markerId};$__ec$([char]7)")`);
     } else if (shellType === 'fish') {
+      // fish: commands starting with space are private when fish_private_mode or
+      // fish_history is empty; not universally reliable, but best effort
       TerminalRegistry.sendAgentCommand(sessionId,
-        `${cmd}; set __ec $status; printf '\\033]7766;${markerId};%d\\007' $__ec`);
+        ` ${cmd}; set __ec $status; printf '\\033]7766;${markerId};%d\\007' $__ec`);
     } else {
       TerminalRegistry.sendAgentCommand(sessionId,
-        `${cmd}; __ec=$?; printf '\\033]7766;${markerId};%d\\007' "$__ec"`);
+        ` ${cmd}; __ec=$?; printf '\\033]7766;${markerId};%d\\007' "$__ec"`);
     }
     const { output, exitCode } = await resultPromise;
     return { output: cleanOutput(output, cmd), exitCode, cwd: '' };
@@ -961,9 +1033,13 @@ function createWebSearchTool(): ToolHandler {
       }
 
       try {
-        const resp = await invoke<{ ok: boolean; status: number; body: string }>('fetch_ai_models', {
+        const fetchPromise = invoke<{ ok: boolean; status: number; body: string }>('fetch_ai_models', {
           request: { url: searchUrl, headers },
         });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Search request timed out (10s)')), 10_000),
+        );
+        const resp = await Promise.race([fetchPromise, timeoutPromise]);
 
         if (!resp.ok) return `Search request failed (HTTP ${resp.status}).`;
 
@@ -997,6 +1073,33 @@ function createWebSearchTool(): ToolHandler {
   };
 }
 
+// ─── command_help (tldr) ─────────────────────────────────────────
+
+function createCommandHelpTool(): ToolHandler {
+  return {
+    definition: {
+      name: 'command_help',
+      description: 'Look up usage examples and documentation for a CLI command using the tldr database. Returns a concise help page with common usage patterns. Use this when you need to recall command syntax or flags.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'The command name to look up (e.g. "tar", "docker", "ffmpeg")' },
+        },
+        required: ['command'],
+      },
+    },
+    async execute(args): Promise<string> {
+      const cmd = String(args.command ?? '').trim();
+      if (!cmd) return 'Error: command name is required.';
+      const result = await queryTldr(cmd);
+      if (!result.found || !result.page) return `No tldr page found for "${cmd}".`;
+      return formatTldrForAgent(result.page);
+    },
+    requiresConfirm: () => false,
+    isDestructive: () => false,
+  };
+}
+
 // ─── Initialize ──────────────────────────────────────────────────
 
 export function initializeTools(): ToolRegistry {
@@ -1007,6 +1110,9 @@ export function initializeTools(): ToolRegistry {
   registry.register(createWatchTerminalTool());
   registry.register(createReadFileTool());
   registry.register(createWriteFileTool());
+
+  // Conditionally register command_help if tldr is enabled
+  syncCommandHelpTool(registry);
 
   // Conditionally register web search if SearXNG is configured
   syncWebSearchTool(registry);
@@ -1023,5 +1129,17 @@ export function syncWebSearchTool(registry: ToolRegistry): void {
     }
   } else {
     registry.unregister('web_search');
+  }
+}
+
+/** Sync command_help tool registration with current settings. */
+export function syncCommandHelpTool(registry: ToolRegistry): void {
+  const settings = loadSettings();
+  if (settings.tldrEnabled) {
+    if (!registry.has('command_help')) {
+      registry.register(createCommandHelpTool());
+    }
+  } else {
+    registry.unregister('command_help');
   }
 }

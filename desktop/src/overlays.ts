@@ -115,14 +115,15 @@ export function showReconnectOverlay(sessionId: string, tabId: string): void {
       let reconnectConfig = config;
       if (jsConfig) {
         const tokenResult = await createConnectionToken(
-          jsConfig.config.baseUrl, jsConfig.asset.id, jsConfig.account.username, jsConfig.account.id, 'ssh',
+          jsConfig.config.baseUrl, jsConfig.asset.id, jsConfig.account.name, jsConfig.account.username, jsConfig.account.alias || '', jsConfig.account.id, 'ssh',
         );
         if (!tokenResult.ok || !tokenResult.token) {
           throw new Error(tokenResult.error || 'Failed to create connection token');
         }
+        const jmsToken = tokenResult.id || tokenResult.token;
         reconnectConfig = {
           ...config,
-          username: `JMS-${tokenResult.token}`,
+          username: `JMS-${jmsToken}`,
           password: tokenResult.secret || tokenResult.token || '',
           skipShellHook: true,
         };
@@ -429,6 +430,26 @@ export function showReclaimButton(sessionId: string): void {
     reclaimSessionIds.delete(sessionId);
     TerminalRegistry.sendMasterReclaim(sessionId);
     hideReclaimButton();
+
+    // Safety net: if we don't regain master within 3s, the reclaim was
+    // likely silently ignored (e.g. client ID mismatch after reconnect race).
+    // Force-close the WebSocket so the reconnect logic kicks in.
+    const reclaimTimeout = setTimeout(() => {
+      document.removeEventListener('master-gained', onGained);
+      const mt = TerminalRegistry.get(sessionId);
+      if (mt && !mt.ended && mt.ws) {
+        console.warn(`[overlays] reclaim timeout for ${sessionId}, forcing reconnect`);
+        mt.ws.close();
+      }
+    }, 3000);
+
+    const onGained = ((e: CustomEvent) => {
+      if (e.detail.sessionId === sessionId) {
+        clearTimeout(reclaimTimeout);
+        document.removeEventListener('master-gained', onGained);
+      }
+    }) as EventListener;
+    document.addEventListener('master-gained', onGained);
   };
 
   overlay.onclick = doReclaim;

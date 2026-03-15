@@ -2,6 +2,7 @@ import { TerminalRegistry } from './terminal';
 import { AppSettings } from './themes';
 import { t } from './i18n';
 import { icon } from './icons';
+import { createOverlayScrollbar } from './overlay-scrollbar';
 
 let refreshInterval: ReturnType<typeof setInterval> | null = null;
 let currentSettings: AppSettings | null = null;
@@ -184,79 +185,8 @@ export function createGalleryView(): HTMLDivElement {
   scrollArea.appendChild(gridContainer);
   container.appendChild(scrollArea);
 
-  // ── Custom overlay scrollbar (same pattern as terminal overlay scrollbar) ──
-  const bar = document.createElement('div');
-  bar.className = 'gallery-overlay-scrollbar';
-  const track = document.createElement('div');
-  track.className = 'gallery-overlay-scrollbar-track';
-  const thumb = document.createElement('div');
-  thumb.className = 'gallery-overlay-scrollbar-thumb';
-  track.appendChild(thumb);
-  bar.appendChild(track);
-  container.appendChild(bar);
-
-  function syncScrollbar(): void {
-    const sh = scrollArea.scrollHeight;
-    const ch = scrollArea.clientHeight;
-    if (sh <= ch) {
-      bar.style.display = 'none';
-      return;
-    }
-    bar.style.display = '';
-    const ratio = ch / sh;
-    const thumbH = Math.max(24, ratio * ch);
-    const maxScroll = sh - ch;
-    const pct = maxScroll > 0 ? scrollArea.scrollTop / maxScroll : 0;
-    thumb.style.height = `${thumbH}px`;
-    thumb.style.transform = `translateY(${pct * (ch - thumbH)}px)`;
-  }
-
-  scrollArea.addEventListener('scroll', syncScrollbar, { passive: true });
-  const ro = new ResizeObserver(syncScrollbar);
-  ro.observe(scrollArea);
-  ro.observe(gridContainer);
-
-  // Drag thumb
-  let dragging = false;
-  let dragStartY = 0;
-  let dragStartScroll = 0;
-
-  thumb.addEventListener('mousedown', (e: MouseEvent) => {
-    dragging = true;
-    dragStartY = e.clientY;
-    dragStartScroll = scrollArea.scrollTop;
-    bar.classList.add('dragging');
-    e.preventDefault();
-    e.stopPropagation();
-  });
-
-  const ac = new AbortController();
-  document.addEventListener('mousemove', (e: MouseEvent) => {
-    if (!dragging) return;
-    const ch = scrollArea.clientHeight;
-    const sh = scrollArea.scrollHeight;
-    const thumbH = Math.max(24, (ch / sh) * ch);
-    const trackH = ch - thumbH;
-    if (trackH > 0) {
-      scrollArea.scrollTop = dragStartScroll + ((e.clientY - dragStartY) / trackH) * (sh - ch);
-    }
-  }, { signal: ac.signal });
-
-  document.addEventListener('mouseup', () => {
-    if (!dragging) return;
-    dragging = false;
-    bar.classList.remove('dragging');
-  }, { signal: ac.signal });
-
-  // Click on track to jump
-  track.addEventListener('mousedown', (e: MouseEvent) => {
-    if (e.target === thumb) return;
-    const rect = track.getBoundingClientRect();
-    const ch = scrollArea.clientHeight;
-    const sh = scrollArea.scrollHeight;
-    scrollArea.scrollTop = ((e.clientY - rect.top) / ch) * (sh - ch);
-    e.preventDefault();
-  });
+  // ── Overlay scrollbar (reusable component) ──
+  createOverlayScrollbar({ viewport: scrollArea, container });
 
   return container;
 }

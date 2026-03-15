@@ -39,6 +39,11 @@ export class TransferHistoryManager {
   private speedTracker: Map<string, { lastBytes: number; lastTime: number; speed: number }> = new Map();
   private delegate: TransferControlDelegate | null = null;
 
+  // 筛选状态
+  private filterType: 'upload' | 'download' | null = null;
+  private filterStatus: 'active' | 'completed' | 'failed' | null = null;
+  private searchQuery: string = '';
+
   // 虚拟滚动
   private static readonly ITEM_HEIGHT = 95;
   private static readonly VIRTUAL_BUFFER = 5;
@@ -53,6 +58,56 @@ export class TransferHistoryManager {
 
   setDelegate(delegate: TransferControlDelegate): void {
     this.delegate = delegate;
+  }
+
+  /** 获取当前筛选后的记录列表 */
+  private getFilteredHistory(): TransferRecord[] {
+    let list = this.transferHistory;
+    if (this.filterType) {
+      list = list.filter(r => r.type === this.filterType);
+    }
+    if (this.filterStatus) {
+      list = list.filter(r => {
+        if (this.filterStatus === 'active') return r.status === 'inprogress' || r.status === 'paused' || r.status === 'pending';
+        if (this.filterStatus === 'completed') return r.status === 'completed';
+        if (this.filterStatus === 'failed') return r.status === 'failed' || r.status === 'cancelled';
+        return true;
+      });
+    }
+    if (this.searchQuery) {
+      const q = this.searchQuery.toLowerCase();
+      list = list.filter(r => r.filename.toLowerCase().includes(q) || r.path.toLowerCase().includes(q));
+    }
+    return list;
+  }
+
+  /** 设置类型筛选并刷新 */
+  setFilter(type: 'upload' | 'download' | null): void {
+    this.filterType = type;
+    this.lastVirtualRange = null;
+    this.renderTransferHistory();
+  }
+
+  getFilter(): 'upload' | 'download' | null {
+    return this.filterType;
+  }
+
+  /** 设置状态筛选并刷新 */
+  setStatusFilter(status: 'active' | 'completed' | 'failed' | null): void {
+    this.filterStatus = status;
+    this.lastVirtualRange = null;
+    this.renderTransferHistory();
+  }
+
+  getStatusFilter(): 'active' | 'completed' | 'failed' | null {
+    return this.filterStatus;
+  }
+
+  /** 设置搜索关键词并刷新 */
+  setSearchQuery(query: string): void {
+    this.searchQuery = query;
+    this.lastVirtualRange = null;
+    this.renderTransferHistory();
   }
 
   // 从 localStorage 恢复传输历史
@@ -83,9 +138,16 @@ export class TransferHistoryManager {
   }
 
   clearTransferHistory(): void {
-    this.transferHistory = this.transferHistory.filter(
-      r => r.status === 'inprogress' || r.status === 'paused' || r.status === 'pending'
-    );
+    const isActive = (r: TransferRecord) => r.status === 'inprogress' || r.status === 'paused' || r.status === 'pending';
+    const hasFilter = this.filterType || this.filterStatus || this.searchQuery;
+    if (hasFilter) {
+      // 有筛选时，获取当前筛选结果的 id 集合，只清空这些非活跃记录
+      const filteredIds = new Set(this.getFilteredHistory().filter(r => !isActive(r)).map(r => r.id));
+      this.transferHistory = this.transferHistory.filter(r => !filteredIds.has(r.id));
+    } else {
+      // 全部模式下，保留活跃记录
+      this.transferHistory = this.transferHistory.filter(isActive);
+    }
     this.saveTransferHistory();
     this.lastVirtualRange = null;
     this.renderTransferHistory();
@@ -187,6 +249,19 @@ export class TransferHistoryManager {
     return this.transferHistory.find(r => r.id === id);
   }
 
+  /** 删除单条传输记录（仅已完成/失败/取消的记录可删除） */
+  deleteRecord(id: string): void {
+    const idx = this.transferHistory.findIndex(r => r.id === id);
+    if (idx === -1) return;
+    const record = this.transferHistory[idx];
+    if (record.status === 'inprogress' || record.status === 'paused' || record.status === 'pending') return;
+    this.transferHistory.splice(idx, 1);
+    this.speedTracker.delete(id);
+    this.saveTransferHistory();
+    this.lastVirtualRange = null;
+    this.renderTransferHistory();
+  }
+
   private updateProgressInPlace(id: string, progress: number): void {
     const historyList = document.getElementById(`history-list-${this.sessionId}`);
     if (!historyList) return;
@@ -268,6 +343,11 @@ export class TransferHistoryManager {
       actionButtons = `<div class="transfer-actions">
         <button class="transfer-btn cancel-btn" data-id="${record.id}" title="取消">✕</button>
       </div>`;
+    } else {
+      // completed / failed / cancelled — 显示删除按钮
+      actionButtons = `<div class="transfer-actions">
+        <button class="transfer-btn delete-btn" data-id="${record.id}" title="删除记录">✕</button>
+      </div>`;
     }
 
     let speedHtml = '';
@@ -287,7 +367,7 @@ export class TransferHistoryManager {
     }
 
     const localPathHtml = (record.type === 'download' && record.savePath && record.status === 'completed')
-      ? `<span class="save-path clickable" data-save-path="${escapeHtml(record.savePath)}" title="在文件管理器中打开: ${escapeHtml(record.savePath)}">📂 ${escapeHtml(record.savePath)}</span>`
+      ? `<span class="save-path clickable" data-save-path="${escapeHtml(record.savePath)}" title="在文件管理器中打开: ${escapeHtml(record.savePath)}"><svg class="save-path-icon" width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.879a1.5 1.5 0 0 1 1.06.44L8.562 3.5H13.5A1.5 1.5 0 0 1 15 5v7.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9z" fill="currentColor"/></svg> ${escapeHtml(record.savePath)}</span>`
       : '';
 
     const errorMsg = record.error
@@ -324,10 +404,17 @@ export class TransferHistoryManager {
       return;
     }
 
-    if (this.transferHistory.length === 0) {
+    const filtered = this.getFilteredHistory();
+    if (filtered.length === 0) {
+      let emptyText = '暂无上传下载记录';
+      if (this.searchQuery) {
+        emptyText = '无匹配结果';
+      } else if (this.filterType || this.filterStatus) {
+        emptyText = '无匹配记录';
+      }
       historyList.innerHTML = `
         <div class="empty-history">
-          <p>暂无上传下载记录</p>
+          <p>${emptyText}</p>
         </div>
       `;
       this.lastVirtualRange = null;
@@ -353,7 +440,8 @@ export class TransferHistoryManager {
     const scrollContainer = historyList.parentElement as HTMLElement;
     if (!scrollContainer) return;
 
-    const total = this.transferHistory.length;
+    const filtered = this.getFilteredHistory();
+    const total = filtered.length;
     const itemH = TransferHistoryManager.ITEM_HEIGHT;
     const buffer = TransferHistoryManager.VIRTUAL_BUFFER;
 
@@ -375,7 +463,7 @@ export class TransferHistoryManager {
     historyList.style.paddingTop = `${topPad}px`;
     historyList.style.boxSizing = 'border-box';
 
-    const slice = this.transferHistory.slice(startIdx, endIdx);
+    const slice = filtered.slice(startIdx, endIdx);
     historyList.innerHTML = slice.map(r => this.renderTransferItem(r)).join('');
   }
 
@@ -404,6 +492,13 @@ export class TransferHistoryManager {
       if (cancelBtn?.dataset.id) {
         e.stopPropagation();
         this.handleCancel(cancelBtn.dataset.id);
+        return;
+      }
+
+      const deleteBtn = target.closest('.delete-btn') as HTMLElement | null;
+      if (deleteBtn?.dataset.id) {
+        e.stopPropagation();
+        this.deleteRecord(deleteBtn.dataset.id);
         return;
       }
 

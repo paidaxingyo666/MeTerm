@@ -4,7 +4,8 @@
  */
 import { AppSettings, resolveIsDark, getEffectiveTheme, saveSettings } from './themes';
 import { TerminalRegistry } from './terminal';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export function applyWindowOpacity(opacityPercent: number): void {
   const value = Math.max(20, Math.min(100, opacityPercent)) / 100;
@@ -12,6 +13,37 @@ export function applyWindowOpacity(opacityPercent: number): void {
   // Clear the anti-flash inline background set in index.html
   document.documentElement.style.removeProperty('background-color');
   document.body.style.backgroundColor = 'transparent';
+}
+
+export async function applyVibrancy(enabled: boolean): Promise<void> {
+  // Apply CSS changes synchronously FIRST so the UI adapts immediately
+  document.documentElement.classList.toggle('vibrancy-active', enabled);
+  if (enabled) {
+    // Clear anti-flash inline backgrounds so native blur shows through
+    document.documentElement.style.removeProperty('background-color');
+    document.body.style.backgroundColor = 'transparent';
+    document.querySelectorAll('style').forEach(el => {
+      if (el.textContent && /^body\s*\{background:/.test(el.textContent)) el.remove();
+    });
+  }
+  // Read theme's --bg-primary (format: "r, g, b") for vibrancy fallback color.
+  // This solid color is shown when vibrancy briefly disengages (Stage Manager, etc.)
+  const bgPrimary = getComputedStyle(document.documentElement)
+    .getPropertyValue('--bg-primary').trim();
+  const [fr, fg, fb] = bgPrimary.split(',').map(s => parseInt(s.trim(), 10) / 255);
+
+  const label = getCurrentWindow().label;
+  try {
+    await invoke('set_window_vibrancy', {
+      label,
+      enabled,
+      fallbackR: isNaN(fr) ? undefined : fr,
+      fallbackG: isNaN(fg) ? undefined : fg,
+      fallbackB: isNaN(fb) ? undefined : fb,
+    });
+  } catch (e) {
+    console.warn('Failed to set vibrancy:', e);
+  }
 }
 
 export function applyAiBarOpacity(opacityPercent: number): void {

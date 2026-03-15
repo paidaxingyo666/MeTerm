@@ -280,6 +280,14 @@ export interface AppSettings {
   searxngPassword: string;
   searxngEnabled: boolean;
   fileLinkSkipConfirm: boolean;
+  enableVibrancy: boolean;
+  // tldr & command completion
+  tldrEnabled: boolean;
+  cmdCompletionEnabled: boolean;
+  /** Auto-inject shell hook on SSH/remote sessions for command history & AI Agent */
+  shellHookInjection: boolean;
+  /** PiP window scale percentage relative to original window (10-50) */
+  pipScale: number;
 }
 
 const SETTINGS_KEY = 'meterm-settings';
@@ -324,6 +332,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   searxngPassword: '',
   searxngEnabled: false,
   fileLinkSkipConfirm: false,
+  enableVibrancy: false,
+  tldrEnabled: false,
+  cmdCompletionEnabled: false,
+  shellHookInjection: false,
+  pipScale: 30,
 };
 
 export function loadSettings(): AppSettings {

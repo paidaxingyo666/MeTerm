@@ -342,6 +342,27 @@
   color: #ff6b6b;
 }
 
+.ai-history-help {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.ai-history-row:hover .ai-history-help { opacity: 1; }
+.ai-history-help:hover {
+  background: rgba(20, 184, 166, 0.15);
+  color: #14b8a6;
+}
+
 /* Chat history panel */
 .ai-bar-chat-history-panel {
   position: absolute;

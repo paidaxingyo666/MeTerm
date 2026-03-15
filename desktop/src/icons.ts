@@ -1,4 +1,4 @@
-export type IconName = 'home' | 'settings' | 'plus' | 'terminal' | 'gallery' | 'ssh' | 'server' | 'chevronLeft' | 'chevronRight' | 'mobile' | 'share' | 'remote' | 'remoteList' | 'jumpserver';
+export type IconName = 'home' | 'settings' | 'plus' | 'terminal' | 'gallery' | 'ssh' | 'server' | 'chevronLeft' | 'chevronRight' | 'mobile' | 'share' | 'remote' | 'remoteList' | 'jumpserver' | 'pin';
 
 const icons: Record<IconName, string> = {
   home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5L12 4l9 7.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 10.5V20h11V10.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -6,7 +6,7 @@ const icons: Record<IconName, string> = {
   plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
   terminal: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.2" ry="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M7 10l3 2.5L7 15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15H17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
   gallery: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 6.5l1.5 1.3L5.5 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 6.5l1.5 1.3L16 9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 17l1.5 1.3-1.5 1.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 17l1.5 1.3-1.5 1.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  ssh: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6.5 11l1.5 1.2-1.5 1.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.5 13.5h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="18" cy="12" r="1" fill="currentColor"/></svg>',
+  ssh: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 11l2.5 2L8 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 15h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   server: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="14" width="18" height="7" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="7" cy="6.5" r="1" fill="currentColor"/><circle cx="7" cy="17.5" r="1" fill="currentColor"/><path d="M11 6.5h6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 17.5h6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M12 10v4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   chevronLeft: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   chevronRight: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18l6-6-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -15,6 +15,7 @@ const icons: Record<IconName, string> = {
   remote: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><ellipse cx="12" cy="12" rx="4" ry="9" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3.5 9h17M3.5 15h17" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
   remoteList: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.5"/><ellipse cx="10" cy="10" rx="3.2" ry="7.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3 7.5h14M3 12.5h14" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M16 17h5M16 19.5h5M16 22h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
   jumpserver: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 12L3 7M12 12l9-5M12 12v10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="12" cy="9" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 14h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  pin: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M5 10h14l-2 6H7l-2-6Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 16v6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
 };
 
 export function icon(name: IconName): string {
@@ -95,6 +96,38 @@ const nameMap: Record<string, string> = {
   '.eslintrc': 'file-config', '.prettierrc': 'file-config',
   'LICENSE': 'file-doc', 'README': 'file-text',
 };
+
+// Non-editable icon types (binary, media, documents that need special readers)
+const nonEditableTypes = new Set([
+  'file-image', 'file-archive', 'file-binary', 'file-video', 'file-audio', 'file-lock',
+]);
+
+// File extensions that are text despite being classified under non-editable icon types
+const editableExceptions = new Set(['csv', 'svg']);
+
+/**
+ * Check if a file can be opened in the text editor.
+ * Returns true for code, config, text, shell, and unknown (no extension) files.
+ */
+export function isEditableFile(name: string): boolean {
+  const baseName = name.split('/').pop() || name;
+
+  // Check special filenames first
+  if (nameMap[baseName]) {
+    return !nonEditableTypes.has(nameMap[baseName]);
+  }
+
+  // Check extension
+  const dotIdx = baseName.lastIndexOf('.');
+  if (dotIdx > 0) {
+    const ext = baseName.substring(dotIdx + 1).toLowerCase();
+    if (editableExceptions.has(ext)) return true;
+    if (extMap[ext]) return !nonEditableTypes.has(extMap[ext]);
+  }
+
+  // No extension / unknown → treat as editable (common on Linux)
+  return true;
+}
 
 export function getFileIcon(name: string, isDir: boolean, isLink?: boolean): string {
   if (isDir) return fileIcons['folder'];

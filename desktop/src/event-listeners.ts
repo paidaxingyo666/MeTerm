@@ -10,7 +10,7 @@ import { TerminalRegistry } from './terminal';
 import { DrawerManager } from './drawer';
 import { AICapsuleManager } from './ai-capsule';
 import { loadSettings, saveSettings } from './themes';
-import { applyWindowOpacity, applyAiBarOpacity, resolveThemeAttr, applyColorScheme, applyBackgroundImage } from './appearance';
+import { applyWindowOpacity, applyAiBarOpacity, applyVibrancy, resolveThemeAttr, applyColorScheme, applyBackgroundImage } from './appearance';
 import { setHomeViewSettings } from './home';
 import { updateGalleryView, setGalleryViewSettings } from './gallery';
 import { t } from './i18n';
@@ -62,11 +62,12 @@ import {
   port, authToken, metermReady, setPort, setAuthToken, setMetermReady,
   handledPairIds,
   settings, setSettings,
-  isHomeView, isGalleryView,
+  isHomeView, isGalleryView, isPipMode,
   sshConfigMap, remoteInfoMap, sessionProgressMap,
   isWindowsPlatform,
   setLastFocusedMainWindowLabel,
 } from './app-state';
+import { togglePip } from './pip';
 import { restoreActiveJumpServersFromStorage } from './jumpserver-handler';
 
 // ── Lazy-cached DOM elements ──────────────────────────────────────
@@ -212,6 +213,7 @@ export function setupDomEventListeners(): void {
   // Window resize handler
   let resizeSaveTimer: ReturnType<typeof setTimeout> | null = null;
   window.addEventListener('resize', () => {
+    if (isPipMode) return; // PiP: don't trigger terminal resize or save window size
     updateWindowAspectRatio();
     TerminalRegistry.resizeAll();
     syncTabMarqueeState();
@@ -481,6 +483,11 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
     }
   });
 
+  void listen<{ target_window: string }>('menu-pip-toggle', (event) => {
+    if (!isForThisWindow(event.payload)) return;
+    void togglePip();
+  });
+
   void listen<{ target_window: string }>('menu-show-home', (event) => {
     if (!isForThisWindow(event.payload)) return;
     void getCurrentWindow().show();
@@ -714,6 +721,7 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
     applyWindowOpacity(settings.opacity);
     applyAiBarOpacity(settings.aiBarOpacity);
     applyBackgroundImage(settings, terminalPanelEl);
+    void applyVibrancy(settings.enableVibrancy);
     TerminalRegistry.setSettings(settings);
     void syncTrayLanguage();
     renderTabs();

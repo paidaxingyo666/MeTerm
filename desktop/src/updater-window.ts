@@ -5,6 +5,7 @@ import { LogicalSize } from '@tauri-apps/api/dpi';
 import { emit } from '@tauri-apps/api/event';
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage, t } from './i18n';
+import { applyVibrancy } from './appearance';
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
@@ -118,7 +119,7 @@ export function initUpdaterWindow(): void {
   const settings = loadSettings();
   setLanguage(settings.language);
   document.documentElement.dataset.theme = resolveThemeAttr(settings.colorScheme);
-  document.documentElement.style.setProperty('--app-window-opacity', '1');
+  void applyVibrancy(settings.enableVibrancy);
   document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);
 
   // Hide main app UI

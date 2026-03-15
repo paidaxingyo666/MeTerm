@@ -11,7 +11,7 @@ export interface OverlayScrollbarOptions {
   /**
    * Parent element to append the scrollbar to.
    * Must be a non-scrolling ancestor with position: relative.
-   * If same as viewport, a wrapper div is auto-inserted.
+   * If same as viewport, uses inline mode (no DOM wrapping).
    */
   container: HTMLElement;
 }
@@ -26,15 +26,18 @@ export interface OverlayScrollbarHandle {
 export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlayScrollbarHandle {
   let { viewport, container } = opts;
 
-  // If container === viewport, auto-wrap so the scrollbar sits outside
-  // the scrollable area (otherwise it would scroll with content).
-  let wrapper: HTMLElement | null = null;
-  if (container === viewport) {
-    wrapper = document.createElement('div');
-    wrapper.className = 'overlay-sb-wrapper';
-    viewport.parentNode?.insertBefore(wrapper, viewport);
-    wrapper.appendChild(viewport);
-    container = wrapper;
+  // Inline mode: container === viewport. We can't put the scrollbar INSIDE the
+  // scrollable element (WebKit scrolls absolute children with content, and they
+  // extend scrollHeight). Instead, append bar to viewport's PARENT and use
+  // getBoundingClientRect() to position it at the viewport's right edge.
+  const inline = container === viewport;
+  if (inline) {
+    const parent = viewport.parentElement;
+    if (parent) {
+      const pp = getComputedStyle(parent).position;
+      if (!pp || pp === 'static') parent.style.position = 'relative';
+      container = parent;
+    }
   }
 
   // Hide native scrollbar
@@ -60,6 +63,17 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
       return;
     }
     bar.style.display = '';
+
+    // In inline mode, bar is in viewport's parent (positioned ancestor).
+    // Use offset* for precise positioning relative to the parent.
+    if (inline) {
+      bar.style.top = `${viewport.offsetTop}px`;
+      bar.style.bottom = 'auto';
+      bar.style.left = `${viewport.offsetLeft + viewport.offsetWidth - 14}px`;
+      bar.style.right = 'auto';
+      bar.style.height = `${ch}px`;
+    }
+
     const ratio = ch / sh;
     const thumbH = Math.max(20, ratio * ch);
     const maxScroll = sh - ch;
@@ -139,12 +153,8 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
     cleanupObs.disconnect();
     bar.remove();
     viewport.classList.remove('overlay-sb-viewport');
-    // Unwrap if we created a wrapper
-    if (wrapper) {
-      wrapper.parentNode?.insertBefore(viewport, wrapper);
-      wrapper.remove();
-    }
   }
 
   return { sync, destroy };
 }
+

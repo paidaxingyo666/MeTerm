@@ -18,11 +18,11 @@ import { AICapsuleManager } from './ai-capsule';
 import { SplitPaneManager, getAllLeaves, findLeafById } from './split-pane';
 import { createSSHHomeView, updateSSHHomeView } from './ssh';
 import { createGalleryView, updateGalleryView, startGalleryRefresh, stopGalleryRefresh } from './gallery';
-import { resolveThemeAttr } from './appearance';
-import { windowBgColor } from './themes';
 import { t } from './i18n';
 import { StatusBar } from './status-bar';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { invoke } from '@tauri-apps/api/core';
+import { createUtilityWindow } from './window-utils';
 import {
   showSSHConnectingPlaceholder, removeSSHConnectingPlaceholder,
   hideReclaimButton, hideViewerOverlayDom, hideMasterApprovalOverlay,
@@ -30,11 +30,9 @@ import {
   privateSessionIds,
 } from './overlays';
 import {
-  settings,
   isHomeView, isGalleryView, setIsHomeView, setIsGalleryView,
   type ViewMode,
   sshConfigMap, sessionProgressMap,
-  isWindowsPlatform,
 } from './app-state';
 
 // ── DOM elements (lazily cached) ──
@@ -249,37 +247,68 @@ export async function openSettings(tab?: string): Promise<void> {
     return;
   }
 
-  // Determine URL base
-  const baseUrl = window.location.origin + window.location.pathname;
-  let settingsUrl = baseUrl + '?window=settings';
+  // Create window from Rust side to ensure .transparent(true) works on macOS
+  let settingsUrl = '?window=settings';
   if (tab) settingsUrl += `&tab=${tab}`;
 
-  const themeStr = resolveThemeAttr(settings.colorScheme);
-  const nativeTheme = themeStr === 'light' ? 'light' as const : 'dark' as const;
-  const bgColor = windowBgColor(settings.colorScheme, themeStr);
-  const isMac = !isWindowsPlatform && navigator.userAgent.includes('Mac');
-  const settingsWindow = new WebviewWindow('settings', {
-    url: settingsUrl,
-    title: t('settings'),
-    width: 480,
-    height: 580,
-    resizable: false,
-    center: true,
-    visible: false,
-    decorations: !isWindowsPlatform,
-    transparent: false,
-    theme: nativeTheme,
-    backgroundColor: bgColor,
-    ...(isMac ? { titleBarStyle: 'overlay' as const, hiddenTitle: true } : {}),
-  });
-
-  // Fallback: ensure window shows even if webview JS hasn't loaded yet
-  settingsWindow.once('tauri://created', () => {
-    setTimeout(() => { void settingsWindow.show().then(() => settingsWindow.setFocus()); }, 150);
-  });
-  settingsWindow.once('tauri://error', (e: unknown) => {
+  try {
+    await createUtilityWindow({
+      label: 'settings',
+      url: settingsUrl,
+      title: t('settings'),
+      width: 480,
+      height: 580,
+      resizable: false,
+    });
+    // Show after a brief delay for rendering
+    const win = await WebviewWindow.getByLabel('settings');
+    if (win) {
+      setTimeout(async () => {
+        const w = await WebviewWindow.getByLabel('settings');
+        if (w) void w.show().then(() => w.setFocus());
+      }, 150);
+    }
+  } catch (e) {
     console.error('Failed to create settings window:', e);
-  });
+  }
+}
+
+/** Open the editor window — identical pattern to openSettings() */
+export async function openEditorWindow(): Promise<void> {
+  const existing = await WebviewWindow.getByLabel('editor');
+  if (existing) {
+    void existing.show();
+    void existing.setFocus();
+    return;
+  }
+
+  // Restore persisted size or use defaults
+  const DEFAULT_W = 960, DEFAULT_H = 680;
+  let w = DEFAULT_W, h = DEFAULT_H;
+  try {
+    const saved = localStorage.getItem('meterm-editor-window-size');
+    if (saved) {
+      const s = JSON.parse(saved) as { width: number; height: number };
+      if (s.width >= 400 && s.height >= 300) { w = s.width; h = s.height; }
+    }
+  } catch { /* ignore */ }
+
+  try {
+    await createUtilityWindow({
+      label: 'editor',
+      url: '?window=editor',
+      title: 'MeTerm Editor',
+      width: w,
+      height: h,
+      resizable: true,
+    });
+    setTimeout(async () => {
+      const w = await WebviewWindow.getByLabel('editor');
+      if (w) void w.show().then(() => w.setFocus());
+    }, 150);
+  } catch (e) {
+    console.error('Failed to create editor window:', e);
+  }
 }
 
 export function getActiveSessionProgress(): { state: number; percent: number } | null {

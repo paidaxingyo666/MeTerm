@@ -142,12 +142,15 @@ type Node struct {
 }
 
 // Account represents a JumpServer account (system user) for an asset.
+// v4 permed_accounts may use "alias" for display name and "name" for the
+// account identifier used in connection token creation.
 type Account struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Username string `json:"username"`
-	HasSecret bool  `json:"has_secret"`
-	Privileged bool `json:"privileged"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Username   string `json:"username"`
+	Alias      string `json:"alias,omitempty"`
+	HasSecret  bool   `json:"has_secret"`
+	Privileged bool   `json:"privileged"`
 }
 
 // ConnectionToken is returned when creating a connection token.
@@ -605,10 +608,13 @@ func (c *Client) doGetMulti(paths []string, query url.Values) ([]byte, error) {
 		}
 		tried = append(tried, path)
 		lastErr = err
-		if strings.Contains(err.Error(), "HTTP 404") {
-			continue // try next path
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "HTTP 404") || strings.Contains(errMsg, "HTTP 500") {
+			// 404 = path doesn't exist; 500 = server error (common with deprecated
+			// endpoints in newer JumpServer versions). Try next path.
+			continue
 		}
-		if strings.Contains(err.Error(), "HTTP 401") || strings.Contains(err.Error(), "HTTP 403") {
+		if strings.Contains(errMsg, "HTTP 401") || strings.Contains(errMsg, "HTTP 403") {
 			// Token auth rejected — retry same path with cookie-only auth
 			data2, err2 := c.doGetCookieOnly(path, query)
 			if err2 == nil {
@@ -772,6 +778,7 @@ func (c *Client) GetUserAssets(search string, page, pageSize int) ([]Asset, int,
 	data, err := c.doGetMulti([]string{
 		"/api/v1/perms/users/self/assets/",
 		"/api/v1/perms/users/assets/",
+		"/api/v1/assets/hosts/",
 		"/api/v1/assets/assets/",
 	}, q)
 	if err != nil {
@@ -810,8 +817,8 @@ func (c *Client) GetNodes() ([]Node, error) {
 	q := url.Values{}
 	q.Set("limit", "1000") // Ensure we get all nodes, not just first page
 	data, err := c.doGetMulti([]string{
-		"/api/v1/perms/users/nodes/children/tree/",
 		"/api/v1/perms/users/self/nodes/children/tree/",
+		"/api/v1/perms/users/nodes/children/tree/",
 		"/api/v1/perms/users/self/nodes/",
 		"/api/v1/perms/users/nodes/",
 	}, q)
@@ -962,8 +969,8 @@ func (c *Client) fetchChildNodes(treeID string, seen map[string]bool) []Node {
 	q.Set("key", treeID)
 
 	data, err := c.doGetMulti([]string{
-		"/api/v1/perms/users/nodes/children/tree/",
 		"/api/v1/perms/users/self/nodes/children/tree/",
+		"/api/v1/perms/users/nodes/children/tree/",
 	}, q)
 	if err != nil {
 		log.Printf("[jumpserver] failed to fetch children for %q: %v", treeID, err)
@@ -1103,7 +1110,6 @@ func (c *Client) GetNodeAssets(nodeID, search string, page, pageSize int) ([]Ass
 		fmt.Sprintf("/api/v1/perms/users/self/nodes/%s/assets/", nodeID),
 		fmt.Sprintf("/api/v1/perms/users/nodes/%s/assets/", nodeID),
 		"/api/v1/perms/users/self/assets/",
-		"/api/v1/perms/users/assets/",
 	}, q)
 	if err != nil {
 		return nil, 0, err
@@ -1113,36 +1119,146 @@ func (c *Client) GetNodeAssets(nodeID, search string, page, pageSize int) ([]Ass
 }
 
 // GetAssetAccounts returns accounts (system users) available for a specific asset.
+// Supports both v2/v3 (dedicated accounts sub-endpoint) and v4 (permed_accounts
+// embedded in asset detail response).
 func (c *Client) GetAssetAccounts(assetID string) ([]Account, error) {
+	// Strategy 1: Try dedicated accounts endpoints (v2/v3)
 	data, err := c.doGetMulti([]string{
 		fmt.Sprintf("/api/v1/perms/users/self/assets/%s/accounts/", assetID),
 		fmt.Sprintf("/api/v1/perms/users/assets/%s/system-users/", assetID),
 		fmt.Sprintf("/api/v1/perms/users/assets/%s/accounts/", assetID),
 	}, nil)
+	if err == nil {
+		// Try parsing as direct accounts array
+		var accounts []Account
+		if err2 := json.Unmarshal(data, &accounts); err2 == nil && len(accounts) > 0 {
+			return accounts, nil
+		}
+		// Try parsing as paginated response
+		var page_ PageResult
+		if err2 := json.Unmarshal(data, &page_); err2 == nil {
+			if err3 := json.Unmarshal(page_.Results, &accounts); err3 == nil && len(accounts) > 0 {
+				return accounts, nil
+			}
+		}
+	}
+
+	// Strategy 2: v4 — get accounts from asset detail (permed_accounts field)
+	log.Printf("[jumpserver] accounts sub-endpoint failed, trying v4 asset detail for %s", assetID)
+	return c.getAccountsFromAssetDetail(assetID)
+}
+
+// getAccountsFromAssetDetail extracts permed_accounts from the v4 asset detail endpoint.
+// In JumpServer v4, GET /api/v1/perms/users/self/assets/{id}/ returns the asset
+// with a permed_accounts field containing the user's permitted accounts.
+func (c *Client) getAccountsFromAssetDetail(assetID string) ([]Account, error) {
+	data, err := c.doGetMulti([]string{
+		fmt.Sprintf("/api/v1/perms/users/self/assets/%s/", assetID),
+		fmt.Sprintf("/api/v1/perms/users/my/assets/%s/", assetID),
+	}, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get asset detail for accounts: %w", err)
 	}
 
-	var accounts []Account
-	if err := json.Unmarshal(data, &accounts); err != nil {
-		return nil, fmt.Errorf("failed to parse accounts: %w", err)
+	// Debug: log raw response to diagnose v4 field mapping
+	logLen := len(data)
+	if logLen > 1000 {
+		logLen = 1000
+	}
+	log.Printf("[jumpserver] asset detail raw (%d bytes): %s", len(data), string(data[:logLen]))
+
+	// v4 asset detail response includes permed_accounts
+	var detail struct {
+		PermedAccounts []json.RawMessage `json:"permed_accounts"`
+	}
+	if err := json.Unmarshal(data, &detail); err != nil {
+		return nil, fmt.Errorf("failed to parse asset detail: %w", err)
 	}
 
-	return accounts, nil
+	if len(detail.PermedAccounts) > 0 {
+		// Log first raw account for field mapping diagnosis
+		log.Printf("[jumpserver] first permed_account raw: %s", string(detail.PermedAccounts[0]))
+		var accounts []Account
+		for _, raw := range detail.PermedAccounts {
+			var acc Account
+			if err := json.Unmarshal(raw, &acc); err == nil {
+				accounts = append(accounts, acc)
+			}
+		}
+		if len(accounts) > 0 {
+			log.Printf("[jumpserver] got %d accounts from v4 asset detail (first: name=%q username=%q alias=%q)",
+				len(accounts), accounts[0].Name, accounts[0].Username, accounts[0].Alias)
+			return accounts, nil
+		}
+	}
+
+	// Fallback: try parsing accounts from the "accounts" field in asset detail
+	var detail2 struct {
+		Accounts []json.RawMessage `json:"accounts"`
+	}
+	if err := json.Unmarshal(data, &detail2); err == nil && len(detail2.Accounts) > 0 {
+		var accounts []Account
+		for _, raw := range detail2.Accounts {
+			var acc Account
+			if err := json.Unmarshal(raw, &acc); err == nil && acc.Username != "" {
+				accounts = append(accounts, acc)
+			} else {
+				// v4 might return account names as strings in the "accounts" field
+				var name string
+				if err := json.Unmarshal(raw, &name); err == nil && name != "" {
+					accounts = append(accounts, Account{Name: name, Username: name})
+				}
+			}
+		}
+		if len(accounts) > 0 {
+			log.Printf("[jumpserver] got %d accounts from asset detail accounts field", len(accounts))
+			return accounts, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no accounts found for asset %s", assetID)
 }
 
 // CreateConnectionToken creates a temporary token for connecting to an asset.
 // This token can be used with Koko's WebSocket endpoint.
-func (c *Client) CreateConnectionToken(assetID, accountName, accountID, protocol string) (*ConnectionToken, error) {
+// It tries multiple account identifier formats since different JumpServer versions
+// expect different values:
+//   - v4: "account" = Account.Alias (often UUID when no custom alias is set)
+//   - v3: "account" = Account.Username
+//   - v2: "system_user" = Account.ID (UUID)
+func (c *Client) CreateConnectionToken(assetID, accountName, accountUsername, accountAlias, accountID, protocol string) (*ConnectionToken, error) {
 	if protocol == "" {
 		protocol = "ssh"
 	}
 
-	// Try multiple body formats for different JumpServer versions
-	// v3+: { "asset": UUID, "account": "username", "protocol": "ssh" }
-	// v2:  { "asset": UUID, "system_user": UUID, "protocol": "ssh" }
-	bodies := []map[string]interface{}{
-		{"asset": assetID, "account": accountName, "protocol": protocol},
+	// Collect unique account identifiers to try, ordered by priority:
+	// 1. alias (v4 Luna uses alias as the account identifier)
+	// 2. name
+	// 3. username
+	// 4. id (UUID) as account string
+	seen := make(map[string]bool)
+	var accountNames []string
+	for _, name := range []string{accountAlias, accountName, accountUsername, accountID} {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			accountNames = append(accountNames, name)
+		}
+	}
+
+	// Build request bodies: try each identifier with v4 format first (connect_method required),
+	// then v3 format (no connect_method), then v2 format (system_user).
+	var bodies []map[string]interface{}
+	for _, acctName := range accountNames {
+		// v4: requires connect_method
+		bodies = append(bodies, map[string]interface{}{
+			"asset": assetID, "account": acctName, "protocol": protocol, "connect_method": "web_cli",
+		})
+	}
+	for _, acctName := range accountNames {
+		// v3: no connect_method
+		bodies = append(bodies, map[string]interface{}{
+			"asset": assetID, "account": acctName, "protocol": protocol,
+		})
 	}
 	if accountID != "" {
 		// v2 format uses system_user ID

@@ -42,6 +42,7 @@ import {
 } from './jumpserver-api';
 import { showMFADialog } from './jumpserver-ui';
 import { openJumpServerBrowserWindow } from './jumpserver-browser';
+import { recordJSAssetConnection } from './connection-groups';
 
 /**
  * Extract a human-readable error message from JumpServer API error strings.
@@ -73,6 +74,63 @@ export async function openJumpServerBrowser(config: JumpServerConfig): Promise<v
 }
 
 /**
+ * Ensure a JumpServer is authenticated (login + MFA if needed).
+ * Skips authentication if already registered as active.
+ * Returns true if authenticated, false if cancelled or failed.
+ */
+export async function ensureJSAuthenticated(config: JumpServerConfig): Promise<boolean> {
+  // Already authenticated in this session — skip
+  if (activeJumpServers.has(config.name)) return true;
+
+  StatusBar.setConnection('connecting', `JumpServer: ${config.name}`);
+
+  try {
+    let authResult;
+    if (config.authMethod === 'token' && config.apiToken) {
+      authResult = await authenticateWithToken(config);
+    } else {
+      authResult = await authenticate(config);
+    }
+
+    if (!authResult.ok) {
+      StatusBar.setError(`JumpServer: ${extractErrorMsg(authResult.error)}`);
+      return false;
+    }
+
+    // Handle MFA if required (loop to allow retries)
+    if (authResult.mfa_required) {
+      let mfaOk = false;
+      let mfaError: string | undefined;
+      const choices = authResult.mfa_choices || ['otp'];
+      while (!mfaOk) {
+        const mfaInput = await showMFADialog(choices, mfaError);
+        if (!mfaInput) {
+          StatusBar.setConnection('disconnected', '');
+          return false;
+        }
+
+        const mfaResult = await submitMFA(config.baseUrl, mfaInput.type, mfaInput.code);
+        if (mfaResult.ok) {
+          mfaOk = true;
+        } else {
+          mfaError = extractErrorMsg(mfaResult.error);
+        }
+      }
+    }
+
+    // Register as active JumpServer
+    activeJumpServers.set(config.name, config);
+    syncActiveJumpServersToStorage();
+    void emit('jumpserver-state-changed');
+    renderToolbarActions();
+    return true;
+  } catch (err) {
+    StatusBar.setError(`JumpServer: ${extractErrorMsg(String(err))}`);
+    return false;
+  }
+}
+
+/**
  * Full JumpServer connection flow:
  * authenticate → (MFA) → browse assets → select → SSH connect → auto-navigate
  */
@@ -88,58 +146,13 @@ export async function handleJumpServerConnect(config: JumpServerConfig): Promise
     apiToken: config.apiToken || secrets.apiToken,
   };
 
-  // Step 2: Authenticate
-  StatusBar.setConnection('connecting', `JumpServer: ${config.name}`);
+  // Step 2: Authenticate (+ MFA)
+  const authed = await ensureJSAuthenticated(fullConfig);
+  if (!authed) return;
 
-  try {
-    let authResult;
-    if (fullConfig.authMethod === 'token' && fullConfig.apiToken) {
-      authResult = await authenticateWithToken(fullConfig);
-    } else {
-      authResult = await authenticate(fullConfig);
-    }
-
-    if (!authResult.ok) {
-      StatusBar.setError(`JumpServer: ${extractErrorMsg(authResult.error)}`);
-      return;
-    }
-
-    // Step 3: Handle MFA if required (loop to allow retries)
-    if (authResult.mfa_required) {
-      let mfaOk = false;
-      let mfaError: string | undefined;
-      const choices = authResult.mfa_choices || ['otp'];
-      while (!mfaOk) {
-        const mfaInput = await showMFADialog(choices, mfaError);
-        if (!mfaInput) {
-          StatusBar.setConnection('disconnected', '');
-          return;
-        }
-
-        const mfaResult = await submitMFA(fullConfig.baseUrl, mfaInput.type, mfaInput.code);
-        if (mfaResult.ok) {
-          mfaOk = true;
-        } else {
-          mfaError = extractErrorMsg(mfaResult.error);
-          // Loop continues — showMFADialog will be called again with error shown
-        }
-      }
-      // Re-auth after MFA is handled by the Go backend (ReAuthenticate)
-      // Do NOT call authenticate() here — it would resetJSClient and destroy the session
-    }
-
-    // Register as active JumpServer (enables toolbar button for re-opening asset browser)
-    activeJumpServers.set(fullConfig.name, fullConfig);
-    syncActiveJumpServersToStorage();
-    void emit('jumpserver-state-changed');
-    renderToolbarActions();
-
-    // Step 4: Open standalone asset browser window
-    await openJumpServerBrowserWindow(fullConfig);
-    StatusBar.setConnection('connected', `JumpServer: ${fullConfig.name}`);
-  } catch (err) {
-    StatusBar.setError(`JumpServer: ${extractErrorMsg(String(err))}`);
-  }
+  // Step 3: Open standalone asset browser window
+  await openJumpServerBrowserWindow(fullConfig);
+  StatusBar.setConnection('connected', `JumpServer: ${fullConfig.name}`);
 }
 
 /**
@@ -154,21 +167,30 @@ export async function connectToAsset(
 ): Promise<void> {
   const terminalPanelEl = document.getElementById('terminal-panel') as HTMLDivElement;
 
+  // Step 0: Ensure authenticated (handles login + MFA if needed after restart)
+  const authed = await ensureJSAuthenticated(config);
+  if (!authed) return;
+
   // Step 1: Create connection token via JumpServer API
   const tokenResult = await createConnectionToken(
-    config.baseUrl, asset.id, account.username, account.id, 'ssh',
+    config.baseUrl, asset.id, account.name, account.username, account.alias || '', account.id, 'ssh',
   );
   if (!tokenResult.ok || !tokenResult.token) {
     throw new Error(tokenResult.error || 'Failed to create connection token');
   }
 
   // Step 2: Create SSH config using connection token
-  // Koko accepts JMS-{token} as username, with secret as password
+  // Koko accepts JMS-{token} as username:
+  //   v2/v3: JMS-{short_token}
+  //   v4:    JMS-{token_id} (UUID)
+  // Use the token ID (UUID) when available — Koko v4 looks up tokens by ID.
+  // For v2 where id IS the token value, this is equivalent.
+  const jmsToken = tokenResult.id || tokenResult.token;
   const sshConfig: SSHConnectionConfig = {
     name: `${config.name} → ${asset.name}`,
     host: config.sshHost,
     port: config.sshPort || 2222,
-    username: `JMS-${tokenResult.token}`,
+    username: `JMS-${jmsToken}`,
     authMethod: 'password',
     password: tokenResult.secret || tokenResult.token || '',
     skipShellHook: true,
@@ -254,6 +276,9 @@ export async function connectToAsset(
     });
     StatusBar.setConnection('connected', `${account.username}@${asset.address}`);
     renderTabs();
+
+    // Record asset connection history for frequency-based sorting
+    recordJSAssetConnection(config.name, asset.id, asset.name, asset.address, account.username, account.id);
 
   } catch (err) {
     removeSSHConnectingPlaceholder();

@@ -47,6 +47,7 @@ export interface JumpServerAccount {
   id: string;
   name: string;
   username: string;
+  alias?: string;
   has_secret: boolean;
   privileged: boolean;
 }
@@ -273,11 +274,18 @@ export async function getAccounts(baseUrl: string, assetId: string): Promise<Acc
 
 /**
  * Create a connection token for WebSocket terminal access.
+ * Sends all available account identifiers so the backend can try multiple
+ * formats for different JumpServer versions:
+ *   - v4: account = alias (often UUID when no custom alias)
+ *   - v3: account = username
+ *   - v2: system_user = id (UUID)
  */
 export async function createConnectionToken(
   baseUrl: string,
   assetId: string,
-  account: string,
+  accountName: string,
+  accountUsername: string,
+  accountAlias: string,
   accountId: string,
   protocol = 'ssh',
 ): Promise<ConnectionTokenResult> {
@@ -286,7 +294,9 @@ export async function createConnectionToken(
     body: JSON.stringify({
       base_url: baseUrl,
       asset_id: assetId,
-      account,
+      account: accountUsername,
+      account_name: accountName,
+      account_alias: accountAlias,
       account_id: accountId,
       protocol,
     }),

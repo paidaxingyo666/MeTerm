@@ -43,8 +43,9 @@ type Client struct {
 	Connected  bool
 	RemoteAddr string
 
-	done chan struct{}
-	mu   sync.Mutex
+	done    chan struct{}
+	mu      sync.Mutex
+	connGen uint64 // incremented on each (Re)connect; used to detect stale goroutine cleanup
 }
 
 // NewClient creates a connected client with a generated ID.
@@ -66,6 +67,7 @@ func NewClient(conn *websocket.Conn) *Client {
 		Connected:  true,
 		RemoteAddr: remoteAddr,
 		done:       make(chan struct{}),
+		connGen:    1,
 	}
 }
 
@@ -189,9 +191,17 @@ func (c *Client) Reconnect(conn *websocket.Conn) {
 	c.done = make(chan struct{})
 	c.Connected = true
 	c.LastSeen = time.Time{}
+	c.connGen++
 	c.mu.Unlock()
 
 	go c.WritePump()
+}
+
+// ConnGen returns the current connection generation.
+func (c *Client) ConnGen() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connGen
 }
 
 // Close permanently closes the client connection state.

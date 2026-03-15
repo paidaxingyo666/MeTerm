@@ -19,6 +19,10 @@ const (
 	MsgFileDownloadPause    byte = 0x20 // client → server: pause active download
 	MsgFileDownloadContinue byte = 0x21 // client → server: resume paused download
 	MsgFileDownloadCancel   byte = 0x22 // client → server: cancel active download
+
+	MsgFileReadRequest  byte = 0x30 // client → server: read file content for editor
+	MsgFileReadResponse byte = 0x31 // server → client: file content response [8B size][content]
+	MsgFileSaveRequest  byte = 0x32 // client → server: save file content [4B pathLen][path][content]
 )
 
 // FileInfo represents a file or directory metadata

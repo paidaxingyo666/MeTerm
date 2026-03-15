@@ -5,6 +5,7 @@ import { FONT_REGISTRY, getFontDef } from './fonts';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
 import { exportConnectionsToJSON, importConnectionsFromJSON } from './ssh';
+import { createSettingsSelect } from './custom-select';
 
 export function createGeneralTab(
   current: AppSettings,
@@ -20,15 +21,11 @@ export function createGeneralTab(
 
   const langSection = document.createElement('div');
   langSection.className = 'settings-section';
-  langSection.innerHTML = `
-    <label>${t('language')}</label>
-    <select class="settings-select" id="lang-select">
-      ${getAvailableLanguages().map((lang) =>
-        `<option value="${lang.value}" ${lang.value === current.language ? 'selected' : ''}>${lang.label}</option>`
-      ).join('')}
-    </select>
-  `;
-  const langSelect = langSection.querySelector('#lang-select') as HTMLSelectElement;
+  langSection.innerHTML = `<label>${t('language')}</label>`;
+  const langSelect = createSettingsSelect(
+    getAvailableLanguages().map((lang) => ({ value: lang.value, label: lang.label, selected: lang.value === current.language })),
+  );
+  langSection.appendChild(langSelect.el);
   langSelect.onchange = () => {
     const language = langSelect.value as 'en' | 'zh';
     setLanguage(language);
@@ -39,17 +36,15 @@ export function createGeneralTab(
 
   const colorSchemeSection = document.createElement('div');
   colorSchemeSection.className = 'settings-section';
-  colorSchemeSection.innerHTML = `
-    <label>${t('colorScheme')}</label>
-    <select class="settings-select" id="color-scheme-select">
-      <option value="auto" ${current.colorScheme === 'auto' ? 'selected' : ''}>${t('colorSchemeAuto')}</option>
-      <option value="dark" ${current.colorScheme === 'dark' ? 'selected' : ''}>${t('colorSchemeDark')}</option>
-      <option value="darker" ${current.colorScheme === 'darker' ? 'selected' : ''}>${t('colorSchemeDarker')}</option>
-      <option value="navy" ${current.colorScheme === 'navy' ? 'selected' : ''}>${t('colorSchemeNavy')}</option>
-      <option value="light" ${current.colorScheme === 'light' ? 'selected' : ''}>${t('colorSchemeLight')}</option>
-    </select>
-  `;
-  const colorSchemeSelect = colorSchemeSection.querySelector('#color-scheme-select') as HTMLSelectElement;
+  colorSchemeSection.innerHTML = `<label>${t('colorScheme')}</label>`;
+  const colorSchemeSelect = createSettingsSelect([
+    { value: 'auto', label: t('colorSchemeAuto'), selected: current.colorScheme === 'auto' },
+    { value: 'dark', label: t('colorSchemeDark'), selected: current.colorScheme === 'dark' },
+    { value: 'darker', label: t('colorSchemeDarker'), selected: current.colorScheme === 'darker' },
+    { value: 'navy', label: t('colorSchemeNavy'), selected: current.colorScheme === 'navy' },
+    { value: 'light', label: t('colorSchemeLight'), selected: current.colorScheme === 'light' },
+  ]);
+  colorSchemeSection.appendChild(colorSchemeSelect.el);
   colorSchemeSelect.onchange = () => {
     update({ colorScheme: colorSchemeSelect.value as ColorScheme });
   };
@@ -59,15 +54,11 @@ export function createGeneralTab(
   // --- Terminal Theme ---
   const themeSection = document.createElement('div');
   themeSection.className = 'settings-section';
-  themeSection.innerHTML = `
-    <label>${t('theme')}</label>
-    <select class="settings-select" id="theme-select">
-      ${Object.entries(THEMES).map(([key, theme]) =>
-        `<option value="${key}" ${key === current.theme ? 'selected' : ''}>${theme.name}</option>`
-      ).join('')}
-    </select>
-  `;
-  const themeSelect = themeSection.querySelector('#theme-select') as HTMLSelectElement;
+  themeSection.innerHTML = `<label>${t('theme')}</label>`;
+  const themeSelect = createSettingsSelect(
+    Object.entries(THEMES).map(([key, theme]) => ({ value: key, label: theme.name, selected: key === current.theme })),
+  );
+  themeSection.appendChild(themeSelect.el);
   themeSelect.onchange = () => {
     update({ theme: themeSelect.value });
   };
@@ -79,9 +70,9 @@ export function createGeneralTab(
   const bgFileName = current.backgroundImage ? current.backgroundImage.split(/[/\\]/).pop() || '' : '';
   bgImageSection.innerHTML = `
     <label>${t('backgroundImage')}</label>
-    <div style="display:flex;gap:6px;align-items:center">
-      <button class="settings-select" id="bg-image-select" style="flex:1;min-width:0;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${bgFileName || t('backgroundImageSelect')}</button>
-      <button class="settings-select" id="bg-image-clear" style="width:auto;cursor:pointer">${t('backgroundImageClear')}</button>
+    <div class="settings-btn-row">
+      <button class="settings-select" id="bg-image-select" style="text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${bgFileName || t('backgroundImageSelect')}</button>
+      <button class="settings-select" id="bg-image-clear" style="width:auto;flex:none">${t('backgroundImageClear')}</button>
     </div>
   `;
   const bgSelectBtn = bgImageSection.querySelector('#bg-image-select') as HTMLButtonElement;
@@ -154,6 +145,22 @@ export function createGeneralTab(
   };
   tabGeneral.appendChild(aiBarOpacitySection);
 
+  // --- Vibrancy (Background Blur) Toggle ---
+  const vibrancySection = document.createElement('div');
+  vibrancySection.className = 'settings-section settings-inline';
+  vibrancySection.innerHTML = `
+    <label>${t('enableVibrancy')}</label>
+    <label class="settings-toggle">
+      <input type="checkbox" id="vibrancy-toggle" ${current.enableVibrancy ? 'checked' : ''}>
+      <span class="settings-toggle-slider"></span>
+    </label>
+  `;
+  const vibrancyToggle = vibrancySection.querySelector('#vibrancy-toggle') as HTMLInputElement;
+  vibrancyToggle.onchange = () => {
+    update({ enableVibrancy: vibrancyToggle.checked });
+  };
+  tabGeneral.appendChild(vibrancySection);
+
   // --- Divider: Appearance / Terminal ---
   const divider1 = document.createElement('hr');
   divider1.className = 'settings-divider';
@@ -178,15 +185,11 @@ export function createGeneralTab(
   // --- Font Family ---
   const fontFamilySection = document.createElement('div');
   fontFamilySection.className = 'settings-section';
-  fontFamilySection.innerHTML = `
-    <label>${t('fontFamily')}</label>
-    <select class="settings-select" id="font-family-select">
-      ${FONT_REGISTRY.map((f) =>
-        `<option value="${f.key}" ${f.key === current.fontFamily ? 'selected' : ''}>${f.displayName}</option>`
-      ).join('')}
-    </select>
-  `;
-  const fontFamilySelect = fontFamilySection.querySelector('#font-family-select') as HTMLSelectElement;
+  fontFamilySection.innerHTML = `<label>${t('fontFamily')}</label>`;
+  const fontFamilySelect = createSettingsSelect(
+    FONT_REGISTRY.map((f) => ({ value: f.key, label: f.displayName, selected: f.key === current.fontFamily })),
+  );
+  fontFamilySection.appendChild(fontFamilySelect.el);
   fontFamilySelect.onchange = () => {
     current.fontFamily = fontFamilySelect.value;
     updateFontToggles();
@@ -216,19 +219,17 @@ export function createGeneralTab(
   // --- Encoding ---
   const encodingSection = document.createElement('div');
   encodingSection.className = 'settings-section';
-  encodingSection.innerHTML = `
-    <label>${t('encoding')}</label>
-    <select class="settings-select" id="encoding-select">
-      <option value="utf-8" ${current.encoding === 'utf-8' ? 'selected' : ''}>UTF-8</option>
-      <option value="gbk" ${current.encoding === 'gbk' ? 'selected' : ''}>GBK</option>
-      <option value="gb18030" ${current.encoding === 'gb18030' ? 'selected' : ''}>GB18030</option>
-      <option value="big5" ${current.encoding === 'big5' ? 'selected' : ''}>Big5</option>
-      <option value="euc-jp" ${current.encoding === 'euc-jp' ? 'selected' : ''}>EUC-JP</option>
-      <option value="euc-kr" ${current.encoding === 'euc-kr' ? 'selected' : ''}>EUC-KR</option>
-      <option value="iso-8859-1" ${current.encoding === 'iso-8859-1' ? 'selected' : ''}>ISO-8859-1</option>
-    </select>
-  `;
-  const encodingSelect = encodingSection.querySelector('#encoding-select') as HTMLSelectElement;
+  encodingSection.innerHTML = `<label>${t('encoding')}</label>`;
+  const encodingSelect = createSettingsSelect([
+    { value: 'utf-8', label: 'UTF-8', selected: current.encoding === 'utf-8' },
+    { value: 'gbk', label: 'GBK', selected: current.encoding === 'gbk' },
+    { value: 'gb18030', label: 'GB18030', selected: current.encoding === 'gb18030' },
+    { value: 'big5', label: 'Big5', selected: current.encoding === 'big5' },
+    { value: 'euc-jp', label: 'EUC-JP', selected: current.encoding === 'euc-jp' },
+    { value: 'euc-kr', label: 'EUC-KR', selected: current.encoding === 'euc-kr' },
+    { value: 'iso-8859-1', label: 'ISO-8859-1', selected: current.encoding === 'iso-8859-1' },
+  ]);
+  encodingSection.appendChild(encodingSelect.el);
   encodingSelect.onchange = () => {
     update({ encoding: encodingSelect.value });
   };
@@ -237,23 +238,18 @@ export function createGeneralTab(
   // --- Default Shell ---
   const shellSection = document.createElement('div');
   shellSection.className = 'settings-section';
-  shellSection.innerHTML = `
-    <label>${t('defaultShellSetting')}</label>
-    <select class="settings-select" id="default-shell-select">
-      <option value="">${t('systemDefault')}</option>
-    </select>
-  `;
-  const shellSelect = shellSection.querySelector('#default-shell-select') as HTMLSelectElement;
+  shellSection.innerHTML = `<label>${t('defaultShellSetting')}</label>`;
+  const shellSelect = createSettingsSelect([
+    { value: '', label: t('systemDefault'), selected: !current.defaultShell },
+  ]);
+  shellSection.appendChild(shellSelect.el);
   tabGeneral.appendChild(shellSection);
 
   // Populate shell list asynchronously
   void invoke<{ path: string; name: string; is_default: boolean }[]>('list_available_shells').then((shells) => {
     for (const shell of shells) {
-      const opt = document.createElement('option');
-      opt.value = shell.path;
-      opt.textContent = shell.is_default ? `${shell.name} (${t('defaultShell')})` : shell.name;
-      if (current.defaultShell === shell.path) opt.selected = true;
-      shellSelect.appendChild(opt);
+      const label = shell.is_default ? `${shell.name} (${t('defaultShell')})` : shell.name;
+      shellSelect.addOption(shell.path, label, current.defaultShell === shell.path);
     }
     // If current defaultShell doesn't match any option, keep "System Default" selected
     if (current.defaultShell && !shells.some((s) => s.path === current.defaultShell)) {
@@ -335,17 +331,15 @@ export function createGeneralTab(
   // --- Preview Refresh Rate ---
   const rateSection = document.createElement('div');
   rateSection.className = 'settings-section';
-  rateSection.innerHTML = `
-    <label>${t('previewRefreshRate')}</label>
-    <select class="settings-select" id="rate-select">
-      <option value="100" ${current.previewRefreshRate === 100 ? 'selected' : ''}>${getRateLabel(100, current.language)}</option>
-      <option value="500" ${current.previewRefreshRate === 500 ? 'selected' : ''}>${getRateLabel(500, current.language)}</option>
-      <option value="1000" ${current.previewRefreshRate === 1000 ? 'selected' : ''}>${getRateLabel(1000, current.language)}</option>
-      <option value="2000" ${current.previewRefreshRate === 2000 ? 'selected' : ''}>${getRateLabel(2000, current.language)}</option>
-      <option value="5000" ${current.previewRefreshRate === 5000 ? 'selected' : ''}>${getRateLabel(5000, current.language)}</option>
-    </select>
-  `;
-  const rateSelect = rateSection.querySelector('#rate-select') as HTMLSelectElement;
+  rateSection.innerHTML = `<label>${t('previewRefreshRate')}</label>`;
+  const rateSelect = createSettingsSelect([
+    { value: '100', label: getRateLabel(100, current.language), selected: current.previewRefreshRate === 100 },
+    { value: '500', label: getRateLabel(500, current.language), selected: current.previewRefreshRate === 500 },
+    { value: '1000', label: getRateLabel(1000, current.language), selected: current.previewRefreshRate === 1000 },
+    { value: '2000', label: getRateLabel(2000, current.language), selected: current.previewRefreshRate === 2000 },
+    { value: '5000', label: getRateLabel(5000, current.language), selected: current.previewRefreshRate === 5000 },
+  ]);
+  rateSection.appendChild(rateSelect.el);
   rateSelect.onchange = () => {
     const previewRefreshRate = parseInt(rateSelect.value, 10);
     update({ previewRefreshRate });
@@ -374,6 +368,22 @@ export function createGeneralTab(
   fileLinkConfirmToggle.onchange = () => { update({ fileLinkSkipConfirm: !fileLinkConfirmToggle.checked }); };
   tabGeneral.appendChild(rememberSection);
 
+  // --- PiP Scale ---
+  const pipScaleSection = document.createElement('div');
+  pipScaleSection.className = 'settings-section settings-inline';
+  pipScaleSection.innerHTML = `
+    <label>${t('pipScale')}: <span id="pip-scale-value">${current.pipScale}%</span></label>
+    <input type="range" class="settings-slider" id="pip-scale-slider" min="10" max="50" value="${current.pipScale}">
+  `;
+  const pipScaleSlider = pipScaleSection.querySelector('#pip-scale-slider') as HTMLInputElement;
+  const pipScaleValue = pipScaleSection.querySelector('#pip-scale-value') as HTMLSpanElement;
+  pipScaleSlider.oninput = () => {
+    const val = parseInt(pipScaleSlider.value, 10);
+    pipScaleValue.textContent = `${val}%`;
+    update({ pipScale: val });
+  };
+  tabGeneral.appendChild(pipScaleSection);
+
   // SSH Connections import/export
   const sshIoSection = document.createElement('div');
   sshIoSection.className = 'settings-section';
@@ -383,11 +393,11 @@ export function createGeneralTab(
   sshIoStatus.className = 'settings-ssh-io-status';
 
   const sshIoBtnRow = document.createElement('div');
-  sshIoBtnRow.style.cssText = 'display:flex;gap:8px;margin-top:6px';
+  sshIoBtnRow.className = 'settings-btn-row';
 
   const exportBtn = document.createElement('button');
   exportBtn.className = 'settings-select';
-  exportBtn.style.cssText = 'cursor:pointer;flex:1';
+  exportBtn.style.cursor = 'pointer';
   exportBtn.textContent = t('sshExportConnections');
   exportBtn.onclick = async () => {
     const result = await exportConnectionsToJSON();
@@ -414,7 +424,7 @@ export function createGeneralTab(
 
   const importBtn = document.createElement('button');
   importBtn.className = 'settings-select';
-  importBtn.style.cssText = 'cursor:pointer;flex:1';
+  importBtn.style.cursor = 'pointer';
   importBtn.textContent = t('sshImportConnections');
   importBtn.onclick = async () => {
     const filePath = await open({

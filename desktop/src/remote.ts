@@ -2,6 +2,7 @@ import { t } from './i18n';
 import { icon } from './icons';
 import { escapeHtml } from './status-bar';
 import { invoke } from '@tauri-apps/api/core';
+import { loadGroupOrder, remoteKey, setConnectionGroup, removeConnectionGroup, getConnectionGroup } from './connection-groups';
 
 export interface RemoteServerInfo {
   host: string;
@@ -323,6 +324,27 @@ export function showRemoteConnectDialog(): void {
     status.className = `remote-status remote-status-${type}`;
   }
 
+  // Group selector for remote connections
+  const remoteGroupSelect = document.createElement('select');
+  remoteGroupSelect.className = 'ssh-select ssh-group-select';
+  const remoteNoneOpt = document.createElement('option');
+  remoteNoneOpt.value = '';
+  remoteNoneOpt.textContent = t('homeGroupUngrouped');
+  remoteGroupSelect.appendChild(remoteNoneOpt);
+  for (const g of loadGroupOrder()) {
+    const opt = document.createElement('option');
+    opt.value = g;
+    opt.textContent = g;
+    remoteGroupSelect.appendChild(opt);
+  }
+
+  function applyRemoteGroup(info: RemoteServerInfo): void {
+    const key = remoteKey(info.host, info.port);
+    const grp = remoteGroupSelect.value;
+    if (grp) setConnectionGroup(key, grp);
+    else removeConnectionGroup(key);
+  }
+
   // Session list area
   const sessionList = document.createElement('div');
   sessionList.className = 'remote-session-list';
@@ -332,19 +354,28 @@ export function showRemoteConnectDialog(): void {
     if (sessions.length === 0) {
       // Auto-save to home when no sessions
       addRemoteConnection(info);
+      applyRemoteGroup(info);
       document.dispatchEvent(new CustomEvent('remote-connections-changed'));
       sessionList.innerHTML = `<div class="remote-no-sessions">${t('remoteNoSessions')}<div class="remote-saved-hint">${t('remoteSavedToHome')}</div></div>`;
       return;
     }
 
-    // Save connection button above session list
+    // Group selector + save connection button above session list
     const saveRow = document.createElement('div');
     saveRow.className = 'remote-save-row';
+
+    const groupLabel = document.createElement('label');
+    groupLabel.className = 'ssh-form-label remote-group-label';
+    groupLabel.textContent = t('homeGroupMoveToGroup');
+    saveRow.appendChild(groupLabel);
+    saveRow.appendChild(remoteGroupSelect);
+
     const saveBtn = document.createElement('button');
     saveBtn.className = 'ssh-btn ssh-btn-secondary remote-save-btn';
     saveBtn.textContent = t('remoteSaveConnection');
     saveBtn.onclick = () => {
       addRemoteConnection(info);
+      applyRemoteGroup(info);
       document.dispatchEvent(new CustomEvent('remote-connections-changed'));
       saveBtn.textContent = t('remoteSavedToHome');
       saveBtn.disabled = true;
@@ -770,6 +801,32 @@ export function showRemoteEditDialog(prefill?: RemoteServerInfo, onSave?: (info:
   tokenGroup.appendChild(tokenInput);
   form.appendChild(tokenGroup);
 
+  // Group selector
+  const editGroupRow = document.createElement('div');
+  editGroupRow.className = 'ssh-form-row ssh-group-row';
+  const editGroupLabel = document.createElement('label');
+  editGroupLabel.className = 'ssh-form-label';
+  editGroupLabel.textContent = t('homeGroupMoveToGroup');
+  const editGroupSelect = document.createElement('select');
+  editGroupSelect.className = 'ssh-select ssh-group-select';
+  const editNoneOpt = document.createElement('option');
+  editNoneOpt.value = '';
+  editNoneOpt.textContent = t('homeGroupUngrouped');
+  editGroupSelect.appendChild(editNoneOpt);
+  for (const g of loadGroupOrder()) {
+    const opt = document.createElement('option');
+    opt.value = g;
+    opt.textContent = g;
+    editGroupSelect.appendChild(opt);
+  }
+  if (prefill) {
+    const currentGrp = getConnectionGroup(remoteKey(prefill.host, prefill.port));
+    if (currentGrp) editGroupSelect.value = currentGrp;
+  }
+  editGroupRow.appendChild(editGroupLabel);
+  editGroupRow.appendChild(editGroupSelect);
+  form.appendChild(editGroupRow);
+
   // Buttons
   const btnRow = document.createElement('div');
   btnRow.className = 'ssh-form-actions';
@@ -788,6 +845,10 @@ export function showRemoteEditDialog(prefill?: RemoteServerInfo, onSave?: (info:
     };
     if (!info.host) return;
     addRemoteConnection(info);
+    const key = remoteKey(info.host, info.port);
+    const grp = editGroupSelect.value;
+    if (grp) setConnectionGroup(key, grp);
+    else removeConnectionGroup(key);
     document.dispatchEvent(new CustomEvent('remote-connections-changed'));
     if (onSave) onSave(info);
     closeRemoteModal();

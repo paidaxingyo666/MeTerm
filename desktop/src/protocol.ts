@@ -36,6 +36,11 @@ export const MsgFileDownloadPause = 0x20;
 export const MsgFileDownloadContinue = 0x21;
 export const MsgFileDownloadCancel = 0x22;
 
+// File editor messages
+export const MsgFileReadRequest = 0x30;
+export const MsgFileReadResponse = 0x31;
+export const MsgFileSaveRequest = 0x32;
+
 export const ErrNotMaster = 0x01;
 export const ErrSessionNotFound = 0x02;
 export const ErrSessionPrivate = 0x03;

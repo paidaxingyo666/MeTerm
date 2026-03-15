@@ -16,8 +16,8 @@
   width: min(340px, calc(100vw - 32px));
   border-radius: 10px;
   background: rgba(var(--bg-tray-tip), 0.98);
-  border: 1px solid var(--border-context-menu);
-  box-shadow: 0 14px 36px var(--shadow-tray-tip);
+  border: none;
+  box-shadow: 0 12px 32px var(--shadow-tray-tip), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
   color: var(--text-button);
   overflow: hidden;
   transform: translateX(0);
@@ -87,7 +87,7 @@
   padding: 4px 10px 6px;
   font-size: 11px;
   color: var(--text-dim);
-  border-top: 1px solid var(--border-tray-tip-footer);
-  background: rgba(var(--bg-tray-tip-footer), 0.6);
+  border-top: none;
+  background: rgba(var(--bg-tray-tip-footer), 0.3);
 }
 

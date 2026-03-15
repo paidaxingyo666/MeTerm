@@ -2,6 +2,7 @@ import type { Terminal } from '@xterm/xterm';
 import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { encodeMessage, MsgInput } from './protocol';
 import type { ManagedTerminal } from './terminal-types';
+import type { InlineCompletion } from './cmd-completion';
 
 /**
  * Initialize IME state on ManagedTerminal.
@@ -56,6 +57,29 @@ export function setupKeyHandler(mt: ManagedTerminal, terminal: Terminal): void {
           return true;
         }
         (mt as any)._imeKd229NoUpdate = true;
+      }
+    }
+
+    // Inline ghost text completion key interception
+    if (event.type === 'keydown' && !event.isComposing) {
+      const completion = (mt as any)._inlineCompletion as InlineCompletion | undefined;
+      if (completion?.isActive()) {
+        if (event.key === 'ArrowRight' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+          if (completion.handleRightArrow()) {
+            event.preventDefault();
+            return false;
+          }
+        }
+        if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !event.ctrlKey) {
+          if (completion.handleUpDown(event.key === 'ArrowUp' ? 'up' : 'down')) {
+            event.preventDefault();
+            return false;
+          }
+        }
+        if (event.key === 'Escape') {
+          completion.hideGhost();
+          // Don't return false — let Escape propagate
+        }
       }
     }
 

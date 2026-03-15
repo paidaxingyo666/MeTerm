@@ -4,6 +4,7 @@ import { loadSettings } from './themes';
 import { t } from './i18n';
 import { escapeHtml } from './status-bar';
 import { jumpServerConfigMap } from './app-state';
+import { createOverlayScrollbar } from './overlay-scrollbar';
 import {
   type NetRatePoint,
   handleServerInfoResponse,
@@ -115,6 +116,12 @@ class DrawerManagerClass {
     this.setupFileManagerEvents(instance);
     this.setupMainTabs(instance);
     this.setupSmoothScroll(instance);
+
+    // Attach overlay scrollbar (inline mode: scrollbar inside each scroll area)
+    for (const sel of ['.drawer-sidebar', '.file-list', '.process-list', '.transfer-history']) {
+      const el = drawer.querySelector(sel) as HTMLElement | null;
+      if (el) createOverlayScrollbar({ viewport: el, container: el });
+    }
 
     // JumpServer：Koko 代理不支持 exec session，隐藏系统信息侧栏和进程 tab
     if (jumpServerConfigMap.has(sessionId)) {
@@ -281,9 +288,21 @@ class DrawerManagerClass {
           </div>
           <div class="transfer-history" id="transfer-history-${sessionId}" style="display: none;">
             <div class="history-toolbar">
+              <div class="history-search-wrapper">
+                <svg class="history-search-icon" width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04-1.06 1.06-3.04-3.04z" fill="currentColor"/></svg>
+                <input class="history-search-input" type="text" placeholder="搜索..." />
+              </div>
+              <div class="history-filter-group" data-group="type">
+                <button class="btn-filter" data-filter="upload" title="仅上传">↑</button>
+                <button class="btn-filter" data-filter="download" title="仅下载">↓</button>
+              </div>
+              <div class="history-filter-group" data-group="status">
+                <button class="btn-filter" data-filter="active" title="进行中">进行中</button>
+                <button class="btn-filter" data-filter="completed" title="已完成">完成</button>
+                <button class="btn-filter" data-filter="failed" title="失败">失败</button>
+              </div>
               <button class="btn-clear-history" title="清空历史记录">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M5 2V1h6v1h4v1H1V2h4zm1 3v8h1V5H6zm3 0v8h1V5H9zM2 4l1 11h10l1-11H2z" fill="currentColor"/></svg>
-                <span>清空</span>
               </button>
             </div>
             <div class="history-list" id="history-list-${sessionId}">
@@ -481,6 +500,54 @@ class DrawerManagerClass {
         instance.fileManager.renderTransferHistory();
       }
     };
+
+    // 筛选按钮组 — 类型筛选（toggle：再次点击取消）
+    const typeFilterGroup = instance.element.querySelector('.history-filter-group[data-group="type"]');
+    if (typeFilterGroup) {
+      typeFilterGroup.addEventListener('click', (e) => {
+        const btn = (e.target as HTMLElement).closest('.btn-filter') as HTMLElement | null;
+        if (!btn || !instance.fileManager) return;
+        const isActive = btn.classList.contains('active');
+        typeFilterGroup.querySelectorAll('.btn-filter').forEach(b => b.classList.remove('active'));
+        if (isActive) {
+          instance.fileManager.setTransferFilter(null);
+        } else {
+          btn.classList.add('active');
+          instance.fileManager.setTransferFilter(btn.dataset.filter as 'upload' | 'download');
+        }
+      });
+    }
+
+    // 筛选按钮组 — 状态筛选（toggle：再次点击取消）
+    const statusFilterGroup = instance.element.querySelector('.history-filter-group[data-group="status"]');
+    if (statusFilterGroup) {
+      statusFilterGroup.addEventListener('click', (e) => {
+        const btn = (e.target as HTMLElement).closest('.btn-filter') as HTMLElement | null;
+        if (!btn || !instance.fileManager) return;
+        const isActive = btn.classList.contains('active');
+        statusFilterGroup.querySelectorAll('.btn-filter').forEach(b => b.classList.remove('active'));
+        if (isActive) {
+          instance.fileManager.setTransferStatusFilter(null);
+        } else {
+          btn.classList.add('active');
+          instance.fileManager.setTransferStatusFilter(btn.dataset.filter as 'active' | 'completed' | 'failed');
+        }
+      });
+    }
+
+    // 搜索框
+    const searchInput = instance.element.querySelector('.history-search-input') as HTMLInputElement | null;
+    if (searchInput) {
+      let searchTimer: ReturnType<typeof setTimeout> | null = null;
+      searchInput.addEventListener('input', () => {
+        if (searchTimer) clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+          if (instance.fileManager) {
+            instance.fileManager.setTransferSearchQuery(searchInput.value.trim());
+          }
+        }, 200);
+      });
+    }
 
     // 清空历史按钮
     const clearHistoryBtn = instance.element.querySelector('.btn-clear-history') as HTMLButtonElement;
@@ -1047,6 +1114,15 @@ class DrawerManagerClass {
 
   has(sessionId: string): boolean {
     return this.drawers.has(sessionId);
+  }
+
+  /** Return session IDs of all currently open drawers. */
+  getOpenSessionIds(): string[] {
+    const ids: string[] = [];
+    this.drawers.forEach((instance, sessionId) => {
+      if (instance.isOpen) ids.push(sessionId);
+    });
+    return ids;
   }
 
   getDrawerHeight(sessionId: string): number {

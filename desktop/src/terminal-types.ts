@@ -69,5 +69,7 @@ export interface ManagedTerminal {
     lastInputSource: 'none' | 'agent' | 'user';
     lastUserInputAt: number;
     agentCommandSeq: number;
+    /** Last executed command reported by shell hook (fc -ln -1) */
+    lastCommand: string;
   };
 }

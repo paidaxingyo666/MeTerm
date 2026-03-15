@@ -2,21 +2,9 @@
    Overlay Scrollbar — reusable component
    ============================================================================ */
 
-/* Auto-inserted wrapper (when container === viewport) */
-.overlay-sb-wrapper {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
 /* Hide native scrollbar on the viewport */
 .overlay-sb-viewport {
   scrollbar-width: none !important;
-  flex: 1;
-  min-height: 0;
 }
 .overlay-sb-viewport::-webkit-scrollbar {
   width: 0 !important;
@@ -90,4 +78,49 @@
 
 [data-theme="light"] .overlay-sb-thumb:hover {
   background: rgba(0, 0, 0, 0.40) !important;
+}
+
+/* ============================================================================
+   Styled native scrollbar — for elements that opt in via .styled-scrollbar
+   ============================================================================
+   Thin scrollbar that matches the overlay scrollbar visual. Use this class
+   on scrollable elements where the JS overlay component is impractical.
+   On macOS, the native overlay scrollbar is already beautiful — these styles
+   refine it without breaking vibrancy/transparency.
+   ============================================================================ */
+
+.styled-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.styled-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.styled-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+
+.styled-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+/* Light theme */
+[data-theme="light"] .styled-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14);
+}
+
+[data-theme="light"] .styled-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.30);
+}
+
+/* Firefox */
+.styled-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+[data-theme="light"] .styled-scrollbar {
+  scrollbar-color: rgba(0, 0, 0, 0.14) transparent;
 }

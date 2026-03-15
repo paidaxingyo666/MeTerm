@@ -25,6 +25,7 @@ import { renderTabs } from './tab-renderer';
 import { pendingUpdateVersion, openUpdaterWindow } from './updater';
 import { settings, isHomeView, isGalleryView, isWindowsPlatform, activeJumpServers } from './app-state';
 import { toggleJumpServerPanel, isJumpServerPanelOpen } from './jumpserver-panel';
+import { isPipActive, togglePip } from './pip';
 import appIconUrl from '../src-tauri/icons/icon.svg';
 
 // ── DOM elements (lazily cached) ──
@@ -118,6 +119,12 @@ export function showWindowsToolbarMenu(anchor: HTMLElement): void {
   addItem(t('settings'), () => {
     openSettings();
   });
+  addItem(
+    isPipActive()
+      ? (zh ? '退出画中画' : 'Exit Picture-in-Picture')
+      : (zh ? '画中画' : 'Picture-in-Picture'),
+    async () => { await togglePip(); },
+  );
   addDivider();
   const isDiscoverable = localStorage.getItem('meterm-discoverable') === '1';
   addCheckItem(
@@ -331,6 +338,19 @@ export function renderToolbarActions(): void {
     updateBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10m0 0 3.5-3.5M12 12l-3.5-3.5"/><path d="M4.93 15A8 8 0 1 0 12 4"/></svg>`;
     updateBtn.onclick = () => { void openUpdaterWindow(); };
     toolbarRightEl.appendChild(updateBtn);
+  }
+
+  // Pin button: only show when there are terminal tabs
+  if (TabManager.tabs.length > 0 || isPipActive()) {
+    const pinBtn = document.createElement('button');
+    pinBtn.className = `toolbar-icon-btn pip-pin-btn${isPipActive() ? ' active' : ''}`;
+    pinBtn.type = 'button';
+    pinBtn.title = isPipActive()
+      ? (settings?.language === 'zh' ? '退出画中画' : 'Exit Picture-in-Picture')
+      : (settings?.language === 'zh' ? '画中画' : 'Picture-in-Picture');
+    pinBtn.innerHTML = `<span class="tab-icon">${icon('pin')}</span>`;
+    pinBtn.onclick = () => { void togglePip(); };
+    toolbarRightEl.appendChild(pinBtn);
   }
 
   const settingsBtn = document.createElement('button');

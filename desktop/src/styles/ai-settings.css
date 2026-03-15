@@ -1,74 +1,3 @@
-/* ─── Settings AI tab ─── */
-.settings-preset-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 4px;
-}
-.settings-preset-btn {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  padding: 4px 10px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.settings-preset-btn:hover {
-  background: rgba(106, 164, 255, 0.15);
-  color: var(--accent);
-  border-color: rgba(106, 164, 255, 0.3);
-}
-.settings-input {
-  width: 100%;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  color: var(--text-primary);
-  font-size: 12px;
-  padding: 6px 10px;
-  outline: none;
-  transition: border-color 0.15s ease;
-  box-sizing: border-box;
-}
-.settings-input:focus { border-color: var(--accent); }
-.settings-input-group {
-  display: flex;
-  gap: 4px;
-  align-items: stretch;
-}
-.settings-toggle-btn {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  padding: 0 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.15s, background 0.15s;
-}
-.settings-toggle-btn:hover {
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.08);
-}
-.settings-test-btn { cursor: pointer; text-align: center; width: auto; flex: none; flex-shrink: 0; }
-.settings-test-btn:hover {
-  background: rgba(106, 164, 255, 0.15);
-  border-color: rgba(106, 164, 255, 0.3);
-  color: var(--accent);
-}
-.settings-test-result {
-  font-size: 11px;
-  margin-left: 8px;
-  color: var(--text-secondary);
-  word-break: break-word;
-}
-.settings-test-result.test-success { color: #5af78e; }
-.settings-test-result.test-failed { color: #ff6b6b; }
-
 /* ─── AI Provider Cards (Settings) ─── */
 .ai-provider-list {
   display: flex;
@@ -78,9 +7,10 @@
 
 .ai-provider-card {
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: none;
   border-radius: 8px;
   overflow: hidden;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.08);
 }
 
 .ai-provider-card-header {
@@ -94,18 +24,19 @@
 .ai-provider-label-input {
   flex: 1;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 4px;
+  border: none;
+  border-radius: 6px;
   color: var(--text-primary);
   font-size: 12px;
   font-weight: 600;
   padding: 2px 6px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: background 0.15s, box-shadow 0.15s;
 }
 .ai-provider-label-input:focus {
-  border-color: var(--accent);
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.1),
+              0 0 0 2px rgba(var(--accent-rgb), 0.25);
 }
 
 .ai-provider-delete-btn {
@@ -153,11 +84,30 @@
   flex-shrink: 0;
   min-width: 100px;
 }
+.ai-provider-row.ai-row-inline > label.settings-radio-label {
+  min-width: auto;
+}
 .ai-provider-row.ai-row-inline > .settings-input,
 .ai-provider-row.ai-row-inline > .settings-input-group {
   flex: 1;
   min-width: 0;
 }
+/* Hint text under settings controls */
+.settings-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+/* Allow inline rows with test buttons to wrap gracefully */
+.ai-provider-row.ai-row-inline > .settings-test-result {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Compact AI settings below provider cards */
 .ai-settings-compact {
   display: flex;
@@ -232,15 +182,16 @@
   color: var(--text-secondary);
   cursor: pointer;
   padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.02);
-  transition: background 0.15s, border-color 0.15s;
+  border-radius: 6px;
+  border: none;
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.08);
+  transition: background 0.15s, box-shadow 0.15s;
   user-select: none;
 }
 .ai-model-checkbox:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.12);
 }
 .ai-model-checkbox input[type="checkbox"] {
   margin: 0;
@@ -265,7 +216,7 @@
 /* ─── Light theme overrides ─── */
 [data-theme="light"] .ai-provider-card {
   background: rgba(0, 0, 0, 0.02);
-  border-color: rgba(0, 0, 0, 0.08);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.4);
 }
 [data-theme="light"] .ai-provider-card-header {
   border-bottom-color: rgba(0, 0, 0, 0.06);
@@ -274,83 +225,13 @@
   background: rgba(0, 0, 0, 0.03);
 }
 [data-theme="light"] .ai-model-checkbox {
-  border-color: rgba(0, 0, 0, 0.08);
-  background: rgba(0, 0, 0, 0.02);
+  background: rgba(0, 0, 0, 0.03);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.4);
 }
 [data-theme="light"] .ai-model-checkbox:hover {
-  background: rgba(0, 0, 0, 0.05);
-  border-color: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.06);
 }
 
-/* AI bar popup scrollbar — unified thin scrollbar, theme-aware */
-.ai-chat-messages::-webkit-scrollbar,
-.ai-bar-history-panel::-webkit-scrollbar,
-.ai-bar-chat-history-panel::-webkit-scrollbar,
-.ai-chat-hist-messages::-webkit-scrollbar,
-.ai-danger-cmd::-webkit-scrollbar,
-.ai-bar-model-dropdown::-webkit-scrollbar {
-  width: 4px;
-}
-.ai-chat-messages::-webkit-scrollbar-track,
-.ai-bar-history-panel::-webkit-scrollbar-track,
-.ai-bar-chat-history-panel::-webkit-scrollbar-track,
-.ai-chat-hist-messages::-webkit-scrollbar-track,
-.ai-danger-cmd::-webkit-scrollbar-track,
-.ai-bar-model-dropdown::-webkit-scrollbar-track {
-  background: transparent;
-}
-.ai-chat-messages::-webkit-scrollbar-thumb,
-.ai-bar-history-panel::-webkit-scrollbar-thumb,
-.ai-bar-chat-history-panel::-webkit-scrollbar-thumb,
-.ai-chat-hist-messages::-webkit-scrollbar-thumb,
-.ai-danger-cmd::-webkit-scrollbar-thumb,
-.ai-bar-model-dropdown::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 2px;
-}
-.ai-chat-messages:hover::-webkit-scrollbar-thumb,
-.ai-bar-history-panel:hover::-webkit-scrollbar-thumb,
-.ai-bar-chat-history-panel:hover::-webkit-scrollbar-thumb,
-.ai-chat-hist-messages:hover::-webkit-scrollbar-thumb,
-.ai-danger-cmd:hover::-webkit-scrollbar-thumb,
-.ai-bar-model-dropdown:hover::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.28);
-}
-/* Firefox */
-.ai-chat-messages,
-.ai-bar-history-panel,
-.ai-bar-chat-history-panel,
-.ai-chat-hist-messages,
-.ai-danger-cmd,
-.ai-bar-model-dropdown {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
-}
-/* Light theme */
-[data-theme="light"] .ai-chat-messages::-webkit-scrollbar-thumb,
-[data-theme="light"] .ai-bar-history-panel::-webkit-scrollbar-thumb,
-[data-theme="light"] .ai-bar-chat-history-panel::-webkit-scrollbar-thumb,
-[data-theme="light"] .ai-chat-hist-messages::-webkit-scrollbar-thumb,
-[data-theme="light"] .ai-danger-cmd::-webkit-scrollbar-thumb,
-[data-theme="light"] .ai-bar-model-dropdown::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.12);
-}
-[data-theme="light"] .ai-chat-messages:hover::-webkit-scrollbar-thumb,
-[data-theme="light"] .ai-bar-history-panel:hover::-webkit-scrollbar-thumb,
-[data-theme="light"] .ai-bar-chat-history-panel:hover::-webkit-scrollbar-thumb,
-[data-theme="light"] .ai-chat-hist-messages:hover::-webkit-scrollbar-thumb,
-[data-theme="light"] .ai-danger-cmd:hover::-webkit-scrollbar-thumb,
-[data-theme="light"] .ai-bar-model-dropdown:hover::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.25);
-}
-[data-theme="light"] .ai-chat-messages,
-[data-theme="light"] .ai-bar-history-panel,
-[data-theme="light"] .ai-bar-chat-history-panel,
-[data-theme="light"] .ai-chat-hist-messages,
-[data-theme="light"] .ai-danger-cmd,
-[data-theme="light"] .ai-bar-model-dropdown {
-  scrollbar-color: rgba(0, 0, 0, 0.12) transparent;
-}
 
 /* ─── Agent Tool Call Cards ────────────────────────────────────── */
 
@@ -485,25 +366,26 @@
   align-items: center;
   gap: 4px;
   padding: 3px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-primary);
   font-size: 11px;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.15);
+  transition: background 0.15s, box-shadow 0.15s;
 }
 .ai-confirm-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.14);
 }
 .ai-confirm-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }
-.ai-confirm-approve { border-color: rgba(34, 197, 94, 0.3); }
-.ai-confirm-approve:hover { background: rgba(34, 197, 94, 0.15); }
-.ai-confirm-reject  { border-color: rgba(239, 68, 68, 0.3); }
-.ai-confirm-reject:hover  { background: rgba(239, 68, 68, 0.15); }
+.ai-confirm-approve { background: rgba(34, 197, 94, 0.12); }
+.ai-confirm-approve:hover { background: rgba(34, 197, 94, 0.2); }
+.ai-confirm-reject  { background: rgba(239, 68, 68, 0.12); }
+.ai-confirm-reject:hover  { background: rgba(239, 68, 68, 0.2); }
 
 .ai-confirm-editor {
   display: flex;
@@ -513,16 +395,20 @@
 .ai-confirm-edit-input {
   flex: 1;
   padding: 3px 8px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  border-radius: 8px;
   color: var(--text-primary);
   font-size: 12px;
   font-family: var(--mono-font);
   outline: none;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.1);
+  transition: background 0.15s, box-shadow 0.15s;
 }
 .ai-confirm-edit-input:focus {
-  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.15),
+              0 0 0 2px rgba(var(--accent-rgb), 0.25);
 }
 
 .ai-confirm-card.resolved {
@@ -600,11 +486,14 @@
   bottom: calc(100% + 8px);
   right: 0;
   min-width: 200px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
+  background: rgba(var(--bg-toolbar, 33, 33, 35), 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: none;
   border-radius: 8px;
   padding: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3),
+              0 0 0 0.5px rgba(255, 255, 255, 0.06);
   z-index: 9999;
 }
 
@@ -629,26 +518,6 @@
   font-weight: 500;
 }
 
-/* ─── Settings Radio Group ─────────────────────────────────────── */
-
-.settings-radio-group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
-}
-.settings-radio-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.settings-radio-label input[type="radio"] {
-  accent-color: var(--accent);
-}
-
 /* ─── AI Trust Level Icon Buttons (Settings) ──────────────────── */
 .ai-trust-group {
   display: flex;
@@ -661,34 +530,34 @@
   justify-content: center;
   width: 32px;
   height: 28px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  border: none;
+  background: rgba(255, 255, 255, 0.06);
   color: var(--text-muted);
   cursor: pointer;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.1);
   transition: all 0.15s ease;
 }
 .ai-trust-btn:hover {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.15);
 }
 .ai-trust-btn.active {
   color: var(--accent);
-  background: rgba(106, 164, 255, 0.12);
-  border-color: rgba(106, 164, 255, 0.3);
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.15);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.12);
 }
 [data-theme="light"] .ai-trust-btn {
-  border-color: rgba(0, 0, 0, 0.1);
-  background: rgba(0, 0, 0, 0.02);
+  background: rgba(0, 0, 0, 0.04);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5);
 }
 [data-theme="light"] .ai-trust-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
-  border-color: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.07);
 }
 [data-theme="light"] .ai-trust-btn.active {
-  background: rgba(106, 164, 255, 0.1);
-  border-color: rgba(106, 164, 255, 0.3);
+  background: rgba(var(--accent-rgb, 0, 102, 204), 0.1);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5);
 }
 
 /* ─── Light Theme Overrides for Agent UI ───────────────────────── */
@@ -706,15 +575,15 @@
   background: rgba(139, 92, 246, 0.06);
 }
 [data-theme="light"] .ai-confirm-btn {
-  border-color: rgba(0, 0, 0, 0.12);
   background: rgba(0, 0, 0, 0.04);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.6);
 }
 [data-theme="light"] .ai-confirm-btn:hover {
   background: rgba(0, 0, 0, 0.08);
 }
 [data-theme="light"] .ai-confirm-edit-input {
-  background: rgba(0, 0, 0, 0.05);
-  border-color: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.04);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5);
 }
 [data-theme="light"] .ai-trust-dropdown {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);

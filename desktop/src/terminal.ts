@@ -26,10 +26,13 @@ import {
   applySettingsToTerminal,
   registerOscColorHandlers,
 } from './terminal-settings';
-import { scheduleResize as _scheduleResize } from './terminal-resize';
+import { scheduleResize as _scheduleResize, sendResize } from './terminal-resize';
 import { initIMEState, setupKeyHandler, setupCompositionListeners } from './terminal-ime';
 import { registerOscHandlers } from './terminal-osc';
+import { setShellType } from './ai-tools';
 import { connectWebSocket, scheduleReconnect as _scheduleReconnect } from './terminal-websocket';
+import { InlineCompletion } from './cmd-completion';
+import { globalCompletionIndex } from './cmd-completion-data';
 
 class TerminalRegistryClass {
   private terminals = new Map<string, ManagedTerminal>();
@@ -388,7 +391,7 @@ class TerminalRegistryClass {
       _hasUserInput: false,
       _transferGrace: false,
       _oscMarkerResolvers: new Map(),
-      shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0 },
+      shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0, lastCommand: '' },
     };
 
     // Register all OSC handlers (7766, 7, 7768, 9, 777)
@@ -397,12 +400,20 @@ class TerminalRegistryClass {
         const listeners = this.shellStateListeners.get(sid);
         if (listeners) listeners.forEach(cb => cb());
       },
+      onShellTypeDetected: setShellType,
     });
 
     // IME 修复 + 快捷键处理
     initIMEState(mt);
     setupKeyHandler(mt, terminal);
     setupCompositionListeners(mt, terminal);
+
+    // Inline ghost text completion
+    if (this.settings?.cmdCompletionEnabled && globalCompletionIndex.ready) {
+      const ic = new InlineCompletion(sessionId, terminal, container, globalCompletionIndex);
+      ic.attach();
+      (mt as any)._inlineCompletion = ic;
+    }
 
     terminal.onData((data) => {
       mt._hasUserInput = true;
@@ -589,6 +600,45 @@ class TerminalRegistryClass {
     });
   }
 
+  /** Reset lastSentCols/Rows to 0 so the next resize always sends SIGWINCH. */
+  resetLastSentDimensions(): void {
+    this.terminals.forEach((mt) => {
+      mt.lastSentCols = 0;
+      mt.lastSentRows = 0;
+    });
+  }
+
+  /**
+   * Force xterm.js + TUI apps to fully redraw after PiP exit.
+   *
+   * Both xterm.js terminal.resize() and fitAddon.fit() are no-ops
+   * when cols/rows haven't changed. The CSS transform during PiP
+   * may leave the canvas/WebGL renderer stale. We force a real
+   * resize cycle by temporarily changing dimensions, then restoring.
+   */
+  forceFullRefresh(): void {
+    this.terminals.forEach((mt) => {
+      if (!mt.container.classList.contains('active') || mt.ended) return;
+
+      const cols = mt.terminal.cols;
+      const rows = mt.terminal.rows;
+      if (cols <= 1 || rows <= 0) return;
+
+      // Force xterm.js to resize by temporarily changing cols,
+      // then fitting back to correct dimensions.
+      mt.terminal.resize(cols - 1, rows);
+      mt.fitAddon.fit();
+
+      // Send resize to backend to trigger SIGWINCH
+      const newCols = mt.terminal.cols;
+      const newRows = mt.terminal.rows;
+      sendResize(mt, newCols, newRows);
+
+      // Full visual repaint
+      mt.terminal.refresh(0, newRows - 1);
+    });
+  }
+
   clearActive(): void {
     this.terminals.forEach((mt) => {
       if (mt.container.classList.contains('active') && !mt.ended) {
@@ -720,6 +770,9 @@ class TerminalRegistryClass {
     mt.settleTimers.forEach((timer) => clearTimeout(timer));
     if (mt._postResizeFilterTimer) clearTimeout(mt._postResizeFilterTimer);
     if (mt.observer) mt.observer.disconnect();
+    // Detach inline completion
+    const ic = (mt as any)._inlineCompletion as InlineCompletion | undefined;
+    if (ic) ic.detach();
     this.inputListeners.delete(sessionId);
     // Close WebSocket
     if (mt.ws) mt.ws.close();
@@ -875,7 +928,7 @@ class TerminalRegistryClass {
       _hasUserInput: false,
       _transferGrace: true,
       _oscMarkerResolvers: new Map(),
-      shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0 },
+      shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0, lastCommand: '' },
     };
 
     // Register all OSC handlers (7766, 7768, 9, 777) — skip OSC 7 and prefetch for transfer
@@ -884,6 +937,7 @@ class TerminalRegistryClass {
         const listeners = this.shellStateListeners.get(sid);
         if (listeners) listeners.forEach(cb => cb());
       },
+      onShellTypeDetected: setShellType,
     }, { includeOsc7: false, includePrefetch: false });
 
     // IME 修复 + 快捷键处理（register before open — these work before open()）

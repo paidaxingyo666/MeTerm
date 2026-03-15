@@ -15,13 +15,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/paidaxingyo666/meterm/internal/buildinfo"
 	"github.com/paidaxingyo666/meterm/internal/conpty"
 )
 
-// psOSC7Hook is a PowerShell startup command that wraps the prompt function
-// to emit OSC 7 (file:///path) before each prompt, enabling CWD tracking.
+// psStartupHook is a PowerShell startup command that wraps the prompt function
+// to emit OSC 7 (CWD tracking) and OSC 7768 (shell state for MeTerm Agent).
+// On first prompt, also emits OSC 7766 meterm_init;3 to report shell type.
 // Uses [char]N and .Replace() to avoid double-quotes and C-runtime quoting issues.
-const psOSC7Hook = `& { $global:__mtOrig = $function:prompt; function global:prompt { [Console]::Write([string][char]27 + ']7;file:///' + (Get-Location).ProviderPath.Replace('\','/') + [char]7); if($global:__mtOrig){ & $global:__mtOrig }else{ (Get-Location).Path+'>' } } }`
+const psStartupHook = `& { $global:__mtOrig = $function:prompt; function global:prompt { ` +
+	`$e=$LASTEXITCODE; ` +
+	`[Console]::Write([string][char]27 + ']7;file:///' + (Get-Location).ProviderPath.Replace('\','/') + [char]7); ` +
+	`if(-not $env:__meterm_hook_ready){$env:__meterm_hook_ready='1';` +
+	`[Console]::Write([string][char]27 + ']7766;meterm_init;3' + [char]7);$c=''}` +
+	`else{try{$c=(Get-History -Count 1).CommandLine}catch{$c=''}}; ` +
+	`[Console]::Write([string][char]27 + ']7768;' + $e + ';' + (Get-Location) + ';' + $c + [char]7); ` +
+	`$global:LASTEXITCODE=$e; ` +
+	`if($global:__mtOrig){ & $global:__mtOrig }else{ (Get-Location).Path+'> ' } } }`
 
 // cmdOSC7Prompt is a cmd.exe PROMPT string with an OSC 7 CWD prefix.
 // $e = ESC, $e\ = ST (String Terminator), $p = current path, $g = '>'.
@@ -88,7 +98,7 @@ func NewPTYEngineWithShellAndCwd(cols, rows uint16, shell, cwd string) (*PTYEngi
 			base := strings.ToLower(filepath.Base(shellPath))
 			switch {
 			case base == "pwsh.exe" || base == "powershell.exe":
-				shellArgs = append(extraArgs, "-NoLogo", "-NoExit", "-Command", psOSC7Hook)
+				shellArgs = append(extraArgs, "-NoLogo", "-NoExit", "-Command", psStartupHook)
 			case base == "cmd.exe":
 				shellArgs = append(extraArgs, "/Q", "/k", cmdOSC7Prompt)
 			case base == "wsl.exe" || base == "wsl":
@@ -116,8 +126,22 @@ func NewPTYEngineWithShellAndCwd(cols, rows uint16, shell, cwd string) (*PTYEngi
 		workDir = home
 	}
 
+	// Build environment with MeTerm terminal identification.
+	// Filter existing TERM_PROGRAM/COLORTERM to avoid duplicates, then add ours
+	// so CLI tools (Claude Code, etc.) can detect terminal capabilities.
+	parentEnv := os.Environ()
+	winEnv := make([]string, 0, len(parentEnv)+3)
+	for _, e := range parentEnv {
+		if !strings.HasPrefix(e, "TERM_PROGRAM=") &&
+			!strings.HasPrefix(e, "TERM_PROGRAM_VERSION=") &&
+			!strings.HasPrefix(e, "COLORTERM=") {
+			winEnv = append(winEnv, e)
+		}
+	}
+	winEnv = append(winEnv, "TERM_PROGRAM=MeTerm", "TERM_PROGRAM_VERSION="+buildinfo.Version, "COLORTERM=truecolor")
 	opts := []conpty.Option{
 		conpty.Dimensions(int(cols), int(rows)),
+		conpty.Env(winEnv),
 	}
 	if workDir != "" {
 		opts = append(opts, conpty.WorkDir(workDir))
@@ -178,8 +202,8 @@ func resolveWindowsShell() (string, []string, error) {
 		args []string
 	}
 	for _, c := range []candidate{
-		{exe: "pwsh.exe", args: []string{"-NoLogo", "-NoExit", "-Command", psOSC7Hook}},
-		{exe: "powershell.exe", args: []string{"-NoLogo", "-NoExit", "-Command", psOSC7Hook}},
+		{exe: "pwsh.exe", args: []string{"-NoLogo", "-NoExit", "-Command", psStartupHook}},
+		{exe: "powershell.exe", args: []string{"-NoLogo", "-NoExit", "-Command", psStartupHook}},
 		{exe: "cmd.exe", args: []string{"/Q", "/k", cmdOSC7Prompt}},
 	} {
 		if path, err := exec.LookPath(c.exe); err == nil {

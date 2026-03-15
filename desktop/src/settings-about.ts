@@ -4,6 +4,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { checkUpdateNow } from './updater';
 
 const GITHUB_URL = 'https://github.com/paidaxingyo666/MeTerm';
+const GITEE_URL = 'https://gitee.com/paidaxingy666/me-term';
 
 export function createAboutTab(): HTMLDivElement {
   const tab = document.createElement('div');
@@ -75,6 +76,11 @@ export function createAboutTab(): HTMLDivElement {
       value: 'paidaxingyo666/MeTerm',
       action: () => void openUrl(GITHUB_URL),
     },
+    {
+      label: t('aboutGitee'),
+      value: 'paidaxingy666/me-term',
+      action: () => void openUrl(GITEE_URL),
+    },
     { label: t('aboutLicense'), value: 'MIT' },
     { label: t('aboutCopyright'), value: `© ${new Date().getFullYear()} MeTerm` },
   ];
@@ -109,6 +115,51 @@ export function createAboutTab(): HTMLDivElement {
     checkUpdateNow();
   });
   tab.appendChild(updateBtn);
+
+  // ── Open-source acknowledgments ──
+  const ackSection = document.createElement('div');
+  ackSection.className = 'about-acknowledgments';
+
+  const ackTitle = document.createElement('div');
+  ackTitle.className = 'about-ack-title';
+  ackTitle.textContent = t('aboutOpenSource');
+  ackSection.appendChild(ackTitle);
+
+  const projects: Array<{ name: string; url: string; license: string; desc: string }> = [
+    { name: 'xterm.js', url: 'https://github.com/xtermjs/xterm.js', license: 'MIT', desc: t('aboutAckXterm') },
+    { name: 'Tauri', url: 'https://github.com/tauri-apps/tauri', license: 'MIT / Apache-2.0', desc: t('aboutAckTauri') },
+    { name: 'Windows Terminal', url: 'https://github.com/microsoft/terminal', license: 'MIT', desc: t('aboutAckConpty') },
+    { name: 'JumpServer', url: 'https://github.com/jumpserver/jumpserver', license: 'GPL-3.0', desc: t('aboutAckJumpserver') },
+    { name: 'tldr-pages', url: 'https://github.com/tldr-pages/tldr', license: 'MIT / CC BY 4.0', desc: t('aboutAckTldr') },
+    { name: 'SearXNG', url: 'https://github.com/searxng/searxng', license: 'AGPL-3.0', desc: t('aboutAckSearxng') },
+    { name: 'CodeMirror', url: 'https://github.com/codemirror/dev', license: 'MIT', desc: t('aboutAckCodemirror') },
+  ];
+
+  for (const proj of projects) {
+    const row = document.createElement('div');
+    row.className = 'about-ack-row';
+
+    const nameLink = document.createElement('a');
+    nameLink.className = 'about-ack-name';
+    nameLink.textContent = proj.name;
+    nameLink.href = '#';
+    nameLink.addEventListener('click', (e) => { e.preventDefault(); void openUrl(proj.url); });
+
+    const licenseTag = document.createElement('span');
+    licenseTag.className = 'about-ack-license';
+    licenseTag.textContent = proj.license;
+
+    const descEl = document.createElement('span');
+    descEl.className = 'about-ack-desc';
+    descEl.textContent = proj.desc;
+
+    row.appendChild(nameLink);
+    row.appendChild(licenseTag);
+    row.appendChild(descEl);
+    ackSection.appendChild(row);
+  }
+
+  tab.appendChild(ackSection);
 
   return tab;
 }

@@ -878,6 +878,123 @@ func handleFileOperation(s *session.Session, client *session.Client, payload []b
 	return protocol.EncodeMessage(protocol.MsgFileOperationResp, respData)
 }
 
+// handleFileRead reads a remote file via SFTP and sends its content back.
+// Payload: JSON {"path": "/absolute/path"}
+// Response: MsgFileReadResponse [8B totalSize BE][content bytes]
+func handleFileRead(s *session.Session, sendFn func([]byte) bool, payload []byte) {
+	const maxReadSize int64 = 50 * 1024 * 1024 // 50MB server-side hard limit
+
+	writeErr := func(code, msg string) {
+		errResp := protocol.ErrorResponse{Code: code, Message: msg}
+		errData, _ := json.Marshal(errResp)
+		sendFn(protocol.EncodeMessage(protocol.MsgError, errData))
+	}
+
+	if s.SFTPClient == nil {
+		writeErr("SFTP_NOT_AVAILABLE", "SFTP is not available for this session")
+		return
+	}
+
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		writeErr("INVALID_REQUEST", "Failed to parse request")
+		return
+	}
+	if err := validatePath(req.Path); err != nil {
+		writeErr("INVALID_PATH", "Invalid path")
+		return
+	}
+
+	fi, err := s.SFTPClient.Stat(req.Path)
+	if err != nil {
+		writeErr("NOT_FOUND", fmt.Sprintf("File not found: %v", err))
+		return
+	}
+	if fi.IsDir() {
+		writeErr("IS_DIRECTORY", "Cannot open a directory in editor")
+		return
+	}
+	if fi.Size() > maxReadSize {
+		writeErr("FILE_TOO_LARGE", fmt.Sprintf("File size %d exceeds server limit of %d bytes", fi.Size(), maxReadSize))
+		return
+	}
+
+	content, err := s.SFTPClient.ReadFile(req.Path)
+	if err != nil {
+		writeErr("READ_FAILED", fmt.Sprintf("Failed to read file: %v", err))
+		return
+	}
+
+	// Response: [8B totalSize BE][content]
+	totalSize := uint64(len(content))
+	resp := make([]byte, 8+len(content))
+	binary.BigEndian.PutUint64(resp[0:8], totalSize)
+	copy(resp[8:], content)
+	sendFn(protocol.EncodeMessage(protocol.MsgFileReadResponse, resp))
+}
+
+// handleFileSave writes content to a remote file via SFTP using atomic write.
+// Payload: [4B pathLen BE][path UTF-8 bytes][content bytes]
+// Response: MsgFileOperationResp {"success": true, "operation": "save"}
+func handleFileSave(s *session.Session, sendFn func([]byte) bool, payload []byte) {
+	writeErr := func(code, msg string) {
+		errResp := protocol.ErrorResponse{Code: code, Message: msg}
+		errData, _ := json.Marshal(errResp)
+		sendFn(protocol.EncodeMessage(protocol.MsgError, errData))
+	}
+
+	if s.SFTPClient == nil {
+		writeErr("SFTP_NOT_AVAILABLE", "SFTP is not available for this session")
+		return
+	}
+
+	if len(payload) < 4 {
+		writeErr("INVALID_REQUEST", "Payload too short")
+		return
+	}
+
+	pathLen := int(binary.BigEndian.Uint32(payload[0:4]))
+	if pathLen <= 0 || 4+pathLen > len(payload) {
+		writeErr("INVALID_REQUEST", "Invalid path length")
+		return
+	}
+
+	filePath := string(payload[4 : 4+pathLen])
+	content := payload[4+pathLen:]
+
+	if err := validatePath(filePath); err != nil {
+		writeErr("INVALID_PATH", "Invalid path")
+		return
+	}
+
+	// Atomic write: write to tmp file, then rename
+	tmpPath := filePath + ".meterm.edit.tmp"
+	if err := s.SFTPClient.WriteFile(tmpPath, bytes.NewReader(content)); err != nil {
+		writeErr("WRITE_FAILED", fmt.Sprintf("Failed to write temporary file: %v", err))
+		return
+	}
+
+	if err := s.SFTPClient.PosixRename(tmpPath, filePath); err != nil {
+		// Fallback: try regular rename
+		_ = s.SFTPClient.Remove(filePath)
+		if err := s.SFTPClient.Rename(tmpPath, filePath); err != nil {
+			_ = s.SFTPClient.Remove(tmpPath)
+			writeErr("WRITE_FAILED", "Failed to finalize save")
+			return
+		}
+	}
+
+	resp := map[string]interface{}{
+		"success":   true,
+		"operation": "save",
+		"path":      filePath,
+	}
+	respData, _ := json.Marshal(resp)
+	sendFn(protocol.EncodeMessage(protocol.MsgFileOperationResp, respData))
+}
+
 func encodeError(code, message string) []byte {
 	errResp := protocol.ErrorResponse{
 		Code:    code,

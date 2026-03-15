@@ -21,6 +21,13 @@ import {
   getAccounts,
   testConnection,
 } from './jumpserver-api';
+import {
+  loadGroupOrder,
+  getConnectionGroup,
+  setConnectionGroup,
+  removeConnectionGroup,
+  jumpserverKey,
+} from './connection-groups';
 
 // ── Config Dialog ──
 
@@ -38,12 +45,19 @@ export function showJumpServerConfigDialog(
 
     const dialog = document.createElement('div');
     dialog.className = 'ssh-modal';
-    dialog.style.maxWidth = '500px';
+    dialog.style.width = '480px';
 
+    // Header
+    const header = document.createElement('div');
+    header.className = 'ssh-modal-header';
     const title = document.createElement('h3');
     title.textContent = prefill ? t('jsEditServer') : t('jsAddServer');
-    title.style.margin = '0 0 16px';
-    dialog.appendChild(title);
+    header.appendChild(title);
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'ssh-modal-close';
+    closeBtn.textContent = '\u00d7';
+    header.appendChild(closeBtn);
+    dialog.appendChild(header);
 
     const form = document.createElement('div');
     form.className = 'ssh-form';
@@ -138,37 +152,67 @@ export function showJumpServerConfigDialog(
     // Org ID (optional, collapsed)
     const orgInput = createFormInput(form, t('jsOrgId'), 'text', prefill?.orgId || '', t('jsOrgIdPlaceholder'));
 
-    dialog.appendChild(form);
+    // Group selector
+    const groupRow = document.createElement('div');
+    groupRow.className = 'ssh-form-row ssh-group-row';
+    const groupLabel = document.createElement('label');
+    groupLabel.className = 'ssh-form-label';
+    groupLabel.textContent = t('homeGroupMoveToGroup');
+    const groupSelect = document.createElement('select');
+    groupSelect.className = 'ssh-select ssh-group-select';
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = t('homeGroupUngrouped');
+    groupSelect.appendChild(noneOpt);
+    for (const g of loadGroupOrder()) {
+      const opt = document.createElement('option');
+      opt.value = g;
+      opt.textContent = g;
+      groupSelect.appendChild(opt);
+    }
+    if (prefill?.name) {
+      const currentGroup = getConnectionGroup(jumpserverKey(prefill.name));
+      if (currentGroup) groupSelect.value = currentGroup;
+    }
+    groupRow.appendChild(groupLabel);
+    groupRow.appendChild(groupSelect);
+    form.appendChild(groupRow);
+
+    // Wrap form in modal body
+    const body = document.createElement('div');
+    body.className = 'ssh-modal-body';
+    body.appendChild(form);
 
     // Status message area
     const statusMsg = document.createElement('div');
-    statusMsg.style.cssText = 'font-size:12px;margin:8px 0;min-height:16px;';
-    dialog.appendChild(statusMsg);
+    statusMsg.className = 'ssh-form-status';
+    body.appendChild(statusMsg);
 
     // Buttons
     const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;';
+    btnRow.className = 'ssh-form-actions';
+
+    const setStatus = (msg: string, type: 'info' | 'success' | 'error') => {
+      statusMsg.textContent = msg;
+      statusMsg.className = `ssh-form-status ssh-status-${type}`;
+    };
 
     const testBtn = document.createElement('button');
-    testBtn.className = 'ssh-btn ssh-btn-secondary';
+    testBtn.className = 'ssh-btn ssh-btn-test';
     testBtn.textContent = t('jsTestConnection');
     testBtn.onclick = async () => {
       const url = urlInput.value.trim();
       if (!url) return;
-      statusMsg.textContent = t('jsTesting');
-      statusMsg.style.color = 'var(--text-secondary)';
+      setStatus(t('jsTesting'), 'info');
       try {
         const result = await testConnection(url);
         if (result.ok) {
-          statusMsg.textContent = t('jsTestSuccess');
-          statusMsg.style.color = 'var(--status-green)';
+          setStatus(t('jsTestSuccess'), 'success');
         } else {
-          statusMsg.textContent = `${t('jsTestFailed')}: ${result.error}`;
-          statusMsg.style.color = 'var(--status-red)';
+          setStatus(`${t('jsTestFailed')}: ${result.error}`, 'error');
         }
       } catch (err) {
-        statusMsg.textContent = `${t('jsTestFailed')}: ${String(err)}`;
-        statusMsg.style.color = 'var(--status-red)';
+        setStatus(`${t('jsTestFailed')}: ${String(err)}`, 'error');
       }
     };
 
@@ -190,16 +234,14 @@ export function showJumpServerConfigDialog(
         orgId: orgInput.value.trim() || undefined,
       };
       if (!config.name || !config.baseUrl || !config.username) {
-        statusMsg.textContent = t('jsFieldsRequired');
-        statusMsg.style.color = 'var(--status-red)';
+        setStatus(t('jsFieldsRequired'), 'error');
         return null;
       }
       if (!config.sshHost) {
         try {
           config.sshHost = new URL(config.baseUrl).hostname;
         } catch {
-          statusMsg.textContent = t('jsInvalidUrl');
-          statusMsg.style.color = 'var(--status-red)';
+          setStatus(t('jsInvalidUrl'), 'error');
           return null;
         }
       }
@@ -213,6 +255,9 @@ export function showJumpServerConfigDialog(
       const config = buildConfig();
       if (!config) return;
       await addJumpServerConfig(config);
+      const selGrp = groupSelect.value;
+      if (selGrp) setConnectionGroup(jumpserverKey(config.name), selGrp);
+      else removeConnectionGroup(jumpserverKey(config.name));
       overlay.remove();
       resolve({ config, connect: false });
     };
@@ -227,18 +272,15 @@ export function showJumpServerConfigDialog(
       // Test connection before saving and connecting
       saveConnectBtn.disabled = true;
       saveBtn.disabled = true;
-      statusMsg.textContent = t('jsTesting');
-      statusMsg.style.color = 'var(--text-secondary)';
+      setStatus(t('jsTesting'), 'info');
       try {
         const result = await testConnection(config.baseUrl);
         if (!result.ok) {
-          statusMsg.textContent = `${t('jsTestFailed')}: ${result.error}`;
-          statusMsg.style.color = 'var(--status-red)';
+          setStatus(`${t('jsTestFailed')}: ${result.error}`, 'error');
           return;
         }
       } catch (err) {
-        statusMsg.textContent = `${t('jsTestFailed')}: ${String(err)}`;
-        statusMsg.style.color = 'var(--status-red)';
+        setStatus(`${t('jsTestFailed')}: ${String(err)}`, 'error');
         return;
       } finally {
         saveConnectBtn.disabled = false;
@@ -246,15 +288,22 @@ export function showJumpServerConfigDialog(
       }
 
       await addJumpServerConfig(config);
+      const selGrp2 = groupSelect.value;
+      if (selGrp2) setConnectionGroup(jumpserverKey(config.name), selGrp2);
+      else removeConnectionGroup(jumpserverKey(config.name));
       overlay.remove();
       resolve({ config, connect: true });
     };
 
+    const spacer = document.createElement('div');
+    spacer.style.flex = '1';
     btnRow.appendChild(testBtn);
+    btnRow.appendChild(spacer);
     btnRow.appendChild(cancelBtn);
     btnRow.appendChild(saveBtn);
     btnRow.appendChild(saveConnectBtn);
-    dialog.appendChild(btnRow);
+    body.appendChild(btnRow);
+    dialog.appendChild(body);
 
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
@@ -292,6 +341,7 @@ export function showJumpServerConfigDialog(
       dialog.appendChild(confirmBar);
     };
 
+    closeBtn.onclick = guardedClose;
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) guardedClose();
     });
@@ -326,24 +376,32 @@ export function showMFADialog(
 
     const dialog = document.createElement('div');
     dialog.className = 'ssh-modal';
-    dialog.style.maxWidth = '380px';
+    dialog.style.width = '380px';
 
+    // Header
+    const mfaHeader = document.createElement('div');
+    mfaHeader.className = 'ssh-modal-header';
     const title = document.createElement('h3');
     title.textContent = t('jsMfaTitle');
-    title.style.margin = '0 0 12px';
-    dialog.appendChild(title);
+    mfaHeader.appendChild(title);
+    dialog.appendChild(mfaHeader);
+
+    // Body
+    const mfaBody = document.createElement('div');
+    mfaBody.className = 'ssh-modal-body';
 
     const desc = document.createElement('p');
     desc.style.cssText = 'font-size:13px;color:var(--text-secondary);margin:0 0 16px;';
     desc.textContent = t('jsMfaDesc');
-    dialog.appendChild(desc);
+    mfaBody.appendChild(desc);
 
     // Error message area (shown on retry)
     if (errorMsg) {
       const errEl = document.createElement('div');
-      errEl.style.cssText = 'padding:8px 12px;margin-bottom:12px;border-radius:6px;background:rgba(239,68,68,0.12);color:#f87171;font-size:12px;';
+      errEl.className = 'ssh-form-status ssh-status-error';
+      errEl.style.marginBottom = '12px';
       errEl.textContent = errorMsg;
-      dialog.appendChild(errEl);
+      mfaBody.appendChild(errEl);
     }
 
     // MFA type selector (if multiple choices)
@@ -362,7 +420,7 @@ export function showMFADialog(
       });
       typeSelect.addEventListener('change', () => { selectedType = typeSelect.value; });
       typeGroup.appendChild(typeSelect);
-      dialog.appendChild(typeGroup);
+      mfaBody.appendChild(typeGroup);
     }
 
     const codeInput = document.createElement('input');
@@ -376,10 +434,11 @@ export function showMFADialog(
     codeInput.style.letterSpacing = '4px';
     codeInput.style.fontSize = '18px';
     codeInput.style.textAlign = 'center';
-    dialog.appendChild(codeInput);
+    mfaBody.appendChild(codeInput);
 
     const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    btnRow.className = 'ssh-form-actions';
+    btnRow.style.justifyContent = 'flex-end';
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'ssh-btn ssh-btn-secondary';
@@ -403,7 +462,8 @@ export function showMFADialog(
 
     btnRow.appendChild(cancelBtn);
     btnRow.appendChild(verifyBtn);
-    dialog.appendChild(btnRow);
+    mfaBody.appendChild(btnRow);
+    dialog.appendChild(mfaBody);
 
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);

@@ -428,3 +428,134 @@ body.ai-chat-resizing * {
   font-size: 0.9em;
 }
 
+/* ─── tldr Help Card ─── */
+
+.tldr-card {
+  background: var(--bg-secondary, #2a2a2a);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 8px;
+  padding: 12px 14px;
+  max-width: 480px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.tldr-card-compact { padding: 8px 10px; font-size: 12px; }
+
+.tldr-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.tldr-card-name {
+  font-weight: 600;
+  font-size: 1.1em;
+  color: var(--text-primary, #e0e0e0);
+}
+.tldr-card-badge {
+  font-size: 0.75em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(100, 160, 255, 0.15);
+  color: #7ab4ff;
+}
+.tldr-card-desc {
+  color: var(--text-secondary, #aaa);
+  margin-bottom: 8px;
+}
+.tldr-card-examples-title {
+  font-weight: 500;
+  color: var(--text-secondary, #aaa);
+  margin-bottom: 4px;
+  font-size: 0.9em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.tldr-card-example {
+  margin-bottom: 6px;
+}
+.tldr-card-example-desc {
+  color: var(--text-secondary, #bbb);
+  font-size: 0.92em;
+}
+.tldr-card-example-cmd {
+  display: block;
+  background: rgba(0, 0, 0, 0.25);
+  color: #a8d8a8;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.tldr-card-example-cmd.clickable {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.tldr-card-example-cmd.clickable:hover {
+  background: rgba(0, 0, 0, 0.4);
+}
+.tldr-card-attribution {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.3);
+  text-align: right;
+}
+.tldr-card-attribution a {
+  color: rgba(255, 255, 255, 0.4);
+  text-decoration: none;
+}
+.tldr-card-attribution a:hover {
+  color: rgba(255, 255, 255, 0.6);
+  text-decoration: underline;
+}
+
+/* tldr Popup (floating) */
+.tldr-popup {
+  position: fixed;
+  z-index: 9999;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  border-radius: 8px;
+  animation: tldr-popup-in 0.15s ease-out;
+}
+@keyframes tldr-popup-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.tldr-popup .tldr-card {
+  border: none;
+}
+.tldr-popup-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  background: none;
+  border: none;
+  color: var(--text-secondary, #aaa);
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.tldr-popup-close:hover { color: var(--text-primary, #fff); }
+
+/* ─── Inline Ghost Text Completion ─── */
+
+.cmd-ghost-text {
+  position: absolute;
+  pointer-events: none;
+  color: rgba(255, 255, 255, 0.3);
+  font-family: inherit;
+  white-space: pre;
+  z-index: 10;
+  user-select: none;
+}
+
+[data-theme="light"] .cmd-ghost-text {
+  color: rgba(0, 0, 0, 0.25);
+}
+

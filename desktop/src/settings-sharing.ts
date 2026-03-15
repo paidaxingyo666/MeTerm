@@ -255,7 +255,7 @@ export function createSharingTab(): HTMLDivElement {
 
   const devicesTitleEl = document.createElement('span');
   devicesTitleEl.className = 'settings-section-title';
-  devicesTitleEl.style.marginBottom = '0';
+  devicesTitleEl.style.margin = '0';
   devicesTitleEl.textContent = t('connectedDevices');
 
   const refreshDevicesBtn = document.createElement('button');

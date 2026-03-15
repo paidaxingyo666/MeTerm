@@ -50,6 +50,7 @@ body,
   --border-home-btn-hover: #555;
 
   --accent: #6aa4ff;
+  --accent-rgb: 106, 164, 255;
   --accent-bg: rgba(106, 164, 255, 0.18);
   --accent-tray-btn-bg: rgba(64, 104, 169, 0.24);
   --accent-tray-btn-bg-hover: rgba(64, 104, 169, 0.34);
@@ -115,6 +116,7 @@ body,
   --border-home-btn-hover: #3a3a3a;
 
   --accent: #57c7ff;
+  --accent-rgb: 87, 199, 255;
   --accent-bg: rgba(87, 199, 255, 0.15);
   --accent-tray-btn-bg: rgba(50, 90, 140, 0.24);
   --accent-tray-btn-bg-hover: rgba(50, 90, 140, 0.34);
@@ -180,6 +182,7 @@ body,
   --border-home-btn-hover: #243658;
 
   --accent: #5b9cf5;
+  --accent-rgb: 91, 156, 245;
   --accent-bg: rgba(91, 156, 245, 0.16);
   --accent-tray-btn-bg: rgba(50, 100, 180, 0.24);
   --accent-tray-btn-bg-hover: rgba(50, 100, 180, 0.36);
@@ -245,6 +248,7 @@ body,
   --border-home-btn-hover: #bbb;
 
   --accent: #0066cc;
+  --accent-rgb: 0, 102, 204;
   --accent-bg: rgba(0, 102, 204, 0.12);
   --accent-tray-btn-bg: rgba(0, 102, 204, 0.12);
   --accent-tray-btn-bg-hover: rgba(0, 102, 204, 0.2);
@@ -279,4 +283,73 @@ body,
    the user's opacity setting is honoured. */
 html.platform-windows {
   background-color: rgba(var(--bg-primary, 30, 30, 30), var(--app-window-opacity, 1));
+}
+
+/* ============================================================================
+   Vibrancy (system blur) overrides
+   When .vibrancy-active is set on <html>, reduce background opacities so the
+   native blur effect shows through while preserving theme color tint.
+   ============================================================================ */
+html.vibrancy-active {
+  --vibrancy-tint: 0.55;
+  --vibrancy-bg: var(--bg-primary);
+  --vibrancy-toolbar: var(--bg-toolbar);
+  --vibrancy-status: var(--bg-status);
+}
+html.vibrancy-active,
+html.vibrancy-active body,
+html.vibrancy-active #app {
+  background-color: transparent !important;
+  background: transparent !important;
+}
+html.vibrancy-active #terminal-panel {
+  background: rgba(var(--vibrancy-bg), var(--vibrancy-tint)) !important;
+}
+html.vibrancy-active .home-view {
+  background: transparent !important;
+}
+html.vibrancy-active #window-toolbar {
+  background: rgba(var(--vibrancy-toolbar), var(--vibrancy-tint)) !important;
+}
+html.vibrancy-active .status-bar-container {
+  background: rgba(var(--vibrancy-status), var(--vibrancy-tint)) !important;
+}
+html.vibrancy-active .settings-window-mode {
+  background: rgba(var(--vibrancy-toolbar), var(--vibrancy-tint)) !important;
+}
+html.vibrancy-active .about-container {
+  background: rgba(var(--vibrancy-bg), var(--vibrancy-tint)) !important;
+}
+html.vibrancy-active .updater-window-mode {
+  background: rgba(var(--vibrancy-bg), var(--vibrancy-tint)) !important;
+}
+html.vibrancy-active .js-browser-window {
+  background: rgba(var(--vibrancy-bg), var(--vibrancy-tint)) !important;
+}
+/* Lighten form controls in vibrancy mode so they don't look like black holes */
+html.vibrancy-active .settings-select,
+html.vibrancy-active .settings-input {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+html.vibrancy-active .settings-btn {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+html.vibrancy-active .settings-btn:hover {
+  background: rgba(255, 255, 255, 0.16) !important;
+}
+html.vibrancy-active .settings-toggle-btn,
+html.vibrancy-active .settings-test-btn,
+html.vibrancy-active .settings-preset-btn {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+html.vibrancy-active .settings-toggle-btn:hover,
+html.vibrancy-active .settings-test-btn:hover,
+html.vibrancy-active .settings-preset-btn:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+html.vibrancy-active .settings-slider {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+html.vibrancy-active .settings-slider::-webkit-slider-thumb {
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
 }

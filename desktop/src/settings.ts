@@ -1,4 +1,5 @@
 import { AppSettings, saveSettings } from './themes';
+import { createOverlayScrollbar } from './overlay-scrollbar';
 import { t } from './i18n';
 import { createGeneralTab } from './settings-general';
 import { createAITab } from './settings-ai';
@@ -104,6 +105,7 @@ export function createSettingsPanel(options: SettingsPanelOptions): HTMLDivEleme
   // Wrapper for all tab contents
   const contentWrapper = document.createElement('div');
   contentWrapper.className = 'settings-content';
+  createOverlayScrollbar({ viewport: contentWrapper, container: contentWrapper });
 
   // ========== General Tab ==========
   const generalContent = createGeneralTab(current, update, onLanguageChange, getRateLabel);

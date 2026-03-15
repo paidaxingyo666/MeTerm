@@ -1,22 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { t } from './i18n';
-import { icon } from './icons';
 import { escapeHtml } from './status-bar';
-import {
-  type RemoteServerInfo,
-  loadSavedRemoteConnections,
-  removeRemoteConnection,
-  loadRecentRemoteConnections,
-  removeRecentRemoteConnection,
-  showRemoteEditDialog,
-  showRemoteCardSessionPopup,
-} from './remote';
-import {
-  type JumpServerConfig,
-  loadJumpServerConfigs,
-  removeJumpServerConfig,
-  loadJSSecrets,
-} from './jumpserver-api';
+import { loadGroupOrder, sshKey, setConnectionGroup, removeConnectionGroup, getConnectionGroup } from './connection-groups';
 export interface SSHConnectionConfig {
   name: string;
   host: string;
@@ -294,6 +279,13 @@ function saveRecentConnections(connections: SSHConnectionConfig[]): void {
   localStorage.setItem(SSH_RECENT_KEY, JSON.stringify(stripped));
 }
 
+export function removeRecentConnection(host: string, port: number, username: string): void {
+  const conns = loadRecentConnections().filter(
+    (c) => !(c.host === host && c.port === port && c.username === username),
+  );
+  saveRecentConnections(conns);
+}
+
 export function addRecentConnection(config: SSHConnectionConfig): void {
   let recent = loadRecentConnections();
   // Deduplicate by host+port+username
@@ -408,6 +400,10 @@ let onConnectHandler: SSHConnectHandler | null = null;
 
 export function setSSHConnectHandler(handler: SSHConnectHandler): void {
   onConnectHandler = handler;
+}
+
+export function getSSHConnectHandler(): SSHConnectHandler | null {
+  return onConnectHandler;
 }
 
 export async function testSSHConnection(config: SSHConnectionConfig, trustedFingerprint?: string): Promise<{ ok: boolean; error?: string }> {
@@ -772,6 +768,33 @@ function createConnectionForm(
     statusMsg.className = 'ssh-form-status';
   };
 
+  // ── Group selector ──
+  const groupRow = document.createElement('div');
+  groupRow.className = 'ssh-form-row ssh-group-row';
+  const groupLabel = document.createElement('label');
+  groupLabel.className = 'ssh-form-label';
+  groupLabel.textContent = t('homeGroupMoveToGroup');
+  const groupSelect = document.createElement('select');
+  groupSelect.className = 'ssh-select ssh-group-select';
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = t('homeGroupUngrouped');
+  groupSelect.appendChild(noneOpt);
+  for (const g of loadGroupOrder()) {
+    const opt = document.createElement('option');
+    opt.value = g;
+    opt.textContent = g;
+    groupSelect.appendChild(opt);
+  }
+  // Pre-select if editing existing connection
+  if (prefill?.name) {
+    const currentGroup = getConnectionGroup(sshKey(prefill.name));
+    if (currentGroup) groupSelect.value = currentGroup;
+  }
+  groupRow.appendChild(groupLabel);
+  groupRow.appendChild(groupSelect);
+  form.appendChild(groupRow);
+
   // Buttons row
   const btnRow = document.createElement('div');
   btnRow.className = 'ssh-form-actions';
@@ -852,6 +875,9 @@ function createConnectionForm(
     if (!(await preConnectTest(config))) return;
 
     addConnection(config);
+    const selectedGroup = groupSelect.value;
+    if (selectedGroup) setConnectionGroup(sshKey(config.name), selectedGroup);
+    else removeConnectionGroup(sshKey(config.name));
     document.dispatchEvent(new CustomEvent('ssh-connections-changed'));
     if (onSubmit) {
       onSubmit(config);
@@ -867,6 +893,9 @@ function createConnectionForm(
     const config = readFormConfig();
     if (!config.host || !config.username) return;
     addConnection(config);
+    const selectedGrp = groupSelect.value;
+    if (selectedGrp) setConnectionGroup(sshKey(config.name), selectedGrp);
+    else removeConnectionGroup(sshKey(config.name));
     clearStatus();
     document.dispatchEvent(new CustomEvent('ssh-connections-changed'));
   };
@@ -876,9 +905,9 @@ function createConnectionForm(
 
   btnRow.appendChild(testBtn);
   btnRow.appendChild(spacer);
-  btnRow.appendChild(connectBtn);
-  btnRow.appendChild(connectSaveBtn);
   btnRow.appendChild(saveBtn);
+  btnRow.appendChild(connectSaveBtn);
+  btnRow.appendChild(connectBtn);
   form.appendChild(btnRow);
 
   // Dirty tracking: snapshot initial state, track saves
@@ -985,398 +1014,5 @@ export function showSSHModal(prefill?: SSHConnectionConfig): void {
   document.addEventListener('keydown', escHandler);
 }
 
-function showCardContextMenu(event: MouseEvent, conn: SSHConnectionConfig): void {
-  document.querySelector('.home-card-menu')?.remove();
-
-  const menu = document.createElement('div');
-  menu.className = 'home-card-menu';
-  menu.style.left = `${event.clientX}px`;
-  menu.style.top = `${event.clientY}px`;
-
-  const editItem = document.createElement('button');
-  editItem.className = 'home-card-menu-item';
-  editItem.textContent = t('homeEditConnection');
-  editItem.onclick = () => { menu.remove(); showSSHModal(conn); };
-
-  const deleteItem = document.createElement('button');
-  deleteItem.className = 'home-card-menu-item danger';
-  deleteItem.textContent = t('sshDeleteConnection');
-  deleteItem.onclick = () => {
-    menu.remove();
-    removeConnection(conn.name);
-    updateSSHHomeView();
-  };
-
-  menu.appendChild(editItem);
-  menu.appendChild(deleteItem);
-  document.body.appendChild(menu);
-
-  // Reposition if overflows viewport
-  const rect = menu.getBoundingClientRect();
-  if (rect.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - rect.width - 4)}px`;
-  if (rect.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - rect.height - 4)}px`;
-
-  const cleanup = () => { menu.remove(); document.removeEventListener('click', cleanup, true); };
-  document.addEventListener('click', cleanup, true);
-}
-
-export function createSSHHomeView(): HTMLDivElement {
-  const container = document.createElement('div');
-  container.className = 'home-view';
-  container.id = 'home-view';
-
-  const content = document.createElement('div');
-  content.className = 'home-center';
-
-  // App name
-  const appName = document.createElement('h1');
-  appName.className = 'home-app-name';
-  appName.textContent = t('appName');
-  content.appendChild(appName);
-
-  // Buttons row: local + SSH on the same line
-  const btnRow = document.createElement('div');
-  btnRow.className = 'home-btn-row';
-
-  const localBtn = document.createElement('button');
-  localBtn.className = 'home-action-btn home-btn-local';
-  localBtn.innerHTML = `<span class="home-btn-icon">${icon('terminal')}</span><span>${t('homeNewLocalSession')}</span>`;
-  localBtn.onclick = () => {
-    document.dispatchEvent(new CustomEvent('new-local-session'));
-  };
-  localBtn.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    document.dispatchEvent(new CustomEvent('new-local-session-menu', { detail: { mouseEvent: e, anchor: localBtn } }));
-  });
-
-  const sshBtn = document.createElement('button');
-  sshBtn.className = 'home-action-btn home-btn-ssh';
-  sshBtn.innerHTML = `<span class="home-btn-icon">${icon('ssh')}</span><span>${t('homeNewSSHSession')}</span>`;
-  sshBtn.onclick = () => {
-    showSSHModal();
-  };
-
-  const remoteBtn = document.createElement('button');
-  remoteBtn.className = 'home-action-btn home-btn-remote';
-  remoteBtn.innerHTML = `<span class="home-btn-icon">${icon('remote')}</span><span>${t('homeRemoteConnect')}</span>`;
-  remoteBtn.onclick = () => {
-    document.dispatchEvent(new CustomEvent('remote-connect-request'));
-  };
-
-  const jsBtn = document.createElement('button');
-  jsBtn.className = 'home-action-btn home-btn-jumpserver';
-  jsBtn.innerHTML = `<span class="home-btn-icon">${icon('jumpserver')}</span><span>${t('homeNewJumpServer')}</span>`;
-  jsBtn.onclick = async () => {
-    const { showJumpServerConfigDialog } = await import('./jumpserver-ui');
-    const result = await showJumpServerConfigDialog();
-    if (result?.connect) {
-      const { handleJumpServerConnect } = await import('./jumpserver-handler');
-      handleJumpServerConnect(result.config);
-    }
-  };
-
-  btnRow.appendChild(localBtn);
-  btnRow.appendChild(sshBtn);
-  btnRow.appendChild(remoteBtn);
-  btnRow.appendChild(jsBtn);
-  content.appendChild(btnRow);
-
-  // Saved connections area
-  const savedSection = document.createElement('div');
-  savedSection.className = 'home-saved-section';
-  savedSection.id = 'home-saved-section';
-  content.appendChild(savedSection);
-
-  // Recent connections area
-  const recentSection = document.createElement('div');
-  recentSection.className = 'home-saved-section';
-  recentSection.id = 'home-recent-section';
-  content.appendChild(recentSection);
-
-  container.appendChild(content);
-  return container;
-}
-
-const CARDS_PER_ROW = 5;
-const MAX_VISIBLE_ROWS = 2;
-
-// --- Remote connection cards for home view ---
-function showRemoteCardContextMenu(event: MouseEvent, info: RemoteServerInfo, isRecent: boolean): void {
-  document.querySelector('.home-card-menu')?.remove();
-
-  const menu = document.createElement('div');
-  menu.className = 'home-card-menu';
-  menu.style.left = `${event.clientX}px`;
-  menu.style.top = `${event.clientY}px`;
-
-  const editItem = document.createElement('button');
-  editItem.className = 'home-card-menu-item';
-  editItem.textContent = t('homeEditConnection');
-  editItem.onclick = () => { menu.remove(); showRemoteEditDialog(info); };
-
-  const deleteItem = document.createElement('button');
-  deleteItem.className = 'home-card-menu-item danger';
-  deleteItem.textContent = t('remoteDeleteConnection');
-  deleteItem.onclick = () => {
-    menu.remove();
-    if (isRecent) {
-      removeRecentRemoteConnection(info.host, info.port);
-    } else {
-      removeRemoteConnection(info.host, info.port);
-    }
-    updateSSHHomeView();
-  };
-
-  menu.appendChild(editItem);
-  menu.appendChild(deleteItem);
-  document.body.appendChild(menu);
-
-  const rect = menu.getBoundingClientRect();
-  if (rect.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - rect.width - 4)}px`;
-  if (rect.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - rect.height - 4)}px`;
-
-  const cleanup = () => { menu.remove(); document.removeEventListener('click', cleanup, true); };
-  document.addEventListener('click', cleanup, true);
-}
-
-function createRemoteConnectionCard(info: RemoteServerInfo, isRecent: boolean): HTMLDivElement {
-  const card = document.createElement('div');
-  card.className = 'home-connection-card remote-card';
-
-  const name = document.createElement('div');
-  name.className = 'home-card-name';
-  name.textContent = info.name || info.host;
-
-  const detail = document.createElement('div');
-  detail.className = 'home-card-detail';
-  detail.textContent = `${info.host}:${info.port}`;
-
-  card.appendChild(name);
-  card.appendChild(detail);
-
-  card.onclick = () => {
-    showRemoteCardSessionPopup(card, info);
-  };
-
-  card.oncontextmenu = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    showRemoteCardContextMenu(e, info, isRecent);
-  };
-
-  return card;
-}
-
-function createJumpServerCard(config: JumpServerConfig): HTMLDivElement {
-  const card = document.createElement('div');
-  card.className = 'home-connection-card jumpserver-card';
-
-  const name = document.createElement('div');
-  name.className = 'home-card-name';
-  name.textContent = config.name;
-
-  const detail = document.createElement('div');
-  detail.className = 'home-card-detail';
-  detail.textContent = `${config.username}@${config.sshHost}:${config.sshPort}`;
-
-  card.appendChild(name);
-  card.appendChild(detail);
-
-  card.onclick = async () => {
-    const secrets = await loadJSSecrets(config.name);
-    const fullConfig: JumpServerConfig = {
-      ...config,
-      password: secrets.password,
-      apiToken: secrets.apiToken,
-    };
-    const { handleJumpServerConnect } = await import('./jumpserver-handler');
-    handleJumpServerConnect(fullConfig);
-  };
-
-  card.oncontextmenu = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    showJumpServerCardContextMenu(e, config);
-  };
-
-  return card;
-}
-
-function showJumpServerCardContextMenu(event: MouseEvent, config: JumpServerConfig): void {
-  document.querySelector('.home-card-menu')?.remove();
-
-  const menu = document.createElement('div');
-  menu.className = 'home-card-menu';
-  menu.style.left = `${event.clientX}px`;
-  menu.style.top = `${event.clientY}px`;
-
-  const editItem = document.createElement('button');
-  editItem.className = 'home-card-menu-item';
-  editItem.textContent = t('homeEditConnection');
-  editItem.onclick = async () => {
-    menu.remove();
-    const secrets = await loadJSSecrets(config.name);
-    const prefill: JumpServerConfig = { ...config, password: secrets.password, apiToken: secrets.apiToken };
-    const { showJumpServerConfigDialog } = await import('./jumpserver-ui');
-    const result = await showJumpServerConfigDialog(prefill);
-    if (result) {
-      updateSSHHomeView();
-      if (result.connect) {
-        const { handleJumpServerConnect } = await import('./jumpserver-handler');
-        handleJumpServerConnect(result.config);
-      }
-    }
-  };
-
-  const deleteItem = document.createElement('button');
-  deleteItem.className = 'home-card-menu-item danger';
-  deleteItem.textContent = t('sshDeleteConnection');
-  deleteItem.onclick = async () => {
-    menu.remove();
-    await removeJumpServerConfig(config.name);
-    updateSSHHomeView();
-  };
-
-  menu.appendChild(editItem);
-  menu.appendChild(deleteItem);
-  document.body.appendChild(menu);
-
-  const rect = menu.getBoundingClientRect();
-  if (rect.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - rect.width - 4)}px`;
-  if (rect.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - rect.height - 4)}px`;
-
-  const cleanup = () => { menu.remove(); document.removeEventListener('click', cleanup, true); };
-  document.addEventListener('click', cleanup, true);
-}
-
-function createConnectionCard(conn: SSHConnectionConfig, withContextMenu: boolean): HTMLDivElement {
-  const card = document.createElement('div');
-  card.className = 'home-connection-card';
-
-  const name = document.createElement('div');
-  name.className = 'home-card-name';
-  name.textContent = conn.name || conn.host;
-
-  const detail = document.createElement('div');
-  detail.className = 'home-card-detail';
-  detail.textContent = `${conn.username}@${conn.host}:${conn.port}`;
-
-  card.appendChild(name);
-  card.appendChild(detail);
-
-  card.onclick = () => {
-    if (onConnectHandler) onConnectHandler(conn);
-  };
-
-  if (withContextMenu) {
-    card.oncontextmenu = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      showCardContextMenu(e, conn);
-    };
-  }
-
-  return card;
-}
-
-export function updateSSHHomeView(): void {
-  const savedSection = document.getElementById('home-saved-section');
-  const recentSection = document.getElementById('home-recent-section');
-
-  // --- Saved connections ---
-  if (savedSection) {
-    const sshConnections = loadSavedConnections();
-    const remoteConnections = loadSavedRemoteConnections();
-    const jsConnections = loadJumpServerConfigs();
-    savedSection.innerHTML = '';
-
-    const totalSaved = sshConnections.length + remoteConnections.length + jsConnections.length;
-    if (totalSaved > 0) {
-      const title = document.createElement('div');
-      title.className = 'home-saved-title';
-      title.textContent = t('homeSavedConnections');
-      savedSection.appendChild(title);
-
-      const grid = document.createElement('div');
-      grid.className = 'home-saved-grid';
-
-      const maxVisible = CARDS_PER_ROW * MAX_VISIBLE_ROWS;
-      const hasMore = totalSaved > maxVisible;
-
-      let cardIndex = 0;
-      sshConnections.forEach((conn) => {
-        const card = createConnectionCard(conn, true);
-        if (hasMore && cardIndex >= maxVisible) {
-          card.classList.add('home-card-overflow');
-        }
-        grid.appendChild(card);
-        cardIndex++;
-      });
-
-      remoteConnections.forEach((info) => {
-        const card = createRemoteConnectionCard(info, false);
-        if (hasMore && cardIndex >= maxVisible) {
-          card.classList.add('home-card-overflow');
-        }
-        grid.appendChild(card);
-        cardIndex++;
-      });
-
-      jsConnections.forEach((jsConfig) => {
-        const card = createJumpServerCard(jsConfig);
-        if (hasMore && cardIndex >= maxVisible) {
-          card.classList.add('home-card-overflow');
-        }
-        grid.appendChild(card);
-        cardIndex++;
-      });
-
-      savedSection.appendChild(grid);
-
-      if (hasMore) {
-        const moreBtn = document.createElement('button');
-        moreBtn.className = 'home-show-more-btn';
-        moreBtn.textContent = t('homeShowMore');
-        let expanded = false;
-        moreBtn.onclick = () => {
-          expanded = !expanded;
-          grid.classList.toggle('expanded', expanded);
-          moreBtn.textContent = expanded ? t('homeShowLess') : t('homeShowMore');
-          const homeView = document.getElementById('home-view');
-          if (homeView) {
-            homeView.classList.toggle('has-overflow', expanded);
-          }
-        };
-        savedSection.appendChild(moreBtn);
-      }
-    }
-  }
-
-  // --- Recent connections ---
-  if (recentSection) {
-    const recentSSH = loadRecentConnections();
-    const recentRemote = loadRecentRemoteConnections();
-    recentSection.innerHTML = '';
-
-    const totalRecent = recentSSH.length + recentRemote.length;
-    if (totalRecent > 0) {
-      const title = document.createElement('div');
-      title.className = 'home-saved-title';
-      title.textContent = t('homeRecentConnections');
-      recentSection.appendChild(title);
-
-      const grid = document.createElement('div');
-      grid.className = 'home-saved-grid';
-
-      recentSSH.forEach((conn) => {
-        grid.appendChild(createConnectionCard(conn, false));
-      });
-
-      recentRemote.forEach((info) => {
-        grid.appendChild(createRemoteConnectionCard(info, true));
-      });
-
-      recentSection.appendChild(grid);
-    }
-  }
-}
+// ─── Home view delegated to home-dashboard.ts ───
+export { createSSHHomeView, updateSSHHomeView } from './home-dashboard';

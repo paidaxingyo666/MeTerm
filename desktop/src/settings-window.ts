@@ -4,6 +4,7 @@ import { initLanguage, setLanguage, t } from './i18n';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { readText as clipboardReadText } from '@tauri-apps/plugin-clipboard-manager';
+import { applyVibrancy } from './appearance';
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
@@ -58,8 +59,7 @@ export function initSettingsWindow(): void {
   setLanguage(settings.language);
   applyTheme(settings);
 
-  // Settings window is opaque
-  document.documentElement.style.setProperty('--app-window-opacity', '1');
+  void applyVibrancy(settings.enableVibrancy);
 
   // Platform class for CSS
   document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);

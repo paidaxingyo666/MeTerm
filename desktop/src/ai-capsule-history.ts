@@ -3,6 +3,9 @@ import { t } from './i18n';
 import { DrawerManager } from './drawer';
 import { MAX_HISTORY, HISTORY_STORAGE_KEY } from './ai-capsule-types';
 import type { HistoryEntry, AICapsuleInstance } from './ai-capsule-types';
+import { loadSettings } from './themes';
+import { extractCommand, queryTldr } from './tldr-help';
+import { showTldrPopup } from './tldr-card';
 
 export function getHistoryKey(sessionId: string): string {
   const info = DrawerManager.getServerInfo(sessionId);
@@ -178,8 +181,28 @@ export function renderHistoryPanel(
       deps.handleDeleteHistoryEntry(instance, entry);
     });
 
+    // Help button (only if tldr is enabled)
+    const settings = loadSettings();
+    let helpBtn: HTMLButtonElement | null = null;
+    if (settings.tldrEnabled) {
+      helpBtn = document.createElement('button');
+      helpBtn.className = 'ai-history-help';
+      helpBtn.title = t('tldrHelp');
+      helpBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="6.5"/><path d="M6 6.5a2 2 0 013.5 1.5c0 1-1.5 1.5-1.5 1.5"/><circle cx="8" cy="12" r="0.5" fill="currentColor" stroke="none"/></svg>`;
+      helpBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const cmd = extractCommand(entry.command);
+        if (!cmd) return;
+        const result = await queryTldr(cmd);
+        if (result.found && result.page) {
+          showTldrPopup(result.page, helpBtn!);
+        }
+      });
+    }
+
     row.appendChild(cmdSpan);
     row.appendChild(meta);
+    if (helpBtn) row.appendChild(helpBtn);
     row.appendChild(copyBtn);
     row.appendChild(delBtn);
 

@@ -93,26 +93,30 @@
 
 .pairing-btn {
   padding: 8px 16px;
-  border-radius: 6px;
-  border: 1px solid var(--border-color, #3c3c3c);
-  background: var(--bg-primary, #1e1e1e);
+  border-radius: 9999px;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-primary, #d4d4d4);
   font-size: 13px;
   cursor: pointer;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.2);
+  transition: background 0.15s, box-shadow 0.15s;
 }
 
 .pairing-btn:hover {
-  background: var(--bg-hover, #2a2d2e);
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.3);
 }
 
 .pairing-btn-primary {
-  background: var(--accent-color, #007acc);
-  border-color: var(--accent-color, #007acc);
-  color: #ffffff;
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.28);
+  color: var(--accent, #007acc);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.15);
 }
 
 .pairing-btn-primary:hover {
-  background: #0088e0;
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.38);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.25);
 }
 
 /* ============================================================================
@@ -140,14 +144,17 @@
 }
 
 .master-approval-dialog {
-  background: rgb(var(--bg-card, 37, 37, 38));
-  border: 1px solid var(--border-primary, #444);
-  border-radius: 12px;
+  background: rgba(var(--bg-toolbar, 33, 33, 35), 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: none;
+  border-radius: 14px;
   padding: 24px;
   min-width: 340px;
   max-width: 400px;
   text-align: center;
-  box-shadow: 0 16px 48px var(--shadow-panel, rgba(0, 0, 0, 0.4));
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.35),
+              0 0 0 0.5px rgba(255, 255, 255, 0.06);
 }
 
 .master-approval-icon {
@@ -187,33 +194,69 @@
 
 .master-approval-btn {
   padding: 8px 24px;
-  border-radius: 6px;
+  border-radius: 9999px;
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  border: 1px solid var(--border-primary, #444);
-  transition: all 0.15s;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.2);
+  transition: background 0.15s, box-shadow 0.15s;
 }
 
 .master-approval-btn.deny {
-  background: transparent;
   color: var(--text-muted, #888);
 }
 
 .master-approval-btn.deny:hover {
-  background: rgba(255, 100, 100, 0.1);
-  border-color: #c44;
-  color: #e55;
+  background: rgba(255, 69, 58, 0.15);
+  color: var(--status-disconnected-text, #f87171);
 }
 
 .master-approval-btn.approve {
-  background: var(--accent, #007acc);
-  border-color: var(--accent, #007acc);
-  color: #fff;
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.28);
+  color: var(--accent, #007acc);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.15);
 }
 
 .master-approval-btn.approve:hover {
-  filter: brightness(1.15);
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.38);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.25);
+}
+
+/* Light theme overrides */
+[data-theme="light"] .pairing-btn {
+  background: rgba(0, 0, 0, 0.04);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.6);
+}
+[data-theme="light"] .pairing-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .pairing-btn-primary {
+  background: rgba(var(--accent-rgb, 0, 102, 204), 0.12);
+  color: var(--accent);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5);
+}
+[data-theme="light"] .pairing-btn-primary:hover {
+  background: rgba(var(--accent-rgb, 0, 102, 204), 0.18);
+}
+[data-theme="light"] .master-approval-dialog {
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .master-approval-btn {
+  background: rgba(0, 0, 0, 0.04);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.6);
+}
+[data-theme="light"] .master-approval-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .master-approval-btn.approve {
+  background: rgba(var(--accent-rgb, 0, 102, 204), 0.12);
+  color: var(--accent);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5);
+}
+[data-theme="light"] .master-approval-btn.approve:hover {
+  background: rgba(var(--accent-rgb, 0, 102, 204), 0.18);
 }
 
 /* ============================================================================

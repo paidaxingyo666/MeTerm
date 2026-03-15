@@ -3,6 +3,65 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 
 const isWindows = navigator.userAgent.toLowerCase().includes('windows');
 
+export interface UtilityWindowOptions {
+  label: string;
+  url: string;
+  title: string;
+  width: number;
+  height: number;
+  resizable: boolean;
+}
+
+/**
+ * Create a utility window (settings, updater, about, etc.).
+ *
+ * On macOS/Linux: uses the Rust `create_transparent_window` command so the
+ * native `.transparent(true)` builder flag is propagated correctly by WKWebView.
+ *
+ * On Windows: uses the frontend WebviewWindow API to avoid blocking the Win32
+ * message loop during WebView2 initialization. The Rust command's synchronous
+ * `builder.build()` dispatches to the main thread and blocks it, freezing ALL
+ * existing WebView2 instances until the new window's WebView2 runtime is ready
+ * (can take 1–5 s on cold start). The frontend API creates the window
+ * asynchronously, keeping the main window responsive.
+ */
+export async function createUtilityWindow(opts: UtilityWindowOptions): Promise<void> {
+  if (!isWindows) {
+    await invoke('create_transparent_window', { ...opts });
+    return;
+  }
+
+  // Windows path: asynchronous WebView2 creation via frontend API
+  await new Promise<void>((resolve, reject) => {
+    const win = new WebviewWindow(opts.label, {
+      url: opts.url,
+      title: opts.title,
+      width: opts.width,
+      height: opts.height,
+      center: true,
+      resizable: opts.resizable,
+      decorations: false,
+      transparent: true,
+      visible: false,
+    });
+
+    const timeout = setTimeout(() => {
+      reject(new Error(`Utility window "${opts.label}" creation timed out`));
+    }, 10_000);
+
+    void win.once('tauri://created', () => {
+      clearTimeout(timeout);
+      // Register grace period on Rust side
+      void invoke('track_window_created_ts', { windowLabel: opts.label });
+      resolve();
+    });
+    void win.once('tauri://error', (event) => {
+      clearTimeout(timeout);
+      reject(new Error(`Failed to create window "${opts.label}": ${String(event)}`));
+    });
+  });
+}
+
 /**
  * Create a new app window at the specified screen coordinates.
  *
@@ -35,15 +94,26 @@ export async function createWindowAtPosition(x: number, y: number): Promise<stri
       resizable: true,
       decorations: false,
       transparent: true,
-      focus: true,
+      visible: false,
     });
 
+    const timeout = setTimeout(() => {
+      reject(new Error('Window creation timed out'));
+    }, 10_000);
+
     void win.once('tauri://created', () => {
-      void win.show();
-      void win.setFocus();
+      clearTimeout(timeout);
+      // Register grace period on Rust side so the window isn't auto-closed
+      // before JS initializes (Windows frontend API path doesn't go through Rust commands).
+      void invoke('track_window_created_ts', { windowLabel: label });
+      // Delay show to allow WebView2 to initialize, preventing blank flash
+      setTimeout(() => {
+        void win.show().then(() => win.setFocus());
+      }, 150);
       resolve();
     });
     void win.once('tauri://error', (event) => {
+      clearTimeout(timeout);
       reject(new Error(`Failed to create window: ${String(event)}`));
     });
   });

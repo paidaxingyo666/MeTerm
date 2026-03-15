@@ -81,6 +81,7 @@ fn tray_label(language: &str, key: &str) -> &'static str {
         ("zh", "export_connections") => "导出连接",
         ("zh", "lan_discover") => "局域网发现",
         ("zh", "check_updates") => "检查更新",
+        ("zh", "pip_toggle") => "画中画",
         (_, "new_window") => "New Window",
         (_, "show_home") => "Show Home",
         (_, "new_terminal") => "New Terminal",
@@ -93,6 +94,7 @@ fn tray_label(language: &str, key: &str) -> &'static str {
         (_, "export_connections") => "Export Connections",
         (_, "lan_discover") => "LAN Discovery",
         (_, "check_updates") => "Check for Updates",
+        (_, "pip_toggle") => "Picture-in-Picture",
         _ => "",
     }
 }
@@ -142,6 +144,7 @@ fn app_label(language: &str, key: &str) -> &'static str {
         ("zh", "show_about") => "关于 MeTerm",
         ("zh", "show_shortcuts") => "快捷键",
         ("zh", "check_updates") => "检查更新",
+        ("zh", "pip_toggle") => "画中画",
         (_, "app") => "App",
         (_, "file") => "File",
         (_, "edit") => "Edit",
@@ -164,6 +167,7 @@ fn app_label(language: &str, key: &str) -> &'static str {
         (_, "show_about") => "About MeTerm",
         (_, "show_shortcuts") => "Keyboard Shortcuts",
         (_, "check_updates") => "Check for Updates",
+        (_, "pip_toggle") => "Picture-in-Picture",
         _ => "",
     }
 }
@@ -234,9 +238,12 @@ pub fn set_app_menu_language(app: &AppHandle, language: &str) -> Result<(), Stri
 
     let view_show_home_item = MenuItem::with_id(app, "show_home", app_label(language, "show_home"), true, Some("CmdOrCtrl+1"))
         .map_err(|e| e.to_string())?;
+    let view_pip_item = MenuItem::with_id(app, "pip_toggle", app_label(language, "pip_toggle"), true, Some("CmdOrCtrl+Shift+P"))
+        .map_err(|e| e.to_string())?;
     let view_reload_item = MenuItem::with_id(app, "reload", app_label(language, "reload"), true, Some("CmdOrCtrl+R"))
         .map_err(|e| e.to_string())?;
-    let view_submenu = Submenu::with_items(app, app_label(language, "view"), true, &[&view_show_home_item, &view_reload_item])
+    let view_sep = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
+    let view_submenu = Submenu::with_items(app, app_label(language, "view"), true, &[&view_show_home_item, &view_pip_item, &view_sep, &view_reload_item])
         .map_err(|e| e.to_string())?;
 
     let window_new_window_item = MenuItem::with_id(app, "new_window", app_label(language, "new_window"), true, Some("CmdOrCtrl+N"))
@@ -431,6 +438,26 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
     {
         use std::process::Command;
 
+        /// Wait for a child process with a timeout, polling every 50ms.
+        fn wait_with_timeout(child: &mut std::process::Child, timeout: std::time::Duration) -> Option<std::process::ExitStatus> {
+            let start = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => return Some(status),
+                    Ok(None) => {
+                        if start.elapsed() >= timeout {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return None;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(_) => return None,
+                }
+            }
+        }
+
+        /// Run a subprocess with a 3-second timeout to prevent blocking the UI.
         fn try_shell(exe: &str, test_args: &[&str]) -> bool {
             let mut cmd = Command::new(exe);
             cmd.args(test_args);
@@ -439,7 +466,48 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
                 use std::os::windows::process::CommandExt;
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
             }
-            cmd.output().map(|o| o.status.success()).unwrap_or(false)
+            match cmd.spawn() {
+                Ok(mut child) => {
+                    wait_with_timeout(&mut child, std::time::Duration::from_secs(3))
+                        .map(|s| s.success())
+                        .unwrap_or(false)
+                }
+                Err(_) => false,
+            }
+        }
+
+        /// Run a command and capture output with a timeout.
+        /// Reads stdout/stderr in separate threads to prevent pipe-buffer deadlock
+        /// (child blocks writing to a full pipe while we wait for it to exit).
+        fn output_with_timeout(cmd: &mut Command, timeout: std::time::Duration) -> Option<std::process::Output> {
+            use std::io::Read;
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            let mut child = cmd.spawn().ok()?;
+
+            // Take pipe handles BEFORE waiting — readers drain the pipes concurrently
+            // so the child never blocks on a full buffer.
+            let stdout_handle = child.stdout.take();
+            let stderr_handle = child.stderr.take();
+
+            let stdout_thread = std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                if let Some(mut r) = stdout_handle { let _ = r.read_to_end(&mut buf); }
+                buf
+            });
+            let stderr_thread = std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                if let Some(mut r) = stderr_handle { let _ = r.read_to_end(&mut buf); }
+                buf
+            });
+
+            let status = wait_with_timeout(&mut child, timeout);
+
+            // I/O threads finish once the child exits (or is killed by timeout).
+            let stdout = stdout_thread.join().unwrap_or_default();
+            let stderr = stderr_thread.join().unwrap_or_default();
+
+            status.map(|s| std::process::Output { status: s, stdout, stderr })
         }
 
         // PowerShell 7 (pwsh) — default on Windows
@@ -491,7 +559,7 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
                 use std::os::windows::process::CommandExt;
                 where_cmd.creation_flags(0x08000000);
             }
-            if let Ok(out) = where_cmd.output() {
+            if let Some(out) = output_with_timeout(&mut where_cmd, std::time::Duration::from_secs(3)) {
                 if out.status.success() {
                     if let Ok(text) = String::from_utf8(out.stdout) {
                         if let Some(git_path) = text.lines().next() {
@@ -515,7 +583,7 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
                 use std::os::windows::process::CommandExt;
                 reg_cmd.creation_flags(0x08000000);
             }
-            if let Ok(out) = reg_cmd.output() {
+            if let Some(out) = output_with_timeout(&mut reg_cmd, std::time::Duration::from_secs(3)) {
                 if out.status.success() {
                     if let Ok(text) = String::from_utf8(out.stdout) {
                         for line in text.lines() {
@@ -589,8 +657,14 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
                             // Validate: check that the executable exists
                             let exe_path = first_token.replace('/', r"\");
                             let exe_exists = std::path::Path::new(&exe_path).exists()
-                                || Command::new("where").arg(&exe_path)
-                                    .output().map(|o| o.status.success()).unwrap_or(false);
+                                || {
+                                    let mut wh = Command::new("where");
+                                    wh.arg(&exe_path);
+                                    #[cfg(target_os = "windows")]
+                                    { use std::os::windows::process::CommandExt; wh.creation_flags(0x08000000); }
+                                    output_with_timeout(&mut wh, std::time::Duration::from_secs(2))
+                                        .map(|o| o.status.success()).unwrap_or(false)
+                                };
                             if !exe_exists {
                                 // For cmd /k "batch.bat" patterns, validate the batch file
                                 let valid = if first_token.ends_with("cmd.exe") || first_token == "cmd" {
@@ -628,7 +702,7 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
                     use std::os::windows::process::CommandExt;
                     cmd.creation_flags(0x08000000);
                 }
-                if let Ok(out) = cmd.output() {
+                if let Some(out) = output_with_timeout(&mut cmd, std::time::Duration::from_secs(5)) {
                     if out.status.success() {
                         if let Ok(text) = String::from_utf8(out.stdout) {
                             if let Ok(instances) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
@@ -677,7 +751,7 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
                 use std::os::windows::process::CommandExt;
                 cmd.creation_flags(0x08000000);
             }
-            if let Ok(out) = cmd.output() {
+            if let Some(out) = output_with_timeout(&mut cmd, std::time::Duration::from_secs(5)) {
                 if out.status.success() {
                     // wsl --list always outputs UTF-16LE on Windows.
                     // UTF-16LE ASCII looks like 'U\x00b\x00...' which passes
@@ -943,6 +1017,15 @@ pub fn set_tray_language(app: AppHandle, language: String) -> Result<(), String>
     )
     .map_err(|e| e.to_string())?;
 
+    let pip_toggle_item = MenuItem::with_id(
+        &app,
+        "pip_toggle",
+        tray_label(&language, "pip_toggle"),
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+
     let checked = lifecycle.is_discoverable();
     let lan_discover_item = CheckMenuItem::with_id(
         &app,
@@ -977,6 +1060,7 @@ pub fn set_tray_language(app: AppHandle, language: String) -> Result<(), String>
             &new_terminal_item,
             &new_private_terminal_item,
             &settings_item,
+            &pip_toggle_item,
             &separator3,
             &lan_discover_item,
             &separator2,
@@ -1024,6 +1108,14 @@ pub async fn restart_meterm(
     // Brief pause to allow the OS to release the port before rebinding.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     meterm.start(&app).map(|_| ())
+}
+
+/// Called from frontend when a window is created via the JS WebviewWindow API
+/// (Windows path) so the Rust grace-period protection can track it.
+#[tauri::command]
+pub fn track_window_created_ts(app: AppHandle, window_label: String) {
+    let lifecycle = app.state::<crate::AppLifecycleState>();
+    lifecycle.track_window_created(&window_label);
 }
 
 #[tauri::command]
@@ -1137,6 +1229,9 @@ pub fn create_window_at_position(app: AppHandle, x: f64, y: f64) -> Result<Strin
     }
     builder.build().map_err(|e| e.to_string())?;
 
+    let lifecycle = app.state::<crate::AppLifecycleState>();
+    lifecycle.track_window_created(&window_label);
+
     Ok(window_label)
 }
 
@@ -1200,12 +1295,10 @@ pub fn set_discoverable_state(app: AppHandle, checked: bool) -> Result<(), Strin
 
 #[tauri::command]
 pub fn get_main_window_count(app: AppHandle) -> u32 {
+    const UTILITY_LABELS: &[&str] = &["settings", "jumpserver-browser", "about", "updater", "tray-dialog"];
     app.webview_windows()
         .keys()
-        .filter(|k| {
-            let s = k.as_str();
-            s != "settings" && s != "jumpserver-browser" && s != "about"
-        })
+        .filter(|k| !UTILITY_LABELS.contains(&k.as_str()))
         .count() as u32
 }
 
@@ -2021,6 +2114,151 @@ fn unregister_windows_context_menu() -> Result<(), String> {
 
     let _ = hkcu.delete_subkey_all(r"Software\Classes\Directory\shell\MeTerm");
     let _ = hkcu.delete_subkey_all(r"Software\Classes\Directory\Background\shell\MeTerm");
+
+    Ok(())
+}
+
+/// Create a transparent sub-window from the Rust side.
+/// This ensures `.transparent(true)` is applied via `WebviewWindowBuilder` — same as
+/// the main window defined in tauri.conf.json.  TypeScript's `new WebviewWindow()`
+/// may not propagate the transparent flag correctly on macOS.
+#[tauri::command]
+pub fn create_transparent_window(
+    app: AppHandle,
+    label: String,
+    url: String,
+    title: String,
+    width: f64,
+    height: f64,
+    resizable: bool,
+) -> Result<(), String> {
+    use tauri::WebviewUrl;
+
+    if app.get_webview_window(&label).is_some() {
+        // Already exists — just show & focus
+        let w = app.get_webview_window(&label).unwrap();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+
+    let webview_url = if url.starts_with("http") {
+        WebviewUrl::External(url.parse::<tauri::Url>().map_err(|e| e.to_string())?)
+    } else {
+        WebviewUrl::App(url.into())
+    };
+
+    #[allow(unused_mut)]
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, webview_url)
+        .title(&title)
+        .inner_size(width, height)
+        .resizable(resizable)
+        .center()
+        .visible(false)
+        .transparent(true);
+
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::{TitleBarStyle, LogicalPosition};
+        builder = builder
+            .decorations(true)
+            .hidden_title(true)
+            .title_bar_style(TitleBarStyle::Overlay)
+            .traffic_light_position(LogicalPosition::new(14.0, 18.0));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.decorations(false);
+    }
+
+    builder.build().map_err(|e| e.to_string())?;
+
+    let lifecycle = app.state::<crate::AppLifecycleState>();
+    lifecycle.track_window_created(&label);
+
+    Ok(())
+}
+
+/// Apply or clear window vibrancy (blur) effect.
+/// macOS: Sidebar effect, Windows: Mica + Acrylic fallback.
+/// `fallback_r/g/b` (0.0–1.0): solid background color shown when vibrancy
+/// briefly disengages (Stage Manager transitions, etc.). Pass the theme's
+/// primary background color.
+#[tauri::command]
+pub fn set_window_vibrancy(
+    app: AppHandle,
+    label: String,
+    enabled: bool,
+    fallback_r: Option<f64>,
+    fallback_g: Option<f64>,
+    fallback_b: Option<f64>,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window(&label)
+        .ok_or_else(|| format!("window '{}' not found", label))?;
+
+    if enabled {
+        use tauri::window::{Effect, EffectState, EffectsBuilder};
+
+        let config = EffectsBuilder::new()
+            .effects({
+                #[cfg(target_os = "macos")]
+                { vec![Effect::Sidebar] }
+                #[cfg(target_os = "windows")]
+                { vec![Effect::Mica, Effect::Acrylic] }
+                #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                { vec![] }
+            })
+            .state(EffectState::Active)
+            .build();
+        window.set_effects(config).map_err(|e| e.to_string())?;
+
+        // Set solid fallback background color for vibrancy flash prevention
+        #[cfg(target_os = "macos")]
+        if let (Some(r), Some(g), Some(b)) = (fallback_r, fallback_g, fallback_b) {
+            let _ = crate::vibrancy::set_vibrancy_fallback_color(&window, r, g, b);
+        }
+    } else {
+        window
+            .set_effects(None::<tauri::utils::config::WindowEffectsConfig>)
+            .map_err(|e| e.to_string())?;
+
+        // Reset to transparent background when vibrancy is off
+        #[cfg(target_os = "macos")]
+        {
+            use objc2_app_kit::NSWindow;
+            let ns_window_raw = window.ns_window().map_err(|e| e.to_string())?;
+            let ns_window = unsafe { &*(ns_window_raw as *const NSWindow) };
+            ns_window.setBackgroundColor(None);
+        }
+    }
+    Ok(())
+}
+
+/// Hide or show macOS traffic light buttons (close/minimize/zoom).
+#[tauri::command]
+pub fn set_traffic_lights_visible(window: tauri::Window, visible: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSWindow, NSWindowButton};
+        let ns_window_raw = window.ns_window().map_err(|e| e.to_string())?;
+        let ns_window = unsafe { &*(ns_window_raw as *const NSWindow) };
+
+        let buttons = [
+            NSWindowButton::NSWindowCloseButton,
+            NSWindowButton::NSWindowMiniaturizeButton,
+            NSWindowButton::NSWindowZoomButton,
+        ];
+        for button_type in &buttons {
+            if let Some(btn) = ns_window.standardWindowButton(*button_type) {
+                btn.setHidden(!visible);
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    { let _ = (window, visible); }
 
     Ok(())
 }

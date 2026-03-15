@@ -2,6 +2,7 @@ import { AppSettings } from './themes';
 import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { PROVIDER_PRESETS, fetchModels, type ProviderType, type AIProviderEntry } from './ai-provider';
+import { createSettingsSelect } from './custom-select';
 
 export function createAITab(
   current: AppSettings,
@@ -63,14 +64,13 @@ export function createAITab(
       // Protocol + Base URL (two-column row)
       const protoUrlRow = document.createElement('div');
       protoUrlRow.className = 'ai-provider-row ai-row-inline';
-      const protoSelect = document.createElement('select');
-      protoSelect.className = 'settings-select';
-      protoSelect.style.cssText = 'width:auto;flex:none';
-      protoSelect.innerHTML = `
-        <option value="openai" ${entry.type === 'openai' ? 'selected' : ''}>OpenAI</option>
-        <option value="anthropic" ${entry.type === 'anthropic' ? 'selected' : ''}>Anthropic</option>
-        <option value="gemini" ${entry.type === 'gemini' ? 'selected' : ''}>Gemini</option>
-      `;
+      const protoSelect = createSettingsSelect([
+        { value: 'openai', label: 'OpenAI', selected: entry.type === 'openai' },
+        { value: 'anthropic', label: 'Anthropic', selected: entry.type === 'anthropic' },
+        { value: 'gemini', label: 'Gemini', selected: entry.type === 'gemini' },
+      ]);
+      protoSelect.el.style.width = 'auto';
+      protoSelect.el.style.flex = 'none';
       protoSelect.onchange = () => {
         entry.type = protoSelect.value as ProviderType;
         entry.models = [];
@@ -89,7 +89,7 @@ export function createAITab(
         entry.baseUrl = urlInput.value.trim();
         update({ aiProviders: [...providers] });
       };
-      protoUrlRow.appendChild(protoSelect);
+      protoUrlRow.appendChild(protoSelect.el);
       protoUrlRow.appendChild(urlInput);
       body.appendChild(protoUrlRow);
 
@@ -119,7 +119,6 @@ export function createAITab(
       keyGroup.appendChild(keyToggle);
       const fetchBtn = document.createElement('button');
       fetchBtn.className = 'settings-select settings-test-btn';
-      fetchBtn.style.cssText = 'width:auto;flex:none';
       fetchBtn.textContent = t('aiFetchModels');
       const fetchStatus = document.createElement('span');
       fetchStatus.className = 'settings-test-result';
@@ -315,7 +314,7 @@ export function createAITab(
 
   const searxngSection = document.createElement('div');
   searxngSection.className = 'ai-settings-compact';
-  searxngSection.innerHTML = `<label class="settings-section-title" style="margin-bottom:4px">${t('aiSearxng')}</label>`;
+  searxngSection.innerHTML = `<label class="settings-section-title">${t('aiSearxng')}</label>`;
 
   // URL — inline
   const searxUrlRow = document.createElement('div');
@@ -341,7 +340,7 @@ export function createAITab(
   searxAuthRow.innerHTML = `<label>Auth</label>`;
   const searxAuthGroup = document.createElement('div');
   searxAuthGroup.className = 'settings-input-group';
-  searxAuthGroup.style.flex = '1';
+  searxAuthGroup.style.cssText = 'flex:1;min-width:0';
   const searxUserInput = document.createElement('input');
   searxUserInput.type = 'text';
   searxUserInput.className = 'settings-input';
@@ -427,15 +426,14 @@ export function createAITab(
     searxTestBtn.disabled = false;
   });
   const searxTestGroup = document.createElement('div');
-  searxTestGroup.style.cssText = 'display:flex;align-items:center;gap:6px';
+  searxTestGroup.className = 'settings-input-group';
   searxTestGroup.appendChild(searxTestBtn);
   searxTestGroup.appendChild(searxTestStatus);
   searxActionRow.appendChild(searxTestGroup);
 
   // Enable checkbox (right side of same row)
   const searxEnableLabel = document.createElement('label');
-  searxEnableLabel.className = 'settings-checkbox-label';
-  searxEnableLabel.style.cssText = 'display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);cursor:pointer;margin:0';
+  searxEnableLabel.className = 'settings-radio-label';
   searxEnableLabel.innerHTML = `<input type="checkbox" id="searxng-enable" ${current.searxngEnabled ? 'checked' : ''}> ${t('aiSearxngEnable')}`;
   searxActionRow.appendChild(searxEnableLabel);
 
@@ -444,6 +442,107 @@ export function createAITab(
 
   searxngSection.appendChild(searxActionRow);
   tabAI.appendChild(searxngSection);
+
+  // --- tldr & Command Completion ---
+  const tldrDivider = document.createElement('hr');
+  tldrDivider.className = 'settings-divider';
+  tabAI.appendChild(tldrDivider);
+
+  const tldrSection = document.createElement('div');
+  tldrSection.className = 'ai-settings-compact';
+  tldrSection.innerHTML = `<label class="settings-section-title">${t('tldrHelp')}</label>`;
+
+  // Enable tldr checkbox + status
+  const tldrEnableRow = document.createElement('div');
+  tldrEnableRow.className = 'ai-provider-row ai-row-inline';
+  const tldrEnableLabel = document.createElement('label');
+  tldrEnableLabel.className = 'settings-radio-label';
+  tldrEnableLabel.innerHTML = `<input type="checkbox" id="tldr-enable" ${current.tldrEnabled ? 'checked' : ''}> ${t('tldrEnable')}`;
+  tldrEnableRow.appendChild(tldrEnableLabel);
+
+  const tldrStatusSpan = document.createElement('span');
+  tldrStatusSpan.className = 'settings-test-result';
+  tldrEnableRow.appendChild(tldrStatusSpan);
+
+  const tldrUpdateBtn = document.createElement('button');
+  tldrUpdateBtn.className = 'settings-select settings-test-btn';
+  tldrUpdateBtn.textContent = t('tldrUpdateNow');
+  tldrUpdateBtn.addEventListener('click', async () => {
+    tldrUpdateBtn.disabled = true;
+    tldrStatusSpan.textContent = t('tldrUpdating');
+    tldrStatusSpan.className = 'settings-test-result';
+    try {
+      const status = await invoke<{ initialized: boolean; page_count: number; last_updated: number | null }>('tldr_init', { language: 'en', forceUpdate: true });
+      tldrStatusSpan.textContent = t('tldrPageCount').replace('{count}', String(status.page_count));
+      tldrStatusSpan.className = 'settings-test-result test-success';
+    } catch (e) {
+      tldrStatusSpan.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`;
+      tldrStatusSpan.className = 'settings-test-result test-fail';
+    }
+    tldrUpdateBtn.disabled = false;
+  });
+  tldrEnableRow.appendChild(tldrUpdateBtn);
+  tldrSection.appendChild(tldrEnableRow);
+
+  const tldrEnableCheck = tldrEnableLabel.querySelector('#tldr-enable') as HTMLInputElement;
+  tldrEnableCheck.addEventListener('change', () => update({ tldrEnabled: tldrEnableCheck.checked }));
+
+  // Fetch current tldr status
+  invoke<{ initialized: boolean; page_count: number; last_updated: number | null }>('tldr_status').then((status) => {
+    if (status.initialized && status.page_count > 0) {
+      tldrStatusSpan.textContent = t('tldrPageCount').replace('{count}', String(status.page_count));
+      tldrStatusSpan.className = 'settings-test-result test-success';
+    } else {
+      tldrStatusSpan.textContent = t('tldrNoData');
+      tldrStatusSpan.className = 'settings-test-result';
+    }
+  }).catch(() => { /* ignore */ });
+
+  // Enable command completion checkbox
+  const completionRow = document.createElement('div');
+  completionRow.className = 'ai-provider-row ai-row-inline';
+  const completionLabel = document.createElement('label');
+  completionLabel.className = 'settings-radio-label';
+  completionLabel.innerHTML = `<input type="checkbox" id="cmd-completion-enable" ${current.cmdCompletionEnabled ? 'checked' : ''}> ${t('cmdCompletionEnable')}`;
+  completionRow.appendChild(completionLabel);
+  tldrSection.appendChild(completionRow);
+
+  const completionHintRow = document.createElement('div');
+  completionHintRow.className = 'ai-provider-row';
+  completionHintRow.innerHTML = `<span class="settings-hint">${t('cmdCompletionHint')}<br>${t('cmdCompletionHistoryHint')}</span>`;
+  tldrSection.appendChild(completionHintRow);
+
+  const completionCheck = completionLabel.querySelector('#cmd-completion-enable') as HTMLInputElement;
+  completionCheck.addEventListener('change', () => update({ cmdCompletionEnabled: completionCheck.checked }));
+
+  tabAI.appendChild(tldrSection);
+
+  // ── Shell Hook Injection ── (same compact style as tldr section)
+  const hookDivider = document.createElement('hr');
+  hookDivider.className = 'settings-divider';
+  tabAI.appendChild(hookDivider);
+
+  const hookSection = document.createElement('div');
+  hookSection.className = 'ai-settings-compact';
+  hookSection.innerHTML = `<label class="settings-section-title">${t('shellHookInjection')}</label>`;
+
+  const hookRow = document.createElement('div');
+  hookRow.className = 'ai-provider-row ai-row-inline';
+  const hookLabel = document.createElement('label');
+  hookLabel.className = 'settings-radio-label';
+  hookLabel.innerHTML = `<input type="checkbox" id="shell-hook-enable" ${current.shellHookInjection ? 'checked' : ''}> ${t('shellHookEnable')}`;
+  hookRow.appendChild(hookLabel);
+  hookSection.appendChild(hookRow);
+
+  const hookHintRow = document.createElement('div');
+  hookHintRow.className = 'ai-provider-row';
+  hookHintRow.innerHTML = `<span class="settings-hint">${t('shellHookHint').replace(/\n/g, '<br>')}</span>`;
+  hookSection.appendChild(hookHintRow);
+
+  const hookCheck = hookLabel.querySelector('#shell-hook-enable') as HTMLInputElement;
+  hookCheck.addEventListener('change', () => update({ shellHookInjection: hookCheck.checked }));
+
+  tabAI.appendChild(hookSection);
 
   return tabAI;
 }

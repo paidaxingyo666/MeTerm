@@ -33,6 +33,16 @@ export interface DownloadState {
   lastDownloadProgressUpdate: number;
 }
 
+/** 下载队列项 */
+export interface DownloadQueueItem {
+  filename: string;
+  remotePath: string;
+  savePath: string;
+  fileSize: number;
+  transferId: string;
+  isDir: boolean;
+}
+
 /** 创建初始下载状态 */
 export function createDownloadState(): DownloadState {
   return {
@@ -48,10 +58,76 @@ export function createDownloadState(): DownloadState {
   };
 }
 
+/**
+ * 从队列项启动下载（不弹保存对话框，savePath 已确定）
+ */
+export async function startDownloadFromQueue(
+  item: DownloadQueueItem,
+  ws: WebSocket | null,
+  state: DownloadState,
+  callbacks: DownloadCallbacks,
+): Promise<DownloadState> {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    callbacks.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
+    callbacks.onDownloadFinished?.();
+    return state;
+  }
+
+  const newState = { ...state };
+
+  try {
+    // 复用入队时已创建的 pending 传输记录，切换为 inprogress
+    newState.currentDownloadId = item.transferId;
+    callbacks.updateTransferProgress(newState.currentDownloadId, 0, 'inprogress');
+
+    // 创建空文件（后续以 append 模式追加写入）
+    await fsWriteFile(item.savePath, new Uint8Array(0));
+    newState.writeQueue = [];
+    newState.isWriting = false;
+    newState.writeError = null;
+
+    newState.pendingDownload = {
+      filename: item.filename,
+      savePath: item.savePath,
+      remotePath: item.remotePath,
+      totalSize: 0,
+      receivedSize: 0,
+    };
+
+    const request = JSON.stringify({ path: item.remotePath });
+    const message = encodeMessage(MsgFileDownloadStart, new TextEncoder().encode(request));
+    try {
+      ws.send(message);
+    } catch (sendErr) {
+      console.error('Failed to send download request:', sendErr);
+      newState.pendingDownload = null;
+      await cleanupDownloadState(newState);
+      callbacks.updateTransferProgress(newState.currentDownloadId, 0, 'failed', '发送请求失败');
+      newState.currentDownloadId = null;
+      callbacks.onDownloadFinished?.();
+      return newState;
+    }
+
+    console.log(`Downloading ${item.remotePath} to ${item.savePath}`);
+  } catch (err) {
+    console.error('Download failed:', err);
+    await cleanupDownloadState(newState);
+    if (newState.currentDownloadId) {
+      callbacks.updateTransferProgress(newState.currentDownloadId, 0, 'failed', err instanceof Error ? err.message : String(err));
+      newState.currentDownloadId = null;
+    }
+    callbacks.onDownloadFinished?.();
+  }
+
+  return newState;
+}
+
 /** FileManager 回调接口——下载函数需要调用的 FileManager 方法 */
 export interface DownloadCallbacks {
   updateTransferProgress(id: string, progress: number, status: 'pending' | 'inprogress' | 'completed' | 'failed' | 'paused' | 'cancelled', error?: string): void;
   addTransferRecord(type: 'upload' | 'download', filename: string, path: string, size: number, savePath?: string): string;
+  /** 当前下载完成或失败后调用，触发队列中下一个下载 */
+  onDownloadFinished?(): void;
 }
 
 /**
@@ -257,6 +333,7 @@ export async function finalizeDownload(
       state.currentDownloadId = null;
     }
     state.pendingDownload = null;
+    callbacks.onDownloadFinished?.();
   } catch (err) {
     console.error('Failed to finalize download:', err);
     const errMsg = getDiskErrorMessage(err);
@@ -265,6 +342,7 @@ export async function finalizeDownload(
       state.currentDownloadId = null;
     }
     await cleanupDownloadState(state);
+    callbacks.onDownloadFinished?.();
   }
 }
 

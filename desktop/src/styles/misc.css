@@ -12,12 +12,12 @@
   background: rgba(var(--bg-primary, 30, 30, 30), 0.65);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border: 1px solid var(--border-primary, rgba(128, 128, 128, 0.3));
+  border: none;
   border-radius: 10px;
   padding: 20px 24px;
   min-width: 320px;
   max-width: 420px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
 }
 .navigate-confirm-title {
   font-size: 14px;
@@ -60,27 +60,30 @@
 .navigate-confirm-cancel,
 .navigate-confirm-ok {
   padding: 5px 16px;
-  border-radius: 6px;
-  border: 1px solid var(--border-primary, rgba(128, 128, 128, 0.3));
+  border-radius: 9999px;
+  border: none;
   font-size: 12.5px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.15s, box-shadow 0.15s;
 }
 .navigate-confirm-cancel {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-secondary, #a6adc8);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.2);
 }
 .navigate-confirm-cancel:hover {
-  background: rgba(128, 128, 128, 0.1);
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.3);
 }
 .navigate-confirm-ok {
-  background: var(--accent-primary, #89b4fa);
-  color: #1e1e2e;
-  border-color: transparent;
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.28);
+  color: var(--accent, #89b4fa);
   font-weight: 500;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.15);
 }
 .navigate-confirm-ok:hover {
-  opacity: 0.85;
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.38);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.25);
 }
 
 /* ── File Link Tooltip ────────────────────────────── */
@@ -92,9 +95,9 @@
   font-size: 11px;
   color: var(--text-secondary, #a6adc8);
   background: var(--bg-primary, #1e1e2e);
-  border: 1px solid var(--border-primary, rgba(128, 128, 128, 0.3));
+  border: none;
   border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
   pointer-events: none;
   white-space: nowrap;
   max-width: 400px;
@@ -107,9 +110,9 @@
   position: fixed;
   z-index: 99999;
   background: var(--bg-primary, #1e1e2e);
-  border: 1px solid var(--border-primary, rgba(128, 128, 128, 0.3));
+  border: none;
   border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
   padding: 3px 0;
   min-width: 160px;
 }
@@ -133,7 +136,7 @@
   align-items: center;
   justify-content: center;
   text-align: center;
-  background: rgb(var(--bg-primary, 30, 30, 30));
+  background: rgba(var(--bg-primary, 30, 30, 30), var(--app-window-opacity, 1));
   user-select: none;
   -webkit-user-select: none;
 }
@@ -155,6 +158,11 @@
   margin-bottom: 14px;
   white-space: pre-line;
 }
+.about-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .about-link {
   font-size: 12.5px;
   color: var(--accent-primary, #89b4fa);
@@ -163,4 +171,8 @@
 }
 .about-link:hover {
   text-decoration: underline;
+}
+.about-link-sep {
+  font-size: 12px;
+  color: var(--text-dim, #556);
 }
