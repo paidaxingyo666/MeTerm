@@ -416,6 +416,11 @@ class TerminalRegistryClass {
     }
 
     terminal.onData((data) => {
+      // Filter out terminal auto-responses that xterm.js generates in reply to
+      // queries from shell/programs.  If sent back to PTY they appear as garbage
+      // text (e.g. "1;2c" from DA response \x1b[?1;2c) on the prompt.
+      // Matches: DA responses (\x1b[?...c), DSR responses (\x1b[...R / \x1b[...n)
+      if (/^\x1b\[\?[0-9;]*c$/.test(data)) return;
       mt._hasUserInput = true;
       mt.shellState.lastUserInputAt = Date.now();
       if (mt.shellState.phase === 'agent_executing') {
@@ -945,6 +950,8 @@ class TerminalRegistryClass {
     setupKeyHandler(mt, terminal);
 
     terminal.onData((data) => {
+      // Filter out terminal auto-responses (DA response \x1b[?...c) — see local onData above.
+      if (/^\x1b\[\?[0-9;]*c$/.test(data)) return;
       mt._hasUserInput = true;
       mt.shellState.lastUserInputAt = Date.now();
       if (mt.shellState.phase === 'agent_executing') {

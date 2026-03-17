@@ -169,6 +169,7 @@ export interface Translations {
   aiAgentTrustSemiAuto: string;
   aiAgentTrustFullAuto: string;
   aiAgentMaxIterations: string;
+  aiAgentUnlimited: string;
   aiTestConnection: string;
   aiTestSuccess: string;
   aiTestFailed: string;
@@ -689,6 +690,7 @@ const translations: Record<Language, Translations> = {
     aiAgentTrustSemiAuto: 'Semi-Auto — confirm risky actions',
     aiAgentTrustFullAuto: 'Full-Auto — only confirm destructive',
     aiAgentMaxIterations: 'Max Agent Steps',
+    aiAgentUnlimited: 'Unlimited',
     aiTestConnection: 'Test Connection',
     aiTestSuccess: 'Connection successful!',
     aiTestFailed: 'Connection failed',
@@ -1206,6 +1208,7 @@ const translations: Record<Language, Translations> = {
     aiAgentTrustSemiAuto: '半自动 — 仅危险操作需确认',
     aiAgentTrustFullAuto: '全自动 — 仅极端危险操作需确认',
     aiAgentMaxIterations: '最大执行步数',
+    aiAgentUnlimited: '无限制',
     aiTestConnection: '测试连接',
     aiTestSuccess: '连接成功！',
     aiTestFailed: '连接失败',

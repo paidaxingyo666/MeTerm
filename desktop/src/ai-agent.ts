@@ -430,6 +430,7 @@ export class ToolAgent {
     };
 
     const maxIterations: number = settings.aiAgentMaxIterations ?? DEFAULT_MAX_ITERATIONS;
+    const unlimited = maxIterations === 0;
 
     // Sync web_search tool with current settings (user may have toggled SearXNG)
     syncWebSearchTool(this.toolRegistry);
@@ -459,7 +460,7 @@ export class ToolAgent {
 
     // ── Loop (wrapped in try/finally to ensure agent mode cleanup) ──
     try {
-    while (iteration < maxIterations) {
+    while (unlimited || iteration < maxIterations) {
       if (this.aborted) {
         this.abortController = null;
         callbacks.onAborted?.(iteration);

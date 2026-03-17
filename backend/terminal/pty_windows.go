@@ -37,14 +37,6 @@ const psStartupHook = `& { $global:__mtOrig = $function:prompt; function global:
 // $e = ESC, $e\ = ST (String Terminator), $p = current path, $g = '>'.
 const cmdOSC7Prompt = `prompt $e]7;file:///$p$e\$p$g`
 
-// wslOSC7Hook is written to ConPTY stdin for WSL sessions.
-// Installs an OSC 7 CWD hook in bash/zsh (same approach as SSH sessions).
-// Leading space prevents history entry; cleanup sequence erases the echo.
-const wslOSC7Hook = " if [ -n \"$ZSH_VERSION\" ]; then" +
-	" precmd(){ printf '\\033]7;file://%s%s\\007' \"$(hostname)\" \"$PWD\"; };" +
-	" elif [ -n \"$BASH_VERSION\" ]; then" +
-	" PROMPT_COMMAND='printf \"\\033]7;file://%s%s\\007\" \"$(hostname)\" \"$PWD\"'${PROMPT_COMMAND:+\";$PROMPT_COMMAND\"};" +
-	" fi; printf '\\033[A\\033[2K\\r'\n"
 
 // PTYEngine manages a ConPTY-backed shell subprocess on Windows.
 type PTYEngine struct {
@@ -65,24 +57,23 @@ type PTYEngine struct {
 var _ Terminal = (*PTYEngine)(nil)
 
 // NewPTYEngine creates a ConPTY-backed shell using terminal size cols x rows.
-func NewPTYEngine(cols, rows uint16) (*PTYEngine, error) {
+func NewPTYEngine(cols, rows uint16) (Terminal, error) {
 	return NewPTYEngineWithShell(cols, rows, "")
 }
 
 // NewPTYEngineWithShell creates a ConPTY-backed shell with an explicit shell path.
 // If shell is empty, falls back to resolveWindowsShell().
-func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) {
+func NewPTYEngineWithShell(cols, rows uint16, shell string) (Terminal, error) {
 	return NewPTYEngineWithShellAndCwd(cols, rows, shell, "")
 }
 
 // NewPTYEngineWithShellAndCwd creates a ConPTY-backed shell with explicit shell path and working directory.
 // If cwd is empty, falls back to user home directory.
-func NewPTYEngineWithShellAndCwd(cols, rows uint16, shell, cwd string) (*PTYEngine, error) {
+func NewPTYEngineWithShellAndCwd(cols, rows uint16, shell, cwd string) (Terminal, error) {
 	var shellPath string
 	var shellArgs []string
 	var err error
 	var commandLine string
-	var injectWSLHook bool
 	if shell != "" {
 		// Shell may be a simple exe ("powershell.exe") or a complex command
 		// line from Windows Terminal fragments ("cmd.exe /k \"...\\VsDevCmd.bat\"").
@@ -102,8 +93,11 @@ func NewPTYEngineWithShellAndCwd(cols, rows uint16, shell, cwd string) (*PTYEngi
 			case base == "cmd.exe":
 				shellArgs = append(extraArgs, "/Q", "/k", cmdOSC7Prompt)
 			case base == "wsl.exe" || base == "wsl":
+				// WSL: plain ConPTY without hook injection.
+				// ConPTY stdin injection causes echo/stutter; pipe-based PTY helper
+				// needs Windows-side debugging. File links still work for absolute
+				// paths via wslpath -w conversion in normalize_path().
 				shellArgs = extraArgs
-				injectWSLHook = true
 			default:
 				shellArgs = extraArgs
 			}
@@ -157,13 +151,6 @@ func NewPTYEngineWithShellAndCwd(cols, rows uint16, shell, cwd string) (*PTYEngi
 		cpty:     cpty,
 		childPid: cpty.Pid(),
 		done:     make(chan struct{}),
-	}
-
-	// WSL runs a Linux shell (bash/zsh) — inject OSC 7 CWD hook via stdin.
-	// Data is buffered in ConPTY pipe and consumed after the first prompt.
-	// The cleanup sequence (\033[A\033[2K\r) erases the command echo.
-	if injectWSLHook {
-		cpty.Write([]byte(wslOSC7Hook)) //nolint:errcheck
 	}
 
 	go func() {
@@ -300,4 +287,17 @@ func (e *PTYEngine) Close() error {
 	}
 
 	return nil
+}
+
+// windowsToWSLPath converts a Windows path to its WSL /mnt/ equivalent.
+// e.g. C:\Users\foo\bar → /mnt/c/Users/foo/bar
+func windowsToWSLPath(winPath string) string {
+	// Normalize to forward slashes
+	p := filepath.ToSlash(winPath)
+	// Handle drive letter: C:/... → /mnt/c/...
+	if len(p) >= 2 && p[1] == ':' {
+		drive := strings.ToLower(string(p[0]))
+		p = "/mnt/" + drive + p[2:]
+	}
+	return p
 }

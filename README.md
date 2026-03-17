@@ -196,7 +196,7 @@ MeTerm/
 | Layer | Technologies |
 |-------|-------------|
 | **Backend** | Go, gorilla/websocket, creack/pty, pkg/sftp, grandcat/zeroconf |
-| **Frontend** | TypeScript, Vite, xterm.js 5.x |
+| **Frontend** | TypeScript, Vite, xterm.js 5.x, CodeMirror 6 |
 | **Desktop** | Tauri v2 (Rust + TypeScript), tokio, reqwest, keyring |
 | **Update** | Tauri Updater + Cloudflare Worker |
 

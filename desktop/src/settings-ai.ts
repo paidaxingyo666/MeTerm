@@ -301,9 +301,37 @@ export function createAITab(
   trustSection.appendChild(trustGroup);
   aiSettingsWrap.appendChild(trustSection);
 
-  // Agent Max Iterations slider
-  aiSettingsWrap.appendChild(mkSliderRow(t('aiAgentMaxIterations'), 'ai-iter-slider', 1, 30, 1, current.aiAgentMaxIterations,
-    (v) => `${v}`, (v) => update({ aiAgentMaxIterations: v })));
+  // Agent Max Iterations slider + Unlimited checkbox
+  const isUnlimited = current.aiAgentMaxIterations === 0;
+  const iterRow = mkSliderRow(t('aiAgentMaxIterations'), 'ai-iter-slider', 1, 30, 1,
+    isUnlimited ? 15 : current.aiAgentMaxIterations,
+    (v) => `${v}`, (v) => update({ aiAgentMaxIterations: v }));
+  const iterSlider = iterRow.querySelector('#ai-iter-slider') as HTMLInputElement;
+  const iterValSpan = iterRow.querySelector('.ai-slider-value') as HTMLSpanElement;
+
+  const unlimitedLabel = document.createElement('label');
+  unlimitedLabel.className = 'ai-unlimited-label';
+  unlimitedLabel.innerHTML = `<input type="checkbox" id="ai-iter-unlimited" ${isUnlimited ? 'checked' : ''}> ${t('aiAgentUnlimited')}`;
+  iterRow.appendChild(unlimitedLabel);
+
+  const unlimitedCb = unlimitedLabel.querySelector('#ai-iter-unlimited') as HTMLInputElement;
+  if (isUnlimited) {
+    iterSlider.disabled = true;
+    iterValSpan.textContent = '∞';
+  }
+  unlimitedCb.onchange = () => {
+    if (unlimitedCb.checked) {
+      iterSlider.disabled = true;
+      iterValSpan.textContent = '∞';
+      update({ aiAgentMaxIterations: 0 });
+    } else {
+      iterSlider.disabled = false;
+      const v = parseFloat(iterSlider.value);
+      iterValSpan.textContent = `${v}`;
+      update({ aiAgentMaxIterations: v });
+    }
+  };
+  aiSettingsWrap.appendChild(iterRow);
 
   tabAI.appendChild(aiSettingsWrap);
 

@@ -32,19 +32,19 @@ type PTYEngine struct {
 var _ Terminal = (*PTYEngine)(nil)
 
 // NewPTYEngine creates a PTY-backed shell using terminal size cols x rows.
-func NewPTYEngine(cols, rows uint16) (*PTYEngine, error) {
+func NewPTYEngine(cols, rows uint16) (Terminal, error) {
 	return NewPTYEngineWithShell(cols, rows, "")
 }
 
 // NewPTYEngineWithShell creates a PTY-backed shell with an explicit shell path.
 // If shell is empty, falls back to $SHELL or /bin/bash.
-func NewPTYEngineWithShell(cols, rows uint16, shell string) (*PTYEngine, error) {
+func NewPTYEngineWithShell(cols, rows uint16, shell string) (Terminal, error) {
 	return NewPTYEngineWithShellAndCwd(cols, rows, shell, "")
 }
 
 // NewPTYEngineWithShellAndCwd creates a PTY-backed shell with explicit shell path and working directory.
 // If cwd is empty, falls back to user home directory.
-func NewPTYEngineWithShellAndCwd(cols, rows uint16, shell, cwd string) (*PTYEngine, error) {
+func NewPTYEngineWithShellAndCwd(cols, rows uint16, shell, cwd string) (Terminal, error) {
 	if shell == "" {
 		shell = os.Getenv("SHELL")
 	}

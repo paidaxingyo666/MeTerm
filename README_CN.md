@@ -196,7 +196,7 @@ MeTerm/
 | 层级 | 技术 |
 |------|------|
 | **后端** | Go, gorilla/websocket, creack/pty, pkg/sftp, grandcat/zeroconf |
-| **前端** | TypeScript, Vite, xterm.js 5.x |
+| **前端** | TypeScript, Vite, xterm.js 5.x, CodeMirror 6 |
 | **桌面** | Tauri v2 (Rust + TypeScript), tokio, reqwest, keyring |
 | **更新** | Tauri Updater + Cloudflare Worker |
 

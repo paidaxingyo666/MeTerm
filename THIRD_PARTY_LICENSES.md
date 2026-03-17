@@ -67,6 +67,14 @@ MeTerm 使用了以下开源项目，感谢它们的作者和贡献者。
 
 ---
 
+## CodeMirror 6
+
+- **Project**: <https://github.com/codemirror/dev>
+- **License**: MIT License
+- **Usage**: Code editor component used for remote file editing via SFTP, providing syntax highlighting, line numbers, and editing capabilities.
+
+---
+
 ## Additional Dependencies
 
 MeTerm relies on numerous open-source packages managed through npm (Node.js) and Cargo (Rust). Their respective licenses can be inspected via:
@@ -83,4 +91,4 @@ All dependencies are used in compliance with their respective licenses.
 
 ---
 
-_Last updated: 2026-03-14_
+_Last updated: 2026-03-16_
