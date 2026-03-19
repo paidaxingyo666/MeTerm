@@ -1,4 +1,6 @@
 mod commands;
+#[allow(dead_code, unused_imports)]
+mod server;
 mod sidecar;
 mod tldr;
 mod vibrancy;
@@ -29,6 +31,7 @@ struct WindowEvent {
 	target_window: String,
 }
 use sidecar::MeTermProcess;
+use std::sync::Arc;
 
 use std::collections::{HashSet, HashMap};
 use std::io::Write;
@@ -594,8 +597,14 @@ pub fn run() {
     let initial_path = extract_open_path(&cli_args);
     startup_log(&format!("CLI args: {:?}, initial_path: {:?}", cli_args, initial_path));
 
+    // Rust in-process backend is now the default. Go sidecar only if METERM_GO_SIDECAR=1.
+    let use_go_sidecar = std::env::var("METERM_GO_SIDECAR").unwrap_or_default() == "1";
+    startup_log(&format!("Backend mode: {}", if use_go_sidecar { "Go (sidecar)" } else { "Rust (in-process)" }));
+
     let meterm = MeTermProcess::new();
     let lifecycle = AppLifecycleState::new_with_path(initial_path);
+
+    // Server state is created in setup() where Tauri's async runtime is available.
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -614,7 +623,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_shell::init()) // kept for optional Go sidecar fallback
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -643,24 +652,55 @@ pub fn run() {
                 }
             }
 
-            let meterm = app.state::<MeTermProcess>();
-            let port = match meterm.start(app.handle()) {
-                Ok(p) => p,
-                Err(e) => {
-                    startup_log(&format!("FATAL: backend start failed: {}", e));
-                    eprintln!("FATAL: backend start failed: {}", e);
-                    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-                    app.dialog()
-                        .message(&e)
-                        .title("MeTerm")
-                        .kind(MessageDialogKind::Error)
-                        .blocking_show();
-                    std::process::exit(1);
+            let use_go_sidecar = std::env::var("METERM_GO_SIDECAR").unwrap_or_default() == "1";
+
+            // Start the in-process Rust server
+            let server_state: Arc<server::ServerState> = {
+                let config = server::ServerConfig::default();
+                match tauri::async_runtime::block_on(server::start(config)) {
+                    Ok(state) => {
+                        startup_log(&format!("Setup: Rust server on port {}", state.port()));
+                        eprintln!("[meterm] Rust server on 127.0.0.1:{}", state.port());
+                        state
+                    }
+                    Err(e) => {
+                        startup_log(&format!("FATAL: Rust server failed: {}", e));
+                        eprintln!("[meterm] FATAL: Rust server failed: {}", e);
+                        Arc::new(server::create_dummy_state())
+                    }
                 }
             };
+            let server_state_for_inject = server_state.clone();
+            app.manage(server_state);
 
-            startup_log(&format!("Setup: sidecar started on port {}", port));
-            eprintln!("meterm sidecar started on 127.0.0.1:{}", port);
+            if use_go_sidecar {
+                // Legacy Go sidecar mode (for testing/comparison only).
+                let meterm = app.state::<MeTermProcess>();
+                let port = match meterm.start(app.handle()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        startup_log(&format!("FATAL: Go sidecar failed: {}", e));
+                        eprintln!("FATAL: Go sidecar failed: {}", e);
+                        use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                        app.dialog()
+                            .message(&e)
+                            .title("MeTerm")
+                            .kind(MessageDialogKind::Error)
+                            .blocking_show();
+                        std::process::exit(1);
+                    }
+                };
+                startup_log(&format!("Setup: Go sidecar on port {}", port));
+                eprintln!("meterm sidecar started on 127.0.0.1:{}", port);
+            } else {
+                // Default: Rust backend — inject port/token into MeTermProcess
+                let meterm = app.state::<MeTermProcess>();
+                meterm.inject_rust_backend(
+                    server_state_for_inject.port(),
+                    server_state_for_inject.token().unwrap_or_default(),
+                );
+                startup_log("Setup: using Rust backend");
+            }
 
             let quit_item = MenuItem::with_id(app, "quit", "Close Window", true, None::<&str>)?;
             let quit_all_item = MenuItem::with_id(app, "quit_all", "Quit Application", true, None::<&str>)?;
@@ -754,62 +794,73 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::get_meterm_connection_info,
-            commands::get_meterm_port,
-            commands::is_meterm_running,
-            commands::get_pairing_info,
-            commands::create_session,
-            commands::list_available_shells,
-            commands::create_ssh_session,
-            commands::test_ssh_connection,
-            commands::list_sessions,
-            commands::delete_session,
-            commands::set_tray_language,
-            commands::set_has_open_tabs,
-            commands::request_app_quit,
-            commands::restart_meterm,
-            commands::hide_main_window,
-            commands::allow_window_close,
-            commands::mark_window_initialized,
-            commands::track_window_created_ts,
-            commands::get_all_window_geometries,
-            commands::create_window_at_position,
-            commands::get_window_position,
-            commands::dock_child_window,
-            commands::undock_child_window,
-            commands::toggle_lan_sharing,
-            commands::store_credential,
-            commands::get_credential,
-            commands::delete_credential,
-            commands::list_clients,
-            commands::kick_client,
-            commands::list_devices,
-            commands::kick_device,
-            commands::set_session_private,
-            commands::list_banned_ips,
-            commands::ban_ip,
-            commands::unban_ip,
-            commands::refresh_token,
-            commands::set_custom_token,
-            commands::revoke_all_clients,
-            commands::set_discoverable_state,
-            commands::get_main_window_count,
-            commands::copy_background_image,
-            commands::delete_background_image,
-            commands::fetch_ai_models,
-            commands::fetch_ai_stream,
-            commands::set_update_badge,
-            commands::restart_app_via_open,
-            commands::stat_path,
-            commands::open_path,
-            commands::list_dir_names,
-            commands::take_initial_open_path,
-            commands::register_context_menu,
-            commands::unregister_context_menu,
-            commands::is_context_menu_registered,
-            commands::create_transparent_window,
-            commands::set_window_vibrancy,
-            commands::set_traffic_lights_visible,
+            // session
+            commands::session::get_meterm_connection_info,
+            commands::session::get_meterm_port,
+            commands::session::is_meterm_running,
+            commands::session::get_pairing_info,
+            commands::session::create_session,
+            commands::session::list_sessions,
+            commands::session::delete_session,
+            commands::session::list_available_shells,
+            // ssh
+            commands::ssh::create_ssh_session,
+            commands::ssh::test_ssh_connection,
+            // menu
+            commands::menu::set_tray_language,
+            commands::menu::set_update_badge,
+            // lifecycle
+            commands::lifecycle::set_has_open_tabs,
+            commands::lifecycle::request_app_quit,
+            commands::lifecycle::restart_meterm,
+            commands::lifecycle::allow_window_close,
+            commands::lifecycle::mark_window_initialized,
+            commands::lifecycle::track_window_created_ts,
+            // window
+            commands::window::hide_main_window,
+            commands::window::get_all_window_geometries,
+            commands::window::create_window_at_position,
+            commands::window::get_window_position,
+            commands::window::dock_child_window,
+            commands::window::undock_child_window,
+            commands::window::get_main_window_count,
+            commands::window::create_transparent_window,
+            commands::window::set_window_vibrancy,
+            commands::window::set_traffic_lights_visible,
+            commands::window::restart_app_via_open,
+            // lan
+            commands::lan::toggle_lan_sharing,
+            commands::lan::set_discoverable_state,
+            commands::lan::list_clients,
+            commands::lan::kick_client,
+            commands::lan::list_devices,
+            commands::lan::kick_device,
+            commands::lan::set_session_private,
+            // security
+            commands::security::store_credential,
+            commands::security::get_credential,
+            commands::security::delete_credential,
+            commands::security::list_banned_ips,
+            commands::security::ban_ip,
+            commands::security::unban_ip,
+            commands::security::refresh_token,
+            commands::security::set_custom_token,
+            commands::security::revoke_all_clients,
+            // ai
+            commands::ai::fetch_ai_models,
+            commands::ai::fetch_ai_stream,
+            // fs
+            commands::fs::stat_path,
+            commands::fs::open_path,
+            commands::fs::list_dir_names,
+            commands::fs::copy_background_image,
+            commands::fs::delete_background_image,
+            commands::fs::take_initial_open_path,
+            // context_menu
+            commands::context_menu::register_context_menu,
+            commands::context_menu::unregister_context_menu,
+            commands::context_menu::is_context_menu_registered,
+            // tldr
             tldr::tldr_init,
             tldr::tldr_query,
             tldr::tldr_status,
@@ -944,8 +995,12 @@ pub fn run() {
                     }
                 }
                 RunEvent::Exit => {
+                    // Stop Go sidecar (if running)
                     let meterm = app_handle.state::<MeTermProcess>();
                     meterm.stop();
+                    // Stop Rust server session manager
+                    let server = app_handle.state::<Arc<server::ServerState>>();
+                    server.session_manager.stop();
                 }
                 _ => {}
             }

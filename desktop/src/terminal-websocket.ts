@@ -162,6 +162,7 @@ export function connectWebSocket(mt: ManagedTerminal, callbacks: WsCallbacks): v
       console.warn(`[terminal] MsgSessionEnd received for session ${mt.id} — marking as ended`);
       mt.ended = true;
       mt.onStatus('ended');
+      DrawerManager.notifyDisconnect(mt.id);
       socket.close();
       return;
     }
@@ -208,6 +209,7 @@ export function connectWebSocket(mt: ManagedTerminal, callbacks: WsCallbacks): v
   socket.onclose = () => {
     if (mt.ws === socket) {
       mt.ws = null;
+      DrawerManager.notifyDisconnect(mt.id);
       if (!mt.ended) {
         callbacks.onReconnectNeeded(mt);
       }

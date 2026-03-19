@@ -46,16 +46,8 @@
     {
       "identifier": "shell:allow-spawn",
       "allow": [
-        {
-          "name": "binaries/meterm-server",
-          "sidecar": true,
-          "args": true
-        },
-        {
-          "name": "wsl",
-          "sidecar": false,
-          "args": true
-        }
+        { "name": "binaries/meterm-server", "sidecar": true, "args": true },
+        { "name": "wsl", "sidecar": false, "args": true }
       ]
     }
   ]

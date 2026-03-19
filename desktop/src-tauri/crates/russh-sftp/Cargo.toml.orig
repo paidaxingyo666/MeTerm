@@ -1,0 +1,44 @@
+[package]
+name = "russh-sftp"
+version = "2.1.1"
+edition = "2021"
+description = "SFTP subsystem supported server and client for Russh"
+readme = "README.md"
+repository = "https://github.com/AspectUnk/russh-sftp"
+license = "Apache-2.0"
+keywords = ["russh", "sftp", "ssh2", "server", "client"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", default-features = false, features = [
+    "io-util",
+    "rt",
+    "sync",
+    "time",
+    "macros",
+] }
+tokio-util = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+bitflags = { version = "2.9", features = ["serde"] }
+async-trait = { version = "0.1", optional = true }
+
+thiserror = "2.0"
+chrono = "0.4"
+bytes = "1.10"
+log = "0.4"
+flurry = "0.5"
+
+[dev-dependencies]
+russh = "0.51"
+env_logger = "0.11"
+anyhow = "1.0"
+criterion = { version = "0.5", features = ["async_tokio"] }
+futures = "0.3"
+
+[features]
+async-trait = ["dep:async-trait"]
+
+[[bench]]
+name = "upload_benchmark"
+harness = false

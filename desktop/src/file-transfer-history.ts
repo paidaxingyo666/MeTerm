@@ -210,9 +210,16 @@ export class TransferHistoryManager {
           const dt = (now - tracker.lastTime) / 1000;
           if (dt >= 0.5) {
             const db = currentBytes - tracker.lastBytes;
-            tracker.speed = db > 0 ? db / dt : 0;
-            tracker.lastBytes = currentBytes;
-            tracker.lastTime = now;
+            if (db > 0) {
+              tracker.speed = db / dt;
+              tracker.lastBytes = currentBytes;
+              tracker.lastTime = now;
+            } else if (dt >= 3) {
+              // No new data for 3+ seconds — show stall
+              tracker.speed = 0;
+              tracker.lastTime = now;
+            }
+            // Otherwise keep previous speed (avoids flicker during short gaps)
           }
         } else {
           this.speedTracker.set(id, { lastBytes: currentBytes, lastTime: now, speed: 0 });

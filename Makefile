@@ -23,10 +23,13 @@ build:
 desktop-sidecar:
 	cd backend && go build -o ../desktop/src-tauri/binaries/meterm-server-$$(rustc --print host-tuple) .
 
-desktop-dev: desktop-sidecar
+desktop-dev:
 	cd desktop && npm run tauri dev
 
-desktop-build: desktop-sidecar
+desktop-dev-go: desktop-sidecar
+	cd desktop && METERM_GO_SIDECAR=1 npm run tauri dev
+
+desktop-build:
 	cd desktop && npm run tauri build
 
 build-frontend:

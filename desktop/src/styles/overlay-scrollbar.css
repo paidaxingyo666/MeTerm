@@ -11,7 +11,7 @@
   display: none !important;
 }
 
-/* Scrollbar container — spans right edge */
+/* Scrollbar container — vertical: spans right edge */
 .overlay-sb {
   position: absolute;
   top: 0;
@@ -20,6 +20,39 @@
   width: 14px;
   z-index: 10;
   pointer-events: none;
+}
+
+/* Horizontal variant — spans bottom edge */
+.overlay-sb.overlay-sb-h {
+  top: auto;
+  right: auto;
+  left: 0;
+  bottom: 0;
+  width: auto;
+  height: 14px;
+}
+.overlay-sb.overlay-sb-h .overlay-sb-track {
+  top: auto;
+  right: 0;
+  left: 0;
+  bottom: 0;
+  width: auto;
+  height: 4px;
+  transition: height 0.15s ease, background 0.15s ease;
+}
+.overlay-sb.overlay-sb-h:hover .overlay-sb-track,
+.overlay-sb.overlay-sb-h.dragging .overlay-sb-track {
+  width: auto;
+  height: 10px;
+}
+.overlay-sb.overlay-sb-h .overlay-sb-thumb {
+  right: auto;
+  left: 0;
+  top: 0;
+  width: 20px;  /* overridden by JS */
+  min-height: auto;
+  height: 100%;
+  min-width: 20px;
 }
 
 /* Track */

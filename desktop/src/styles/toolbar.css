@@ -64,27 +64,7 @@ html.platform-windows .editor-tabs-area {
   pointer-events: auto; /* tabs themselves are clickable */
 }
 
-/* Editor scroller: hide vertical native (overlay JS handles it), show horizontal native 4px */
-.editor-scroller::-webkit-scrollbar {
-  width: 0;
-  height: 4px;
-}
-.editor-scroller::-webkit-scrollbar-track {
-  background: transparent;
-}
-.editor-scroller::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
-  border-radius: 999px;
-}
-.editor-scroller::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.35);
-}
-[data-theme="light"] .editor-scroller::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.14);
-}
-[data-theme="light"] .editor-scroller::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.30);
-}
+/* editor-scroller no longer used — both scrollbars are overlay JS now */
 
 /* Windows: editor window controls (right side of tab bar) */
 .editor-win-controls {

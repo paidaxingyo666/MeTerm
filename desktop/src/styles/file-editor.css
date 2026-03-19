@@ -139,6 +139,59 @@ html.platform-windows .editor-tabs-area {
 .editor-status { margin-left: auto; opacity: 0.8; }
 
 /* Language selector button in status bar */
+/* Font size button */
+.editor-font-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #a8a8a8);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.editor-font-btn:hover {
+  background: rgba(128, 128, 128, 0.2);
+  color: var(--text-primary, #d0d0d0);
+}
+
+/* Font size picker popup */
+.editor-font-picker {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px;
+  background: rgba(var(--bg-card, 37, 37, 38), 1);
+  border: 1px solid var(--border-primary, #3a3a4a);
+  border-radius: 5px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 9999;
+}
+.font-picker-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary, #d0d0d0);
+  font-size: 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.font-picker-btn:hover {
+  background: rgba(128, 128, 128, 0.3);
+}
+.font-picker-label {
+  font-size: 11px;
+  color: var(--text-secondary, #a8a8a8);
+  min-width: 32px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .editor-lang-btn {
   border: none;
   background: transparent;

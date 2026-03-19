@@ -6,7 +6,7 @@
  */
 
 export interface OverlayScrollbarOptions {
-  /** The scrollable element (must have overflow-y: auto/scroll) */
+  /** The scrollable element (must have overflow: auto/scroll) */
   viewport: HTMLElement;
   /**
    * Parent element to append the scrollbar to.
@@ -14,6 +14,8 @@ export interface OverlayScrollbarOptions {
    * If same as viewport, uses inline mode (no DOM wrapping).
    */
   container: HTMLElement;
+  /** Also create a horizontal overlay scrollbar (default: false) */
+  horizontal?: boolean;
 }
 
 export interface OverlayScrollbarHandle {
@@ -83,10 +85,17 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
     thumb.style.transform = `translateY(${thumbTop}px)`;
   }
 
-  viewport.addEventListener('scroll', sync, { passive: true });
-  const ro = new ResizeObserver(sync);
+  // syncAll: called on scroll, resize, mutation — updates both vertical and horizontal
+  let _syncH: (() => void) | null = null;
+  function syncAll(): void {
+    sync();
+    _syncH?.();
+  }
+
+  viewport.addEventListener('scroll', syncAll, { passive: true });
+  const ro = new ResizeObserver(syncAll);
   ro.observe(viewport);
-  const mo = new MutationObserver(sync);
+  const mo = new MutationObserver(syncAll);
   mo.observe(viewport, { childList: true, subtree: true, characterData: true });
   sync();
 
@@ -136,6 +145,89 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
     e.preventDefault();
   });
 
+  // --- Horizontal scrollbar (optional) ---
+  let hBar: HTMLDivElement | null = null;
+  let hThumb: HTMLDivElement | null = null;
+  let hDragging = false;
+  let hDragStartX = 0;
+  let hDragStartScroll = 0;
+
+  if (opts.horizontal) {
+    hBar = document.createElement('div');
+    hBar.className = 'overlay-sb overlay-sb-h';
+    const hTrack = document.createElement('div');
+    hTrack.className = 'overlay-sb-track';
+    hThumb = document.createElement('div');
+    hThumb.className = 'overlay-sb-thumb';
+    hTrack.appendChild(hThumb);
+    hBar.appendChild(hTrack);
+    container.appendChild(hBar);
+
+    const hThumbRef = hThumb;
+    const hBarRef = hBar;
+
+    function syncH(): void {
+      const sw = viewport.scrollWidth;
+      const cw = viewport.clientWidth;
+      if (sw <= cw) { hBarRef.style.display = 'none'; return; }
+      hBarRef.style.display = '';
+      if (inline) {
+        hBarRef.style.left = `${viewport.offsetLeft}px`;
+        hBarRef.style.top = `${viewport.offsetTop + viewport.offsetHeight - 14}px`;
+        hBarRef.style.width = `${cw}px`;
+      }
+      const ratio = cw / sw;
+      const thumbW = Math.max(20, ratio * cw);
+      const maxScroll = sw - cw;
+      const pct = maxScroll > 0 ? viewport.scrollLeft / maxScroll : 0;
+      const thumbLeft = pct * (cw - thumbW);
+      hThumbRef.style.width = `${thumbW}px`;
+      hThumbRef.style.height = '100%';
+      hThumbRef.style.transform = `translateX(${thumbLeft}px)`;
+    }
+
+    _syncH = syncH; // register so syncAll() calls it on scroll/resize/mutation
+    syncH();
+
+    hThumb.addEventListener('mousedown', (e: MouseEvent) => {
+      hDragging = true;
+      hDragStartX = e.clientX;
+      hDragStartScroll = viewport.scrollLeft;
+      hBarRef.classList.add('dragging');
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    document.addEventListener('mousemove', (e: MouseEvent) => {
+      if (!hDragging) return;
+      const cw = viewport.clientWidth;
+      const sw = viewport.scrollWidth;
+      const ratio = cw / sw;
+      const thumbW = Math.max(20, ratio * cw);
+      const trackW = cw - thumbW;
+      const maxScroll = sw - cw;
+      const dx = e.clientX - hDragStartX;
+      viewport.scrollLeft = hDragStartScroll + (dx / trackW) * maxScroll;
+    }, { signal: ac.signal });
+
+    document.addEventListener('mouseup', () => {
+      if (!hDragging) return;
+      hDragging = false;
+      hBarRef.classList.remove('dragging');
+    }, { signal: ac.signal });
+
+    hTrack.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.target === hThumbRef) return;
+      const rect = hTrack.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const cw = viewport.clientWidth;
+      const sw = viewport.scrollWidth;
+      const maxScroll = sw - cw;
+      viewport.scrollLeft = (clickX / cw) * maxScroll;
+      e.preventDefault();
+    });
+  }
+
   // Cleanup on container removal
   const cleanupObs = new MutationObserver(() => {
     if (!container.isConnected) {
@@ -152,6 +244,7 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
     mo.disconnect();
     cleanupObs.disconnect();
     bar.remove();
+    hBar?.remove();
     viewport.classList.remove('overlay-sb-viewport');
   }
 

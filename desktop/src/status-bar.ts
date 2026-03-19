@@ -582,14 +582,21 @@ class StatusBarClass {
       sessionId: string; id: string; type: 'upload' | 'download'; progress: number; status: string;
     }>) => {
       const { id, type, progress, status } = e.detail;
-      if (status === 'completed' || status === 'failed') {
+      const isTerminal = status === 'completed' || status === 'failed' || status === 'cancelled';
+      if (isTerminal) {
         this.activeTransfers.delete(id);
       } else {
         this.activeTransfers.set(id, { type, progress, status });
       }
 
       if (this.activeTransfers.size === 0) {
-        this.setTransfer({ direction: type, fileCount: 0, progress: 100 });
+        if (status === 'cancelled' || status === 'failed') {
+          // Cancelled/failed: remove capsule immediately, no "100%" flash
+          this.setTransfer(null);
+        } else {
+          // Completed: show 100% for 2s then fade out
+          this.setTransfer({ direction: type, fileCount: 0, progress: 100 });
+        }
       } else {
         let uploads = 0, downloads = 0, totalProgress = 0;
         this.activeTransfers.forEach((t) => {

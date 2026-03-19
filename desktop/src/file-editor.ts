@@ -283,14 +283,17 @@ async function activateTab(tabId: string): Promise<void> {
     const state = EditorState.create({ doc: tab.content, extensions: exts });
     tab.editorView = new EditorView({ state, parent: tab.wrapperEl });
 
-    // Overlay scrollbar for vertical + native CSS scrollbar for horizontal
+    // Apply saved font size
+    const cmEl = tab.wrapperEl.querySelector('.cm-editor') as HTMLElement;
+    if (cmEl) cmEl.style.fontSize = `${getEditorFontSize()}px`;
+
+    // Vertical: overlay JS (4px → 10px on hover)
+    // Horizontal: native CSS 4px
     const scroller = tab.wrapperEl.querySelector('.cm-scroller') as HTMLElement | null;
     if (scroller) {
-      createOverlayScrollbar({ viewport: scroller, container: scroller });
-      // Remove overlay-sb-viewport (hides ALL scrollbars with !important)
-      // Replace with our class that only hides vertical native scrollbar
-      scroller.classList.remove('overlay-sb-viewport');
-      scroller.classList.add('editor-scroller');
+      createOverlayScrollbar({ viewport: scroller, container: scroller, horizontal: true });
+      // overlay-sb-viewport hides ALL native scrollbars — that's what we want now
+      // since both vertical and horizontal are handled by overlay JS.
     }
   }
 
@@ -455,6 +458,16 @@ function updateStatusBar(): void {
     spacer.className = 'editor-status';
     statusBarEl.appendChild(spacer);
 
+    // Font size button
+    const fontBtn = document.createElement('button');
+    fontBtn.className = 'editor-font-btn';
+    fontBtn.textContent = `${getEditorFontSize()}px`;
+    fontBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showFontSizePicker(fontBtn);
+    });
+    statusBarEl.appendChild(fontBtn);
+
     // Language selector
     const langBtn = document.createElement('button');
     langBtn.className = 'editor-lang-btn';
@@ -481,6 +494,79 @@ function updateStatusBar(): void {
   // Update language label
   const langBtn = statusBarEl.querySelector('.editor-lang-btn');
   if (langBtn) langBtn.textContent = langLabel;
+
+  // Update font size label
+  const fontBtn = statusBarEl.querySelector('.editor-font-btn');
+  if (fontBtn) fontBtn.textContent = `${getEditorFontSize()}px`;
+}
+
+// --- Editor font size ---
+const FONT_SIZE_KEY = 'meterm-editor-font-size';
+const DEFAULT_FONT_SIZE = 13;
+const MIN_FONT_SIZE = 10;
+const MAX_FONT_SIZE = 24;
+
+function getEditorFontSize(): number {
+  const saved = localStorage.getItem(FONT_SIZE_KEY);
+  return saved ? Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, parseInt(saved, 10) || DEFAULT_FONT_SIZE)) : DEFAULT_FONT_SIZE;
+}
+
+function setEditorFontSize(size: number): void {
+  size = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, size));
+  localStorage.setItem(FONT_SIZE_KEY, String(size));
+  // Apply to all open editors
+  for (const tab of tabs.values()) {
+    if (tab.wrapperEl) {
+      const cm = tab.wrapperEl.querySelector('.cm-editor') as HTMLElement;
+      if (cm) cm.style.fontSize = `${size}px`;
+    }
+  }
+  updateStatusBar();
+}
+
+function showFontSizePicker(anchor: HTMLElement): void {
+  // Remove existing picker
+  document.querySelector('.editor-font-picker')?.remove();
+
+  const picker = document.createElement('div');
+  picker.className = 'editor-font-picker';
+
+  const currentSize = getEditorFontSize();
+
+  const minusBtn = document.createElement('button');
+  minusBtn.textContent = '−';
+  minusBtn.className = 'font-picker-btn';
+  minusBtn.onclick = (e) => { e.stopPropagation(); setEditorFontSize(getEditorFontSize() - 1); sizeLabel.textContent = `${getEditorFontSize()}px`; };
+
+  const sizeLabel = document.createElement('span');
+  sizeLabel.className = 'font-picker-label';
+  sizeLabel.textContent = `${currentSize}px`;
+
+  const plusBtn = document.createElement('button');
+  plusBtn.textContent = '+';
+  plusBtn.className = 'font-picker-btn';
+  plusBtn.onclick = (e) => { e.stopPropagation(); setEditorFontSize(getEditorFontSize() + 1); sizeLabel.textContent = `${getEditorFontSize()}px`; };
+
+  picker.appendChild(minusBtn);
+  picker.appendChild(sizeLabel);
+  picker.appendChild(plusBtn);
+
+  // Position above anchor
+  const rect = anchor.getBoundingClientRect();
+  picker.style.position = 'fixed';
+  picker.style.bottom = `${window.innerHeight - rect.top + 4}px`;
+  picker.style.left = `${rect.left}px`;
+
+  document.body.appendChild(picker);
+
+  // Close on outside click
+  const close = (e: MouseEvent) => {
+    if (!picker.contains(e.target as Node) && e.target !== anchor) {
+      picker.remove();
+      document.removeEventListener('mousedown', close);
+    }
+  };
+  setTimeout(() => document.addEventListener('mousedown', close), 0);
 }
 
 function showLangPicker(anchor: HTMLElement, tab: TabInfo): void {

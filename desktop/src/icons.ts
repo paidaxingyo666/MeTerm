@@ -22,24 +22,35 @@ export function icon(name: IconName): string {
   return icons[name];
 }
 
-// File type SVG icons for file manager (14x14 viewBox, stroke style)
-const S = 'stroke="currentColor" fill="none" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"';
+/** Generate a file icon SVG: colored document with transparent cutout extension text */
+function fileExtIcon(ext: string, color: string = '#6b7280'): string {
+  const label = ext.toUpperCase().slice(0, 4);
+  const fontSize = label.length > 3 ? 5.5 : label.length > 2 ? 6.5 : 7.5;
+  const maskId = `m${ext.replace(/[^a-z0-9]/gi, '')}`;
+  return `<svg viewBox="0 0 16 16" width="16" height="16" xmlns="http://www.w3.org/2000/svg">`
+    + `<defs><mask id="${maskId}"><rect width="16" height="16" fill="#fff"/>`
+    + `<text x="7.5" y="14.2" text-anchor="middle" font-size="${fontSize}" font-family="ui-monospace,'SF Mono',monospace" font-weight="800" fill="#000">${label}</text>`
+    + `</mask></defs>`
+    + `<path d="M1 .5h9L14 4.5V15.5H1z" fill="${color}" stroke="${color}" stroke-width=".3" mask="url(#${maskId})"/>`
+    + `<path d="M10 .5v4H14" fill="${color}" opacity=".5"/>`
+    + `</svg>`;
+}
 
 const fileIcons: Record<string, string> = {
-  folder:       `<svg viewBox="0 0 14 14" ${S}><path d="M1.5 3h4l1 1.5h6v7h-11z"/></svg>`,
-  'file-code':  `<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><path d="M5.5 7L4 8.5 5.5 10"/><path d="M8.5 7L10 8.5 8.5 10"/></svg>`,
-  'file-config':`<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><circle cx="7" cy="8.5" r="1.2"/><path d="M7 6v1.3M7 9.7V11M5.2 7.6l1.1.6M7.7 8.9l1.1.6M5.2 9.4l1.1-.6M7.7 8.1l1.1-.6"/></svg>`,
-  'file-image': `<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><circle cx="6" cy="7" r="1"/><path d="M3 11.5l2.5-3 1.5 1.5 2-2.5L11 11.5"/></svg>`,
-  'file-archive':`<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><path d="M6 5h2M6 7h2M6 9h2"/><rect x="5.5" y="10" width="3" height="2" rx=".5"/></svg>`,
-  'file-doc':   `<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><path d="M5 7h4M5 9h3M5 11h2"/></svg>`,
-  'file-text':  `<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><path d="M5 7h4M5 9h4M5 11h2"/></svg>`,
-  'file-shell': `<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><path d="M5 8l1.5 1.2L5 10.5"/><path d="M7.5 10.5H10"/></svg>`,
-  'file-video': `<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><path d="M5.5 7v4l3.5-2z"/></svg>`,
-  'file-audio': `<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><path d="M6 7v4"/><path d="M8 8v2"/><path d="M10 7.5v3"/><path d="M4 8.5v1"/></svg>`,
-  'file-lock':  `<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><rect x="5" y="8" width="4" height="3" rx=".8"/><path d="M6 8V6.8a1 1 0 0 1 2 0V8"/></svg>`,
-  'file-binary':`<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><text x="4.5" y="10" font-size="4" fill="currentColor" stroke="none" font-family="monospace">01</text></svg>`,
-  'file-symlink':`<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/><path d="M5 9.5h2.5a1.5 1.5 0 0 0 0-3H7"/><path d="M6 8l-1.5 1.5L6 11"/></svg>`,
-  'file-default':`<svg viewBox="0 0 14 14" ${S}><path d="M3 1h5l3 3v9H3z"/><path d="M8 1v3h3"/></svg>`,
+  folder:       `<svg viewBox="0 0 16 16" width="14" height="14" fill="var(--accent)" stroke="none"><path d="M1.5 2h4.3l1.4 1.5H14.5a1 1 0 0 1 1 1V13a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>`,
+  'file-code':  fileExtIcon('{ }', '#e06c75'),
+  'file-config': fileExtIcon('cfg', '#98c379'),
+  'file-image': fileExtIcon('img', '#d19a66'),
+  'file-archive': fileExtIcon('zip', '#e5c07b'),
+  'file-doc':   fileExtIcon('doc', '#61afef'),
+  'file-text':  fileExtIcon('txt', '#9ca3af'),
+  'file-shell': fileExtIcon('sh', '#98c379'),
+  'file-video': fileExtIcon('vid', '#c678dd'),
+  'file-audio': fileExtIcon('mp3', '#c678dd'),
+  'file-lock':  fileExtIcon('🔒', '#e5c07b'),
+  'file-binary': fileExtIcon('bin', '#6b7280'),
+  'file-symlink': `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 1.5h6l3.5 3.5v10H3z"/><path d="M9 1.5v3.5h3.5"/><path d="M5.5 10.5h3a1.5 1.5 0 0 0 0-3H7.5"/><path d="M7 9l-2 1.5L7 12"/></svg>`,
+  'file-default': `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 1.5h6l3.5 3.5v10H3z"/><path d="M9 1.5v3.5h3.5"/></svg>`,
 };
 
 // Extension to icon type mapping
@@ -129,20 +140,65 @@ export function isEditableFile(name: string): boolean {
   return true;
 }
 
+// Extension → color for ext-label icons
+const extColorMap: Record<string, string> = {
+  // Code (red-ish)
+  js: '#e06c75', ts: '#3178c6', jsx: '#e06c75', tsx: '#3178c6',
+  py: '#3572a5', go: '#00add8', rs: '#dea584', rb: '#cc342d',
+  c: '#555', cpp: '#f34b7d', h: '#555', hpp: '#f34b7d',
+  java: '#b07219', kt: '#a97bff', swift: '#f05138', cs: '#178600',
+  php: '#4f5d95', vue: '#42b883', svelte: '#ff3e00',
+  html: '#e34c26', css: '#563d7c', scss: '#c6538c', less: '#1d365d',
+  // Config (green)
+  json: '#98c379', yaml: '#98c379', yml: '#98c379', toml: '#98c379',
+  xml: '#98c379', ini: '#98c379', env: '#98c379',
+  // Shell (green)
+  sh: '#4eaa25', bash: '#4eaa25', zsh: '#4eaa25', ps1: '#012456',
+  // Doc (blue)
+  md: '#61afef', pdf: '#e5252a', doc: '#2b579a', xls: '#217346', ppt: '#d24726',
+  // Media
+  png: '#d19a66', jpg: '#d19a66', svg: '#ffb13b', mp4: '#c678dd', mp3: '#c678dd',
+  // Archive
+  zip: '#e5c07b', tar: '#e5c07b', gz: '#e5c07b',
+};
+
 export function getFileIcon(name: string, isDir: boolean, isLink?: boolean): string {
   if (isDir) return fileIcons['folder'];
   if (isLink) return fileIcons['file-symlink'];
 
-  // Check special filenames
   const baseName = name.split('/').pop() || name;
-  if (nameMap[baseName]) return fileIcons[nameMap[baseName]];
 
-  // Check extension
+  // Special filenames (Makefile, Dockerfile, .gitignore, etc.)
+  if (nameMap[baseName]) {
+    // Use a recognizable label for special files
+    const labelMap: Record<string, [string, string]> = {
+      'Makefile': ['MAKE', '#e06c75'], 'Dockerfile': ['DOCK', '#2496ed'],
+      'LICENSE': ['LIC', '#e5c07b'], 'README': ['READ', '#61afef'],
+    };
+    if (labelMap[baseName]) return fileExtIcon(labelMap[baseName][0], labelMap[baseName][1]);
+    return fileExtIcon('CFG', '#98c379'); // .gitignore, .editorconfig, etc.
+  }
+
+  // Dotfiles without extension (.bashrc, .zshrc, .profile, etc.) → config
+  if (baseName.startsWith('.') && !baseName.includes('.', 1)) {
+    return fileExtIcon('CFG', '#98c379');
+  }
+
+  // Extract extension
   const dotIdx = baseName.lastIndexOf('.');
   if (dotIdx > 0) {
     const ext = baseName.substring(dotIdx + 1).toLowerCase();
-    if (extMap[ext]) return fileIcons[extMap[ext]];
+
+    // Only show ext icon for KNOWN extensions
+    if (extMap[ext] || extColorMap[ext]) {
+      const color = extColorMap[ext] || '#9ca3af';
+      return fileExtIcon(ext, color);
+    }
+
+    // Unknown extension → show "?" with gray
+    return fileExtIcon('?', '#6b7280');
   }
 
-  return fileIcons['file-default'];
+  // No extension at all → "?"
+  return fileExtIcon('?', '#6b7280');
 }

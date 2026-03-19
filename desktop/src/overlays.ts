@@ -68,9 +68,14 @@ export function showReconnectOverlay(sessionId: string, tabId: string): void {
   const config = sshConfigMap.get(sessionId);
   if (!config) return;
 
-  // Find the terminal container to overlay on
+  // Find the terminal container to overlay on — MUST be scoped to this tab only.
   const mt = TerminalRegistry.get(sessionId);
-  const parent = mt?.container?.parentElement ?? _terminalPanelEl;
+  // Attach overlay directly to the terminal container (not parentElement).
+  // This ensures the overlay is scoped to exactly this terminal, not the whole panel.
+  const parent = mt?.container ?? _terminalPanelEl;
+  if (parent !== _terminalPanelEl) {
+    parent.style.position = 'relative'; // ensure absolute overlay is scoped here
+  }
 
   // Don't duplicate
   if (parent.querySelector(`.ssh-reconnect-overlay[data-session-id="${sessionId}"]`)) return;
@@ -101,6 +106,9 @@ export function showReconnectOverlay(sessionId: string, tabId: string): void {
   overlay.appendChild(btn);
   overlay.appendChild(errorEl);
   parent.appendChild(overlay);
+
+  // 通知文件管理抽屉显示断连遮罩
+  DrawerManager.notifyDisconnect(sessionId);
 
   btn.onclick = async () => {
     btn.classList.add('is-reconnecting');

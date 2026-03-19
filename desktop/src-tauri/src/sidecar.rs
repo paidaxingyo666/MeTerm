@@ -78,6 +78,8 @@ pub struct MeTermProcess {
     token: Arc<Mutex<Option<String>>>,
     ready: Arc<AtomicBool>,
     proxy_handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// Set to true when Rust backend is injected (no actual child process).
+    rust_backend_active: AtomicBool,
 }
 
 impl MeTermProcess {
@@ -89,6 +91,7 @@ impl MeTermProcess {
             token: Arc::new(Mutex::new(None)),
             ready: Arc::new(AtomicBool::new(false)),
             proxy_handle: Mutex::new(None),
+            rust_backend_active: AtomicBool::new(false),
         }
     }
 
@@ -102,7 +105,7 @@ impl MeTermProcess {
     }
 
     pub fn is_running(&self) -> bool {
-        self.child.lock().unwrap().is_some()
+        self.rust_backend_active.load(Ordering::SeqCst) || self.child.lock().unwrap().is_some()
     }
 
     pub fn token(&self) -> Option<String> {
@@ -113,6 +116,18 @@ impl MeTermProcess {
         if let Ok(mut guard) = self.token.lock() {
             *guard = Some(new_token);
         }
+    }
+
+    /// Inject Rust backend's port and token into this MeTermProcess,
+    /// making it appear as if a Go sidecar is running. This allows all
+    /// existing commands (which use MeTermProcess for port/token) to
+    /// transparently work with the Rust in-process server.
+    pub fn inject_rust_backend(&self, port: u16, token: String) {
+        *self.port.lock().unwrap() = port;
+        *self.lan_port.lock().unwrap() = port;
+        *self.token.lock().unwrap() = Some(token);
+        self.ready.store(true, Ordering::SeqCst);
+        self.rust_backend_active.store(true, Ordering::SeqCst);
     }
 
     fn reset_auth_state(&self) {

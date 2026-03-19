@@ -100,6 +100,7 @@ export interface FileInfo {
 export interface FileListResponse {
   path: string;
   files: FileInfo[];
+  request_id?: string;
 }
 
 export interface ServerInfoRequest {
@@ -166,4 +167,5 @@ export interface ErrorResponse {
 export interface FileListProgressResponse {
   loaded: number;
   total: number;
+  request_id?: string;
 }

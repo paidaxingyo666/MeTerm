@@ -77,8 +77,14 @@ export class FileManager {
   private loadingTimeout: ReturnType<typeof setTimeout> | null = null;
   private lastClickTime: number = 0;
   private lastClickPath: string = '';
+  private loadRetryCount: number = 0;  // 超时自动重试计数
+  private loadRetryPath: string = '';   // 重试的目录路径
+  private pendingRequestId: string | null = null;  // 当前目录加载请求的关联 ID
   private loadingOverlay: HTMLElement | null = null;
   private loadingProgressBar: HTMLElement | null = null;
+  private disconnectOverlay: HTMLElement | null = null;
+  private pendingFileOp: boolean = false;
+  private fileOpTimeout: ReturnType<typeof setTimeout> | null = null;
   private progressInterval: ReturnType<typeof setInterval> | null = null;
   private currentProgress: number = 0;
   private useRealProgress: boolean = false;  // 是否使用真实进度
@@ -110,6 +116,7 @@ export class FileManager {
     this.pathInput = pathInput;
     this.loadingOverlay = loadingOverlay;
     this.loadingProgressBar = loadingProgressBar;
+    this.disconnectOverlay = loadingOverlay?.parentElement?.querySelector(`#file-disconnect-${sessionId}`) || null;
 
     // 初始化传输历史管理器
     this._transferHistory = new TransferHistoryManager(sessionId);
@@ -142,8 +149,17 @@ export class FileManager {
     this.initializeDragAndDrop();
   }
 
+  showDisconnected(): void {
+    if (this.disconnectOverlay) this.disconnectOverlay.style.display = '';
+  }
+
+  hideDisconnected(): void {
+    if (this.disconnectOverlay) this.disconnectOverlay.style.display = 'none';
+  }
+
   setWebSocket(ws: WebSocket): void {
     this.ws = ws;
+    this.hideDisconnected();
 
     // 重置加载状态：旧的 WebSocket 断开后，之前的加载请求不会收到响应
     // 必须在 setupMessageHandler 之前重置，否则后续 loadDirectory 会被防抖跳过
@@ -285,6 +301,10 @@ export class FileManager {
 
     console.log('📂 开始加载目录:', path);
     this.isLoadingDirectory = true;
+    // 记录当前请求路径（用于超时重试判断）
+    if (this.loadRetryCount === 0) {
+      this.loadRetryPath = path;
+    }
 
     // 显示 loading 遮罩
     this.showLoading();
@@ -294,21 +314,33 @@ export class FileManager {
       clearTimeout(this.loadingTimeout);
     }
 
-    // 设置60秒超时保护，防止永久锁定
+    // 设置30秒超时保护（与后端 SFTP 超时对齐），防止永久锁定
     this.loadingTimeout = setTimeout(() => {
-      console.error('⏰ 目录加载超时（60秒未响应），重置状态');
+      console.error('⏰ 目录加载超时（30秒未响应），重置状态');
       console.error('   可能原因：服务器响应慢、网络问题、或 WebSocket 消息丢失');
       this.hideLoading();
       this.isLoadingDirectory = false;
       this.loadingTimeout = null;
-      alert('加载超时，请稍后重试');
-    }, 60000);
+
+      // 自动重试 1 次
+      if (this.loadRetryCount === 0 && this.loadRetryPath === path) {
+        this.loadRetryCount = 1;
+        console.log('🔄 超时自动重试 (1/1):', path);
+        this.loadDirectory(path);
+      } else {
+        this.loadRetryCount = 0;
+        this.loadRetryPath = '';
+        alert('加载超时，请稍后重试');
+      }
+    }, 30000);
 
     try {
       // 不在这里更新路径，等待服务器响应后再更新
-      const request = JSON.stringify({ path });
+      const requestId = `fl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      this.pendingRequestId = requestId;
+      const request = JSON.stringify({ path, request_id: requestId });
       const message = this.encodeMessage(MsgFileList, new TextEncoder().encode(request));
-      console.log('📤 发送目录请求到服务器，路径:', path, '消息大小:', message.length, 'bytes');
+      console.log('📤 发送目录请求到服务器，路径:', path, 'requestId:', requestId, '消息大小:', message.length, 'bytes');
       this.ws.send(message);
       console.log('✅ 请求已发送，等待服务器响应...');
     } catch (err) {
@@ -327,6 +359,11 @@ export class FileManager {
   private handleFileListProgress(payload: Uint8Array): void {
     try {
       const progress: FileListProgressResponse = JSON.parse(new TextDecoder().decode(payload));
+
+      // 忽略不匹配的过期进度更新
+      if (progress.request_id && this.pendingRequestId && progress.request_id !== this.pendingRequestId) {
+        return;
+      }
       console.log(`📊 收到进度更新: ${progress.loaded}/${progress.total} 文件`);
 
       // 首次收到进度消息时，切换到真实进度模式
@@ -363,7 +400,7 @@ export class FileManager {
     try {
       const response: FileListResponse = JSON.parse(new TextDecoder().decode(payload));
 
-      // 自动补全静默查询的响应：不更新 UI
+      // 自动补全静默查询的响应（无 request_id）：不更新 UI
       if (this._autocomplete?.autocompleteResolve && !this.isLoadingDirectory) {
         isAutocompleteResponse = true;
         const resolve = this._autocomplete.autocompleteResolve;
@@ -373,7 +410,15 @@ export class FileManager {
         return;
       }
 
-      console.log('📥 收到文件列表响应:', response.path, '文件数:', response.files.length);
+      // requestId 不匹配：过期或 OSC 7 触发的后台请求，只缓存不更新 UI
+      if (response.request_id && this.pendingRequestId && response.request_id !== this.pendingRequestId) {
+        console.warn('⏭️ 忽略过期的文件列表响应, got:', response.request_id, 'want:', this.pendingRequestId);
+        isAutocompleteResponse = true;  // 跳过 finally 中的状态重置
+        this.dirCachePut(response.path, response.files);
+        return;
+      }
+
+      console.log('📥 收到文件列表响应:', response.path, '文件数:', response.files.length, 'requestId:', response.request_id || 'none');
       this.dirCachePut(response.path, response.files);
       this.files = response.files;
       this.currentPath = response.path;
@@ -389,9 +434,12 @@ export class FileManager {
           clearTimeout(this.loadingTimeout);
           this.loadingTimeout = null;
         }
-        // 重置真实进度状态
+        // 重置真实进度状态、重试计数和 requestId
         this.useRealProgress = false;
         this.totalFiles = 0;
+        this.loadRetryCount = 0;
+        this.loadRetryPath = '';
+        this.pendingRequestId = null;
         console.log('✅ 目录加载完成，状态已重置');
 
         // 触发一次性首次加载回调（用于 JumpServer 自动进入资产子目录）
@@ -740,6 +788,31 @@ export class FileManager {
     }, 200);
   }
 
+  /** Show a lightweight loading overlay for file operations (delete, rename, etc.) */
+  private showFileOpLoading(label: string): void {
+    this.pendingFileOp = true;
+    if (!this.loadingOverlay) return;
+    const loadingText = this.loadingOverlay.querySelector('.loading-text');
+    if (loadingText) loadingText.textContent = label;
+    // Hide progress bar (indeterminate)
+    if (this.loadingProgressBar) this.loadingProgressBar.style.display = 'none';
+    this.loadingOverlay.style.display = 'flex';
+    // Safety timeout: auto-hide after 60s if no response
+    if (this.fileOpTimeout) clearTimeout(this.fileOpTimeout);
+    this.fileOpTimeout = setTimeout(() => this.hideFileOpLoading(), 60000);
+  }
+
+  /** Hide the file-operation loading overlay */
+  private hideFileOpLoading(): void {
+    this.pendingFileOp = false;
+    if (this.fileOpTimeout) {
+      clearTimeout(this.fileOpTimeout);
+      this.fileOpTimeout = null;
+    }
+    if (this.loadingOverlay) this.loadingOverlay.style.display = 'none';
+    if (this.loadingProgressBar) this.loadingProgressBar.style.display = '';
+  }
+
   private validateFileName(name: string): boolean {
     return validateFileName(name);
   }
@@ -1046,7 +1119,8 @@ export class FileManager {
           // 继续处理上传队列（队列空时会自动刷新目录）
           this.processNextUpload();
         } else {
-          // 普通文件操作（delete/rename/touch），刷新目录
+          // 普通文件操作（delete/rename/touch），隐藏遮罩并刷新目录
+          if (this.pendingFileOp) this.hideFileOpLoading();
           this.loadDirectory(this.currentPath);
         }
       } else {
@@ -1061,6 +1135,7 @@ export class FileManager {
           this.processNextUpload();
         } else {
           // 普通文件操作失败
+          if (this.pendingFileOp) this.hideFileOpLoading();
           alert(`操作失败: ${errorMsg}`);
         }
       }
@@ -1192,6 +1267,7 @@ export class FileManager {
       path: fullPath
     };
 
+    this.showFileOpLoading('删除中...');
     const message = this.encodeMessage(MsgFileOperation, new TextEncoder().encode(JSON.stringify(request)));
     this.ws.send(message);
     console.log(`Deleting ${fullPath}`);
@@ -1222,6 +1298,7 @@ export class FileManager {
       new_path: fullNewPath
     };
 
+    this.showFileOpLoading('重命名中...');
     const message = this.encodeMessage(MsgFileOperation, new TextEncoder().encode(JSON.stringify(request)));
     this.ws.send(message);
     console.log(`Renaming ${fullOldPath} to ${fullNewPath}`);
@@ -1351,37 +1428,61 @@ export class FileManager {
       const resizer = th.querySelector('.column-resizer');
       if (!resizer) return;
 
+      // Last column has no resizer (CSS hides it), skip
+      const nextTh = ths[index + 1] as HTMLElement | undefined;
+      if (!nextTh) return;
+
       let startX = 0;
       let startWidth = 0;
+      let startNextWidth = 0;
 
       const onMouseDown = (e: MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
 
+        // Snapshot ALL column widths in one read pass (no layout thrashing),
+        // then apply as pixels in one write pass.
+        const widths = Array.from(ths).map(t => (t as HTMLElement).offsetWidth);
         startX = e.pageX;
-        startWidth = th.offsetWidth;
+        startWidth = widths[index];
+        startNextWidth = widths[index + 1];
+        ths.forEach((t, i) => {
+          (t as HTMLElement).style.width = `${widths[i]}px`;
+        });
 
         document.addEventListener('mousemove', onMouseMove);
         document.addEventListener('mouseup', onMouseUp);
 
-        // 添加拖动状态样式
         document.body.style.cursor = 'col-resize';
         resizer.classList.add('resizing');
       };
 
+      const MIN_COL = 40;
+
       const onMouseMove = (e: MouseEvent) => {
         const diff = e.pageX - startX;
-        const newWidth = Math.max(50, startWidth + diff); // 最小宽度50px
-        th.style.width = `${newWidth}px`;
+        // Clamp: both columns must stay >= MIN_COL
+        const maxGrow = startNextWidth - MIN_COL;
+        const maxShrink = startWidth - MIN_COL;
+        const clampedDiff = Math.max(-maxShrink, Math.min(maxGrow, diff));
+        (th as HTMLElement).style.width = `${startWidth + clampedDiff}px`;
+        nextTh.style.width = `${startNextWidth - clampedDiff}px`;
       };
 
       const onMouseUp = () => {
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
-
-        // 移除拖动状态样式
         document.body.style.cursor = '';
         resizer.classList.remove('resizing');
+
+        // Convert pixel widths back to percentages so columns scale with window resize
+        const tableWidth = (table as HTMLElement).offsetWidth;
+        if (tableWidth > 0) {
+          ths.forEach((t) => {
+            const pct = ((t as HTMLElement).offsetWidth / tableWidth) * 100;
+            (t as HTMLElement).style.width = `${pct}%`;
+          });
+        }
       };
 
       resizer.addEventListener('mousedown', onMouseDown as EventListener);

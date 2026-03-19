@@ -22,7 +22,6 @@ on:
   #     - '.github/workflows/build-linux.yml'
 
 env:
-  GO_VERSION: '1.25'
   NODE_VERSION: '20'
 
 jobs:
@@ -47,12 +46,6 @@ jobs:
             libjavascriptcoregtk-4.1-dev \
             xdg-utils
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: backend/go.sum
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -68,18 +61,12 @@ jobs:
         with:
           workspaces: desktop/src-tauri
 
-      # Web 前端必须先构建，Go 后端通过 go:embed 嵌入 backend/web/dist/
+      # Rust 后端通过 rust_embed 嵌入 frontend/dist/
       - name: Build web frontend
         run: |
           cd frontend
           npm ci
           npm run build
-
-      - name: Build Go sidecar (amd64)
-        run: |
-          cd backend
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
-            -o ../desktop/src-tauri/binaries/meterm-server-x86_64-unknown-linux-gnu .
 
       - name: Build desktop frontend
         run: |
@@ -135,12 +122,6 @@ jobs:
             libjavascriptcoregtk-4.1-dev \
             xdg-utils
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: backend/go.sum
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -156,18 +137,12 @@ jobs:
         with:
           workspaces: desktop/src-tauri
 
-      # Web 前端必须先构建
+      # Rust 后端通过 rust_embed 嵌入 frontend/dist/
       - name: Build web frontend
         run: |
           cd frontend
           npm ci
           npm run build
-
-      - name: Build Go sidecar (arm64)
-        run: |
-          cd backend
-          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" \
-            -o ../desktop/src-tauri/binaries/meterm-server-aarch64-unknown-linux-gnu .
 
       - name: Build desktop frontend
         run: |

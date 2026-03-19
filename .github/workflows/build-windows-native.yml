@@ -9,18 +9,13 @@ on:
         default: true
         type: boolean
   push:
-    branches: [dev-*]
-    paths:
-      - 'backend/**'
-      - 'desktop/**'
-      - 'frontend/**'
-      - '.github/workflows/build-windows-native.yml'
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
 
 env:
-  GO_VERSION: '1.25'
   NODE_VERSION: '20'
   RUST_TARGET: 'x86_64-pc-windows-msvc'
 
@@ -33,12 +28,6 @@ jobs:
         shell: cmd
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: backend/go.sum
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -66,14 +55,10 @@ jobs:
         with:
           workspaces: desktop/src-tauri
 
-      # backend/web/dist 由 go:embed 使用，必须先构建前端
+      # Rust 后端通过 rust_embed 嵌入 frontend/dist/
       - name: Build web frontend
         run: |
           cd frontend && npm ci && npm run build
-          if not exist ..\backend\web\dist\index.html (
-            echo ERROR: frontend build did not produce backend\web\dist\index.html
-            exit /b 1
-          )
 
       # Download bundled ConPTY components (hybrid approach):
       #   conpty.dll   — from NuGet CI.Microsoft.Windows.Console.ConPTY
@@ -111,23 +96,6 @@ jobs:
             exit /b 1
           )
           dir desktop\src-tauri\binaries\conpty\
-
-      # Windows 原生 sidecar（ConPTY backend）
-      - name: Build Go sidecar (Windows native)
-        run: |
-          cd backend
-          set GOOS=windows
-          set GOARCH=amd64
-          go build -ldflags="-s -w" -o ..\desktop\src-tauri\binaries\meterm-server-x86_64-pc-windows-msvc.exe .
-
-      # 可选 WSL fallback 资源（当前 tauri.windows.conf.json 仍会打包该文件）
-      # 不影响原生 Windows 运行；仅作为 native sidecar 启动失败时的后备路径。
-      - name: Build Go sidecar (Linux fallback resource)
-        run: |
-          cd backend
-          set GOOS=linux
-          set GOARCH=amd64
-          go build -ldflags="-s -w" -o ..\desktop\src-tauri\binaries\meterm-server-x86_64-unknown-linux-gnu .
 
       - name: Build desktop frontend
         run: |
