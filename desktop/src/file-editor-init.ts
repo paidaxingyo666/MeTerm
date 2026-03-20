@@ -5,6 +5,7 @@
  */
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
+import { revealAfterPaint } from './window-utils';
 import { readText as clipboardReadText } from '@tauri-apps/plugin-clipboard-manager';
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage } from './i18n';
@@ -153,8 +154,5 @@ export function initEditorWindowShell(): void {
     }, 500);
   });
 
-  // Show window
-  requestAnimationFrame(() => {
-    void win.show().then(() => win.setFocus());
-  });
+  void revealAfterPaint(win.label);
 }

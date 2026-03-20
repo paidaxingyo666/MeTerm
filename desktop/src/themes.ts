@@ -286,8 +286,12 @@ export interface AppSettings {
   cmdCompletionEnabled: boolean;
   /** Auto-inject shell hook on SSH/remote sessions for command history & AI Agent */
   shellHookInjection: boolean;
-  /** PiP window scale percentage relative to original window (10-50) */
+  /** PiP window scale percentage (10-50) */
   pipScale: number;
+  /** PiP scale relative to screen size instead of window size */
+  pipScaleByScreen: boolean;
+  /** Auto-create a new local session on app startup */
+  autoNewSession: boolean;
 }
 
 const SETTINGS_KEY = 'meterm-settings';
@@ -337,6 +341,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   cmdCompletionEnabled: false,
   shellHookInjection: false,
   pipScale: 30,
+  pipScaleByScreen: false,
+  autoNewSession: false,
 };
 
 export function loadSettings(): AppSettings {

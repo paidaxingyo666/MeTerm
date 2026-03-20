@@ -10,6 +10,8 @@
 
 // Core terminal I/O
 pub const MSG_OUTPUT: u8 = 0x01;
+/// OSC events extracted by Rust-side OscFilter (JSON payload).
+pub const MSG_OSC_EVENT: u8 = 0x40;
 pub const MSG_INPUT: u8 = 0x02;
 pub const MSG_RESIZE: u8 = 0x03;
 pub const MSG_PING: u8 = 0x04;

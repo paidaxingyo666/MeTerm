@@ -37,12 +37,18 @@ impl ConPtyTerminal {
             })
             .map_err(|e| format!("ConPTY openpty: {}", e))?;
 
-        let mut cmd = if shell.is_empty() {
-            CommandBuilder::new_default_prog()
+        // Resolve shell: prefer explicit shell, then COMSPEC env, then cmd.exe.
+        // Avoids new_default_prog() which can fail on Windows with PATH issues.
+        let resolved = if shell.is_empty() {
+            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
         } else {
-            let mut cmd = CommandBuilder::new(shell);
+            shell.to_string()
+        };
 
-            let shell_lower = shell.to_lowercase();
+        let mut cmd = {
+            let mut cmd = CommandBuilder::new(&resolved);
+
+            let shell_lower = resolved.to_lowercase();
             let basename = shell_lower.rsplit(['\\', '/']).next().unwrap_or(&shell_lower);
 
             // PowerShell hook: OSC 7 (CWD) + OSC 7766 (init) + OSC 7768 (shell state)

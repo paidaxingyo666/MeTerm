@@ -28,6 +28,27 @@ import { togglePip, isPipActive } from './pip';
 export function setupKeyboardShortcuts(): void {
   document.addEventListener('keydown', async (event) => {
     const isMac = navigator.userAgent.includes('Mac');
+
+    // ── Tab switching: Ctrl+Tab / Ctrl+Shift+Tab (next/prev) ──
+    // Must be before the mod check since Ctrl+Tab doesn't use Cmd on macOS
+    if (event.ctrlKey && event.key === 'Tab') {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const tabs = TabManager.tabs;
+      if (tabs.length > 1 && TabManager.activeTabId) {
+        const currentIndex = tabs.findIndex(t => t.id === TabManager.activeTabId);
+        const nextIndex = event.shiftKey
+          ? (currentIndex - 1 + tabs.length) % tabs.length
+          : (currentIndex + 1) % tabs.length;
+        const targetTab = tabs[nextIndex];
+        TabManager.activate(targetTab.id);
+        void activateTab(targetTab.id);
+        renderTabs();
+      }
+      return;
+    }
+
     const mod = isMac ? event.metaKey : event.ctrlKey;
     if (!mod) {
       return;
@@ -174,6 +195,26 @@ export function setupKeyboardShortcuts(): void {
           await activateTab(splitTab.id);
           renderTabs();
         })();
+      }
+      return;
+    }
+
+    // ── Tab switching: Cmd/Ctrl+1~9 (Chrome-style) ──
+    if (!event.shiftKey && !event.altKey && key >= '1' && key <= '9') {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const tabs = TabManager.tabs;
+      if (tabs.length > 0) {
+        const num = parseInt(key, 10);
+        // 9 = last tab (Chrome behavior), otherwise 1-indexed
+        const index = key === '9' ? tabs.length - 1 : Math.min(num - 1, tabs.length - 1);
+        const targetTab = tabs[index];
+        if (targetTab && targetTab.id !== TabManager.activeTabId) {
+          TabManager.activate(targetTab.id);
+          void activateTab(targetTab.id);
+          renderTabs();
+        }
       }
       return;
     }

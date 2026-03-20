@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { emit } from '@tauri-apps/api/event';
+import { revealAfterPaint } from './window-utils';
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage, t } from './i18n';
 import { applyVibrancy } from './appearance';
@@ -147,10 +148,7 @@ export function initUpdaterWindow(): void {
     document.body.insertBefore(dragRegion, container);
   }
 
-  // Show window after first paint (created with visible: false to prevent flash)
-  requestAnimationFrame(() => {
-    void getCurrentWindow().show().then(() => getCurrentWindow().setFocus());
-  });
+  void revealAfterPaint(getCurrentWindow().label);
 }
 
 // ── States ─────────────────────────────────────────────────────────────────────

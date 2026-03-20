@@ -3,6 +3,7 @@ import { createSettingsPanel } from './settings';
 import { initLanguage, setLanguage, t } from './i18n';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { revealAfterPaint } from './window-utils';
 import { readText as clipboardReadText } from '@tauri-apps/plugin-clipboard-manager';
 import { applyVibrancy } from './appearance';
 
@@ -123,10 +124,7 @@ export function initSettingsWindow(): void {
 
   renderPanel();
 
-  // Show window after first paint (created with visible: false to prevent flash)
-  requestAnimationFrame(() => {
-    void getCurrentWindow().show().then(() => getCurrentWindow().setFocus());
-  });
+  void revealAfterPaint(getCurrentWindow().label);
 
   // macOS native menu accelerators emit Tauri events instead of performing
   // native actions. Wire them to document.execCommand so Cmd+C/V/X/A work

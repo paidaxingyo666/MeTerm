@@ -3,6 +3,37 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 
 const isWindows = navigator.userAgent.toLowerCase().includes('windows');
 
+/**
+ * Reveal a window that was created with alphaValue=0 (macOS anti-flash).
+ * Uses a CSS animation probe to detect first paint, then waits one extra
+ * frame (setTimeout 0) to ensure the GPU compositor has committed the
+ * WKWebView content before setting alpha=1.
+ */
+export function revealAfterPaint(label: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let revealed = false;
+    const doReveal = () => {
+      if (revealed) return;
+      revealed = true;
+      probe.remove();
+      style.remove();
+      // Wait for next event loop tick so GPU compositor commits the frame
+      setTimeout(() => {
+        void invoke('reveal_window', { label }).then(() => resolve());
+      }, 50);
+    };
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;top:-1px;left:-1px;width:1px;height:1px;pointer-events:none;animation:_probe 1ms linear 1';
+    const style = document.createElement('style');
+    style.textContent = '@keyframes _probe{from{opacity:0.999}to{opacity:1}}';
+    document.head.appendChild(style);
+    probe.addEventListener('animationstart', doReveal, { once: true });
+    document.body.appendChild(probe);
+    // Fallback
+    setTimeout(() => doReveal(), 500);
+  });
+}
+
 export interface UtilityWindowOptions {
   label: string;
   url: string;

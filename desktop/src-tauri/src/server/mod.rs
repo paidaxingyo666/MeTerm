@@ -21,8 +21,10 @@ pub mod server_info;
 pub mod session;
 pub mod terminal;
 pub mod web_embed;
+pub mod osc_filter;
 pub mod ws;
 
+use std::future::IntoFuture;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
@@ -128,6 +130,25 @@ fn base64_url_encode(data: &[u8]) -> String {
         i += 3;
     }
     result
+}
+
+/// Log the reason the axum serve task exited.
+fn log_serve_exit(result: Result<Result<(), std::io::Error>, tokio::task::JoinError>) {
+    match result {
+        Ok(Ok(())) => eprintln!("[meterm-server] serve returned Ok unexpectedly"),
+        Ok(Err(e)) => eprintln!("[meterm-server] serve error: {}", e),
+        Err(e) if e.is_panic() => {
+            // Extract panic message for diagnostics
+            let panic_val = e.into_panic();
+            let msg = panic_val
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic_val.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| format!("{:?}", panic_val));
+            eprintln!("[meterm-server] PANIC in serve task: {}", msg);
+        }
+        Err(e) => eprintln!("[meterm-server] serve task cancelled: {}", e),
+    }
 }
 
 fn allocate_port() -> Result<u16, String> {
@@ -280,19 +301,48 @@ pub async fn start(config: ServerConfig) -> Result<Arc<ServerState>, String> {
 
     let app = build_router(state.clone());
 
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| format!("bind {}: {}", addr, e))?;
 
+    // Spawn the axum server inside a supervisor that auto-restarts on
+    // panic, error, or unexpected exit. Without this, a single panic in
+    // the serve loop silently kills the server and ALL WebSocket sessions
+    // fail with "Socket is not connected".
+    let state_for_serve = state.clone();
+    let addr_for_restart = addr.clone();
     tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            eprintln!("[meterm-server] axum serve error: {}", e);
+        // First run uses the already-bound listener.
+        log_serve_exit(
+            tokio::spawn(axum::serve(listener, app).into_future()).await
+        );
+
+        // Auto-restart loop: rebind to the same port and rebuild the router.
+        loop {
+            eprintln!("[meterm-server] restarting in 500ms...");
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            let listener = match tokio::net::TcpListener::bind(&addr_for_restart).await {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("[meterm-server] rebind {} failed: {} — retrying", addr_for_restart, e);
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+
+            let app = build_router(state_for_serve.clone());
+            eprintln!("[meterm-server] restarted on {}", addr_for_restart);
+
+            log_serve_exit(
+                tokio::spawn(axum::serve(listener, app).into_future()).await
+            );
         }
     });
 
     state.ready.store(true, Ordering::SeqCst);
-    eprintln!("[meterm-server] ready on 127.0.0.1:{}", port);
+    eprintln!("[meterm-server] ready on 0.0.0.0:{}", port);
 
     Ok(state)
 }

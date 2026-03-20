@@ -374,7 +374,9 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
 						.inner_size(1000.0, 700.0)
 						.resizable(true)
 						.decorations(true)
-						.transparent(true);
+						.transparent(true)
+						.visible(false)
+						.background_color(tauri::window::Color(45, 45, 45, 255));
 
 					#[cfg(target_os = "macos")]
 					{
@@ -391,8 +393,22 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
 							debug_log!("[DEBUG] Successfully created new window: {}", new_window_label);
 							let lifecycle = app.state::<AppLifecycleState>();
 							lifecycle.track_window_created(&new_window_label);
-							let _ = new_window.show();
-							let _ = new_window.set_focus();
+							// macOS: alpha=0 + orderBack: to compositor invisibly
+							#[cfg(target_os = "macos")]
+							{
+								use objc2::msg_send;
+								use objc2_app_kit::NSWindow;
+								if let Ok(ns_ptr) = new_window.ns_window() {
+									let ns_ptr = ns_ptr as *const NSWindow;
+									unsafe {
+										let _: () = msg_send![ns_ptr, setAlphaValue: 0.0_f64];
+										let nil: *const objc2::runtime::AnyObject = std::ptr::null();
+										let _: () = msg_send![ns_ptr, orderBack: nil];
+									}
+								}
+							}
+							#[cfg(not(target_os = "macos"))]
+							{ let _ = &new_window; }
 						}
 						Err(_e) => debug_log!("[DEBUG] Failed to create new window: {}", _e),
 					}
@@ -606,22 +622,27 @@ pub fn run() {
 
     // Server state is created in setup() where Tauri's async runtime is available.
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            startup_log(&format!("Single-instance callback: args={:?}", args));
-            // Another instance was launched — focus the existing main window
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+    let builder = tauri::Builder::default();
 
-                // If the second instance was launched with a path argument, emit open-path event
-                if let Some(path) = extract_open_path(&args) {
-                    startup_log(&format!("Single-instance: emitting open-path: {}", path));
-                    let _ = app.emit("open-path", path);
-                }
+    // Only enforce single-instance in release builds, so dev and installed versions can coexist
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        startup_log(&format!("Single-instance callback: args={:?}", args));
+        // Another instance was launched — focus the existing main window
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+
+            // If the second instance was launched with a path argument, emit open-path event
+            if let Some(path) = extract_open_path(&args) {
+                startup_log(&format!("Single-instance: emitting open-path: {}", path));
+                let _ = app.emit("open-path", path);
             }
-        }))
+        }
+    }));
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init()) // kept for optional Go sidecar fallback
         .plugin(tauri_plugin_fs::init())
@@ -649,6 +670,25 @@ pub fn run() {
                 let lifecycle = app.state::<AppLifecycleState>();
                 for lbl in &win_labels {
                     lifecycle.track_window_created(lbl);
+                }
+            }
+
+            // macOS anti-flash: alpha=0 + orderBack: adds windows to compositor
+            // behind all others. WKWebView renders in background. JS calls
+            // reveal_window (alpha=1 + makeKeyAndOrderFront) after first paint.
+            #[cfg(target_os = "macos")]
+            {
+                use objc2::msg_send;
+                use objc2_app_kit::NSWindow;
+                for (_, win) in app.webview_windows() {
+                    if let Ok(ns_ptr) = win.ns_window() {
+                        let ns_ptr = ns_ptr as *const NSWindow;
+                        unsafe {
+                            let _: () = msg_send![ns_ptr, setAlphaValue: 0.0_f64];
+                            let nil: *const objc2::runtime::AnyObject = std::ptr::null();
+                            let _: () = msg_send![ns_ptr, orderBack: nil];
+                        }
+                    }
                 }
             }
 
@@ -828,6 +868,7 @@ pub fn run() {
             commands::window::set_window_vibrancy,
             commands::window::set_traffic_lights_visible,
             commands::window::restart_app_via_open,
+            commands::window::reveal_window,
             // lan
             commands::lan::toggle_lan_sharing,
             commands::lan::set_discoverable_state,

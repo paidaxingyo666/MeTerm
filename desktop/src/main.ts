@@ -48,6 +48,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { syncTrayLanguage, setCloseAllSessionsHandler } from './window-lifecycle';
+import { revealAfterPaint } from './window-utils';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import {
   setViewManagerCallbacks,
@@ -264,14 +265,24 @@ async function init(): Promise<void> {
   }
 
   // Check if app was launched with a directory path (e.g., from Finder/Explorer context menu)
+  // or auto-create a local session based on user settings.
   if (currentWindowLabel === 'main') {
+    let sessionCreated = false;
     try {
       const initialPath = await invoke<string | null>('take_initial_open_path');
       if (initialPath) {
         await createNewSession(undefined, initialPath);
-        renderToolbarActions();
+        sessionCreated = true;
       }
     } catch { /* ignore */ }
+    // Auto-create local session on startup (if enabled and no session was created above)
+    if (!sessionCreated && settings.autoNewSession) {
+      try {
+        await createNewSession();
+        sessionCreated = true;
+      } catch { /* ignore */ }
+    }
+    if (sessionCreated) renderToolbarActions();
   }
 
   // Sync discoverable (LAN discovery) state from localStorage to tray menu
@@ -312,6 +323,9 @@ async function init(): Promise<void> {
 
   // Signal that this window is ready to receive tab transfers
   await emit('window-ready', { label: getCurrentWindow().label });
+
+  // Reveal window after first paint + GPU compositor commit
+  await revealAfterPaint(getCurrentWindow().label);
 
   // Post-ready event listeners (updater, etc.)
   setupPostReadyEventListeners(currentWindowLabel);

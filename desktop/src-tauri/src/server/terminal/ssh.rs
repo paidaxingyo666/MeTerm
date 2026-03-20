@@ -214,14 +214,12 @@ impl SshTerminal {
             .await
             .map_err(|e| format!("channel open: {}", e))?;
 
-        // Request PTY with ECHO off so hook injection is invisible.
-        // The hook ends with `stty echo` to re-enable echo before first prompt.
-        // Matches Go ssh.go behavior.
+        // ECHO OFF for invisible hook injection. The hook ends with `stty echo`
+        // to restore echo before the first prompt. OSC sequences produced by the
+        // hook are intercepted by Rust OscFilter, so this is safe on all platforms.
         let terminal_modes = if config.disable_hook {
-            // JumpServer: keep echo on, no hook
             vec![(russh::Pty::ECHO, 1), (russh::Pty::TTY_OP_ISPEED, 14400), (russh::Pty::TTY_OP_OSPEED, 14400)]
         } else {
-            // Normal: echo off for invisible hook injection
             vec![(russh::Pty::ECHO, 0), (russh::Pty::TTY_OP_ISPEED, 14400), (russh::Pty::TTY_OP_OSPEED, 14400)]
         };
         channel
@@ -234,9 +232,10 @@ impl SshTerminal {
             .await
             .map_err(|e| format!("request shell: {}", e))?;
 
-        // Inject shell hook invisibly (ECHO is off).
-        // Sends OSC 7 (CWD), OSC 7766 (shell type), OSC 7768 (shell state) before each prompt.
-        // Leading space prevents shell history. `stty echo` at the end restores echo.
+        // Inject shell hook immediately (ECHO is off, so it's invisible).
+        // The hook sends OSC 7/7766/7768 before each prompt for CWD tracking
+        // and command history. `stty echo` at the end restores echo.
+        // OSC sequences are intercepted by Rust OscFilter — safe on all platforms.
         if !config.disable_hook {
             let hook = " __meterm_precmd(){ \
                 local e=$?; local c; \
@@ -276,8 +275,7 @@ impl SshTerminal {
                     msg = channel.wait() => {
                         match msg {
                             Some(ChannelMsg::Data { data }) => {
-                                let chunk = data.to_vec();
-                                if output_tx.send(Ok(chunk)).await.is_err() {
+                                if output_tx.send(Ok(data.to_vec())).await.is_err() {
                                     break;
                                 }
                             }

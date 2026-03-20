@@ -78,8 +78,13 @@ html.pip-mode #main-content {
   height: 14px;
 }
 
-/* Toolbar pin button — active state (in normal mode toolbar) */
+/* Toolbar PiP button — active state */
 .pip-pin-btn.active {
+  color: var(--accent, #4c7eff) !important;
+}
+
+/* Toolbar always-on-top button — active state */
+.always-on-top-btn.active {
   color: var(--accent, #4c7eff) !important;
 }
 

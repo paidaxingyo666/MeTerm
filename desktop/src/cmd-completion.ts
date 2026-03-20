@@ -159,6 +159,7 @@ export class InlineCompletion {
     // Position based on xterm cursor
     const buf = this.terminal.buffer.active;
     const core = (this.terminal as any)._core;
+    if (!core?._optionsService) { this.hideGhost(); return; }
     const dims = core?._renderService?.dimensions?.css?.cell;
     if (!dims) { this.hideGhost(); return; }
 

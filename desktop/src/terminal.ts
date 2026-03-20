@@ -28,7 +28,7 @@ import {
 } from './terminal-settings';
 import { scheduleResize as _scheduleResize, sendResize } from './terminal-resize';
 import { initIMEState, setupKeyHandler, setupCompositionListeners } from './terminal-ime';
-import { registerOscHandlers } from './terminal-osc';
+import { handleOscEvents, type OscHandlerCallbacks } from './terminal-osc';
 import { setShellType } from './ai-tools';
 import { connectWebSocket, scheduleReconnect as _scheduleReconnect } from './terminal-websocket';
 import { InlineCompletion } from './cmd-completion';
@@ -394,14 +394,9 @@ class TerminalRegistryClass {
       shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0, lastCommand: '' },
     };
 
-    // Register all OSC handlers (7766, 7, 7768, 9, 777)
-    registerOscHandlers(mt, terminal, {
-      onShellIdle: (sid) => {
-        const listeners = this.shellStateListeners.get(sid);
-        if (listeners) listeners.forEach(cb => cb());
-      },
-      onShellTypeDetected: setShellType,
-    });
+    // OSC 7/7766/7768/9/777 are intercepted by Rust OscFilter and delivered
+    // via MSG_OSC_EVENT → wsCallbacks.onOscEvent → handleOscEvents.
+    // OSC 10/11 (color queries) remain in terminal-settings.ts.
 
     // IME 修复 + 快捷键处理
     initIMEState(mt);
@@ -490,6 +485,14 @@ class TerminalRegistryClass {
     return mt;
   }
 
+  private oscCallbacks: OscHandlerCallbacks = {
+    onShellIdle: (sid) => {
+      const listeners = this.shellStateListeners.get(sid);
+      if (listeners) listeners.forEach(cb => cb());
+    },
+    onShellTypeDetected: setShellType,
+  };
+
   private wsCallbacks = {
     scheduleSettleResize: (mt: ManagedTerminal) => this.scheduleSettleResize(mt),
     getSettings: () => this.settings,
@@ -500,6 +503,9 @@ class TerminalRegistryClass {
     getPingTimestamp: (sessionId: string) => this.pingTimestamps.get(sessionId),
     deletePingTimestamp: (sessionId: string) => this.pingTimestamps.delete(sessionId),
     onReconnectNeeded: (mt: ManagedTerminal) => this.scheduleReconnect(mt),
+    onOscEvent: (mt: ManagedTerminal, payload: Uint8Array) => {
+      handleOscEvents(mt, payload, this.oscCallbacks);
+    },
   };
 
   private connect(mt: ManagedTerminal): void {
@@ -613,35 +619,64 @@ class TerminalRegistryClass {
     });
   }
 
+  /** Cancel all pending debounce and settle timers to prevent interference. */
+  cancelPendingResizeTimers(): void {
+    this.terminals.forEach((mt) => {
+      if (mt.resizeDebounce !== null) {
+        clearTimeout(mt.resizeDebounce);
+        mt.resizeDebounce = null;
+      }
+      mt.settleTimers.forEach((t) => clearTimeout(t));
+      mt.settleTimers = [];
+    });
+  }
+
   /**
    * Force xterm.js + TUI apps to fully redraw after PiP exit.
    *
-   * Both xterm.js terminal.resize() and fitAddon.fit() are no-ops
-   * when cols/rows haven't changed. The CSS transform during PiP
-   * may leave the canvas/WebGL renderer stale. We force a real
-   * resize cycle by temporarily changing dimensions, then restoring.
+   * POSIX ioctl(TIOCSWINSZ) only generates SIGWINCH when the PTY
+   * size actually changes. During PiP the PTY dimensions are frozen,
+   * so on exit the cols/rows are identical to what the PTY already has.
+   * Sending the same size produces no SIGWINCH and the TUI never redraws.
+   *
+   * Fix: send cols-1 to the backend first (real PTY size change → SIGWINCH),
+   * wait for the signal to be delivered and handled, then restore the
+   * correct cols (another change → another SIGWINCH → TUI full redraw).
+   *
+   * The delay between steps is critical: POSIX signals are not queued —
+   * if a second SIGWINCH arrives before the first is handled, it is
+   * silently dropped by the kernel.
    */
-  forceFullRefresh(): void {
+  async forceFullRefresh(): Promise<void> {
+    const targets: { mt: ManagedTerminal; cols: number; rows: number }[] = [];
+
     this.terminals.forEach((mt) => {
       if (!mt.container.classList.contains('active') || mt.ended) return;
-
       const cols = mt.terminal.cols;
       const rows = mt.terminal.rows;
       if (cols <= 1 || rows <= 0) return;
+      targets.push({ mt, cols, rows });
+    });
 
-      // Force xterm.js to resize by temporarily changing cols,
-      // then fitting back to correct dimensions.
+    if (targets.length === 0) return;
+
+    // Step 1: shrink cols by 1 in both xterm.js AND the backend PTY.
+    for (const { mt, cols, rows } of targets) {
       mt.terminal.resize(cols - 1, rows);
-      mt.fitAddon.fit();
+      sendResize(mt, cols - 1, rows);
+    }
 
-      // Send resize to backend to trigger SIGWINCH
+    // Wait for SIGWINCH delivery + TUI signal handler to run
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Step 2: restore correct dimensions via fitAddon + backend.
+    for (const { mt } of targets) {
+      mt.fitAddon.fit();
       const newCols = mt.terminal.cols;
       const newRows = mt.terminal.rows;
       sendResize(mt, newCols, newRows);
-
-      // Full visual repaint
       mt.terminal.refresh(0, newRows - 1);
-    });
+    }
   }
 
   clearActive(): void {
@@ -936,14 +971,7 @@ class TerminalRegistryClass {
       shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0, lastCommand: '' },
     };
 
-    // Register all OSC handlers (7766, 7768, 9, 777) — skip OSC 7 and prefetch for transfer
-    registerOscHandlers(mt, terminal, {
-      onShellIdle: (sid) => {
-        const listeners = this.shellStateListeners.get(sid);
-        if (listeners) listeners.forEach(cb => cb());
-      },
-      onShellTypeDetected: setShellType,
-    }, { includeOsc7: false, includePrefetch: false });
+    // OSC handlers are processed by Rust OscFilter → MSG_OSC_EVENT → handleOscEvents.
 
     // IME 修复 + 快捷键处理（register before open — these work before open()）
     initIMEState(mt);
@@ -1078,6 +1106,12 @@ class TerminalRegistryClass {
         try { mt.ws.close(); } catch { /* ignore */ }
         mt.ws = null;
       }
+
+      // Suppress role-change events during the reconnect window to prevent
+      // false "remote control" overlays when both old and new server-side
+      // connections are briefly active for the same session.
+      mt._transferGrace = true;
+      setTimeout(() => { mt._transferGrace = false; }, 3000);
 
       // Reconnect
       this.connect(mt);

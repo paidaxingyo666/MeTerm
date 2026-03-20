@@ -142,7 +142,7 @@ pub fn set_app_menu_language(app: &AppHandle, language: &str) -> Result<(), Stri
         .map_err(|e| e.to_string())?;
     let file_new_terminal_item = MenuItem::with_id(app, "new_terminal", app_label(language, "new_terminal"), true, Some("CmdOrCtrl+T"))
         .map_err(|e| e.to_string())?;
-    let file_show_home_item = MenuItem::with_id(app, "show_home", app_label(language, "show_home"), true, Some("CmdOrCtrl+1"))
+    let file_show_home_item = MenuItem::with_id(app, "show_home", app_label(language, "show_home"), true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let file_close_all_item = MenuItem::with_id(app, "close_all_sessions", app_label(language, "close_all_sessions"), true, None::<&str>)
         .map_err(|e| e.to_string())?;
@@ -177,7 +177,7 @@ pub fn set_app_menu_language(app: &AppHandle, language: &str) -> Result<(), Stri
     )
     .map_err(|e| e.to_string())?;
 
-    let view_show_home_item = MenuItem::with_id(app, "show_home", app_label(language, "show_home"), true, Some("CmdOrCtrl+1"))
+    let view_show_home_item = MenuItem::with_id(app, "show_home", app_label(language, "show_home"), true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let view_pip_item = MenuItem::with_id(app, "pip_toggle", app_label(language, "pip_toggle"), true, Some("CmdOrCtrl+Shift+P"))
         .map_err(|e| e.to_string())?;
@@ -189,7 +189,7 @@ pub fn set_app_menu_language(app: &AppHandle, language: &str) -> Result<(), Stri
 
     let window_new_window_item = MenuItem::with_id(app, "new_window", app_label(language, "new_window"), true, Some("CmdOrCtrl+N"))
         .map_err(|e| e.to_string())?;
-    let window_show_home_item = MenuItem::with_id(app, "show_home", app_label(language, "show_home"), true, Some("CmdOrCtrl+1"))
+    let window_show_home_item = MenuItem::with_id(app, "show_home", app_label(language, "show_home"), true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let window_new_terminal_item = MenuItem::with_id(app, "new_terminal", app_label(language, "new_terminal"), true, Some("CmdOrCtrl+T"))
         .map_err(|e| e.to_string())?;

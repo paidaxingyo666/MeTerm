@@ -16,8 +16,9 @@ import { DrawerManager } from './drawer';
 import { isJumpServerPanelOpen, closeJumpServerPanel } from './jumpserver-panel';
 import { setIsPipMode, isHomeView, isGalleryView, isMacPlatform, settings } from './app-state';
 import { activateTab } from './view-manager';
-import { renderToolbarActions } from './toolbar';
+import { renderToolbarActions, getAlwaysOnTop } from './toolbar';
 import { icon } from './icons';
+import { TerminalRegistry } from './terminal';
 
 // ── Constants ──
 
@@ -138,11 +139,28 @@ export async function enterPip(): Promise<void> {
   const originalW = panel ? panel.clientWidth : pipState.originalWidth;
   const originalH = panel ? panel.clientHeight : pipState.originalHeight;
 
-  // Scale from settings (percentage of original size)
-  const scalePct = Math.max(10, Math.min(50, settings?.pipScale ?? 15));
-  const scale = scalePct / 100;
-  const pipWidth = Math.round(originalW * scale);
-  const pipHeight = Math.round(originalH * scale);
+  // Scale from settings
+  const scalePct = Math.max(10, Math.min(50, settings?.pipScale ?? 30));
+  const scaleByScreen = settings?.pipScaleByScreen ?? false;
+
+  let pipWidth: number;
+  let pipHeight: number;
+  let scale: number;
+
+  if (scaleByScreen) {
+    // Scale relative to screen size, maintaining the window's aspect ratio.
+    // Use screen width × percentage as target PiP width, then derive height
+    // from the original window's aspect ratio so the content isn't distorted.
+    const screenW = window.screen.availWidth;
+    pipWidth = Math.round(screenW * scalePct / 100);
+    pipHeight = Math.round(pipWidth * (originalH / originalW));
+    scale = pipWidth / originalW;
+  } else {
+    // Scale relative to the current window size
+    scale = scalePct / 100;
+    pipWidth = Math.round(originalW * scale);
+    pipHeight = Math.round(originalH * scale);
+  }
 
   // Apply inline styles FIRST to lock pixel dimensions and add transform,
   // THEN add pip-mode class. Order matters — pip-mode CSS changes grid layout,
@@ -230,23 +248,33 @@ export async function exitPip(): Promise<void> {
   // Restore resizability
   await win.setResizable(true);
 
-  // Restore window properties
-  await win.setAlwaysOnTop(false);
+  // Restore always-on-top: keep pin state if it was on before PiP
+  await win.setAlwaysOnTop(getAlwaysOnTop());
   await win.setPosition(new LogicalPosition(pipState.originalX, pipState.originalY));
 
-  // Restore to a slightly different size first, then to the exact original.
-  // This simulates a manual window resize — the real size change forces the
-  // entire chain: container resize → fitAddon.fit() → terminal.resize()
-  // with new cols/rows → sendResize → SIGWINCH → TUI full redraw.
   const origW = pipState.originalWidth;
   const origH = pipState.originalHeight;
   const drawerSessionIds = pipState.openDrawerSessionIds;
   const savedBrowserState = pipState.browserWindowState;
   pipState = null;
 
-  await win.setSize(new LogicalSize(origW + 2, origH + 2));
-  await new Promise(resolve => setTimeout(resolve, 150));
+  // Hide terminal panel during the resize transition to avoid showing
+  // the TUI in a broken/bunched-up state before SIGWINCH triggers redraw.
+  const termPanel = document.getElementById('terminal-panel');
+  if (termPanel) termPanel.style.opacity = '0';
+
+  // Restore original window size
   await win.setSize(new LogicalSize(origW, origH));
+
+  // Wait for layout to settle (CSS reflow + window resize propagation),
+  // then cancel all pending debounce/settle timers so they don't interfere
+  // with the two-step force refresh below.
+  await new Promise(resolve => setTimeout(resolve, 80));
+  TerminalRegistry.cancelPendingResizeTimers();
+  await TerminalRegistry.forceFullRefresh();
+
+  // Reveal terminal with correct TUI rendering
+  if (termPanel) termPanel.style.opacity = '';
 
   // Update slot tracking
   pipWindows.delete(label);
@@ -365,13 +393,13 @@ function showTabSelectionPopup(): Promise<string | null> {
   });
 }
 
-/** Create a floating pin button that hovers over the PiP terminal. */
+/** Create a floating PiP button that hovers over the PiP terminal. */
 function createFloatingPinButton(): void {
   removeFloatingPinButton();
   const btn = document.createElement('button');
   btn.className = 'pip-floating-pin-btn';
   btn.type = 'button';
-  btn.innerHTML = `<span class="tab-icon">${icon('pin')}</span>`;
+  btn.innerHTML = `<span class="tab-icon">${icon('pip')}</span>`;
   btn.onclick = () => { void togglePip(); };
   document.getElementById('app')?.appendChild(btn);
 }

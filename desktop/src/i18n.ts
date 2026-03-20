@@ -61,6 +61,9 @@ export interface Translations {
   shortcutSplitHorizontal: string;
   shortcutSplitVertical: string;
   shortcutNavigatePanes: string;
+  shortcutSwitchToTab: string;
+  shortcutNextTab: string;
+  shortcutPrevTab: string;
   colorScheme: string;
   colorSchemeAuto: string;
   colorSchemeDark: string;
@@ -70,6 +73,7 @@ export interface Translations {
   rememberWindowSize: string;
   rememberDrawerLayout: string;
   pipScale: string;
+  pipScaleByScreen: string;
   sessionsGallery: string;
   sshConnect: string;
   sshHost: string;
@@ -423,6 +427,7 @@ export interface Translations {
   fileLinkLocalConfirmMsg: string;
   fileLinkConfirmOpen: string;
   fileLinkSkipConfirmSetting: string;
+  autoNewSession: string;
   // tldr & command completion
   tldrHelp: string;
   tldrEnable: string;
@@ -582,6 +587,9 @@ const translations: Record<Language, Translations> = {
     shortcutSplitHorizontal: 'Split Horizontal',
     shortcutSplitVertical: 'Split Vertical',
     shortcutNavigatePanes: 'Navigate Between Panes',
+    shortcutSwitchToTab: 'Switch to Tab 1–8 / Last',
+    shortcutNextTab: 'Next Tab',
+    shortcutPrevTab: 'Previous Tab',
     colorScheme: 'Appearance',
     colorSchemeAuto: 'Auto (System)',
     colorSchemeDark: 'Dark',
@@ -591,6 +599,7 @@ const translations: Record<Language, Translations> = {
     rememberWindowSize: 'Remember Window Size',
     rememberDrawerLayout: 'Remember Drawer Layout',
     pipScale: 'PiP Window Scale',
+    pipScaleByScreen: 'Scale relative to screen size',
     sessionsGallery: 'Sessions',
     sshConnect: 'SSH Connection',
     sshHost: 'Host',
@@ -927,6 +936,7 @@ const translations: Record<Language, Translations> = {
     fileLinkLocalConfirmMsg: 'Open <code>{path}</code> with system default application?',
     fileLinkConfirmOpen: 'Open',
     fileLinkSkipConfirmSetting: 'Show file link open confirmation',
+    autoNewSession: 'Auto-create local session on startup',
     // JumpServer
     jsEditServer: 'Edit JumpServer',
     jsAddServer: 'Add JumpServer',
@@ -1100,6 +1110,9 @@ const translations: Record<Language, Translations> = {
     shortcutSplitHorizontal: '水平分屏',
     shortcutSplitVertical: '垂直分屏',
     shortcutNavigatePanes: '在面板间导航',
+    shortcutSwitchToTab: '切换到第 1–8 / 最后一个标签',
+    shortcutNextTab: '下一个标签',
+    shortcutPrevTab: '上一个标签',
     colorScheme: '外观模式',
     colorSchemeAuto: '自动（跟随系统）',
     colorSchemeDark: '深色',
@@ -1109,6 +1122,7 @@ const translations: Record<Language, Translations> = {
     rememberWindowSize: '记住窗口大小',
     rememberDrawerLayout: '记住抽屉布局',
     pipScale: '画中画窗口缩放比例',
+    pipScaleByScreen: '根据屏幕大小比例进行缩放',
     sessionsGallery: '会话总览',
     sshConnect: 'SSH 连接',
     sshHost: '主机地址',
@@ -1445,6 +1459,7 @@ const translations: Record<Language, Translations> = {
     fileLinkLocalConfirmMsg: '是否使用系统默认程序打开 <code>{path}</code>？',
     fileLinkConfirmOpen: '打开',
     fileLinkSkipConfirmSetting: '显示文件链接打开确认弹窗',
+    autoNewSession: '启动时自动创建本地会话',
     // JumpServer
     jsEditServer: '编辑 JumpServer',
     jsAddServer: '添加 JumpServer',

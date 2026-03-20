@@ -1,4 +1,3 @@
-import type { Terminal } from '@xterm/xterm';
 import { encodeMessage, MsgFileList } from './protocol';
 import { sanitizeNotificationText } from './terminal-patches';
 import { prefetchDirCache } from './terminal-file-link';
@@ -8,144 +7,133 @@ import type { ManagedTerminal } from './terminal-types';
 export interface OscHandlerCallbacks {
   /** Called when shell state transitions to idle (OSC 7768) */
   onShellIdle: (sessionId: string) => void;
-  /** Called when Go-installed hook reports its shell type via OSC 7766 meterm_init */
+  /** Called when hook reports its shell type via OSC 7766 meterm_init */
   onShellTypeDetected?: (sessionId: string, shellType: string) => void;
 }
 
 /**
- * Register all OSC handlers on a terminal instance.
- * Shared between create() and attachFromTransfer().
+ * Handle OSC events received from the Rust backend via MSG_OSC_EVENT.
  *
- * @param includeOsc7 - Whether to register OSC 7 (CWD tracking). Set false for
- *   attachFromTransfer where OSC 7 is not needed before connection.
- * @param includePrefetch - Whether to call prefetchDirCache in OSC 7768 handler.
+ * The Rust OscFilter intercepts OSC 7/7766/7768/9/777 sequences from terminal
+ * output and sends them as structured JSON events over WebSocket. This function
+ * processes those events — updating shell state, triggering callbacks, etc.
+ *
+ * OSC 10/11 (color queries) are NOT intercepted by Rust and continue to be
+ * handled directly by xterm.js in terminal-settings.ts.
  */
-export function registerOscHandlers(
+export function handleOscEvents(
   mt: ManagedTerminal,
-  terminal: Terminal,
+  payload: Uint8Array,
   callbacks: OscHandlerCallbacks,
-  options: { includeOsc7?: boolean; includePrefetch?: boolean } = {},
+  options: { includePrefetch?: boolean } = {},
 ): void {
-  const { includeOsc7 = true, includePrefetch = true } = options;
-
-  // OSC 7766: agent command completion markers.
-  // The shell sends `printf '\033]7766;MARKER_ID;EXIT_CODE\007'` which
-  // xterm.js consumes silently (never written to terminal buffer).
-  terminal.parser.registerOscHandler(7766, (data: string) => {
-    const sep = data.indexOf(';');
-    if (sep === -1) return true;
-    const markerId = data.slice(0, sep);
-    const exitCode = parseInt(data.slice(sep + 1), 10);
-    // Handle Go-installed hook's shell type report (meterm_init marker).
-    // Uses callback to avoid circular dependency (terminal-osc → ai-tools → terminal).
-    if (markerId === 'meterm_init') {
-      const shellTypes = ['bash', 'zsh', 'fish', 'powershell'] as const;
-      const code = isNaN(exitCode) ? -1 : exitCode;
-      if (code >= 0 && code < shellTypes.length) {
-        callbacks.onShellTypeDetected?.(mt.id, shellTypes[code]);
-      }
-      mt.shellState.hookInjected = true;
-      return true;
-    }
-    const resolver = mt._oscMarkerResolvers.get(markerId);
-    if (resolver) {
-      mt._oscMarkerResolvers.delete(markerId);
-      resolver(isNaN(exitCode) ? -1 : exitCode);
-    }
-    return true;
-  });
-
-  // OSC 7: CWD tracking.
-  // macOS zsh emits this by default (via /etc/zshrc update_terminal_cwd).
-  // Windows: PowerShell/cmd.exe hook injected by Go backend at shell startup.
-  // SSH sessions receive OSC 7 from injected hook.
-  // Format: file://hostname/path/to/dir  or  file:///path/to/dir
-  if (includeOsc7) {
-    terminal.parser.registerOscHandler(7, (data: string) => {
-      try {
-        const url = new URL(data);
-        if (url.protocol === 'file:') {
-          let cwd = decodeURIComponent(url.pathname);
-          // Windows: URL.pathname gives /C:/path — strip leading / for valid path
-          if (/^\/[A-Za-z]:/.test(cwd)) cwd = cwd.slice(1);
-          if (cwd && cwd !== mt.shellState.cwd) {
-            mt.shellState.cwd = cwd;
-            // 本地会话：预取本地目录缓存
-            // SSH 会话：通过 SFTP 请求远程目录列表
-            if (DrawerManager.getServerInfo(mt.id)) {
-              if (mt.ws?.readyState === WebSocket.OPEN) {
-                try {
-                  const req = JSON.stringify({ path: cwd });
-                  mt.ws.send(encodeMessage(MsgFileList, new TextEncoder().encode(req)));
-                } catch { /* ignore */ }
-              }
-            } else {
-              prefetchDirCache(cwd);
-            }
-          }
-        }
-      } catch { /* ignore malformed URLs */ }
-      return true;
-    });
+  const { includePrefetch = true } = options;
+  let events: OscEventPayload[];
+  try {
+    events = JSON.parse(new TextDecoder().decode(payload));
+    if (!Array.isArray(events)) events = [events];
+  } catch {
+    return;
   }
 
-  // OSC 7768: shell state machine (prompt hook).
-  // The injected __meterm_precmd sends `\033]7768;EXIT_CODE;CWD;LAST_CMD\007` before each prompt.
-  terminal.parser.registerOscHandler(7768, (data: string) => {
-    const sep = data.indexOf(';');
-    if (sep === -1) return true;
-    const exitCode = parseInt(data.slice(0, sep), 10);
-    const rest = data.slice(sep + 1);
-    const sep2 = rest.indexOf(';');
-    const cwd = sep2 === -1 ? rest : rest.slice(0, sep2);
-    const lastCmd = sep2 === -1 ? '' : rest.slice(sep2 + 1);
-    mt.shellState.lastExitCode = isNaN(exitCode) ? -1 : exitCode;
-    mt.shellState.cwd = cwd;
-    mt.shellState.lastCommand = lastCmd;
-    mt.shellState.phase = 'ready';
-    // Mark hook as working on first OSC 7768 — covers both Go-installed
-    // hooks (ZDOTDIR/--rcfile) and frontend-injected hooks.
-    mt.shellState.hookInjected = true;
-    if (includePrefetch) {
-      prefetchDirCache(cwd);
+  for (const ev of events) {
+    switch (ev.t) {
+      case 'cwd': {
+        const cwd = ev.cwd;
+        if (cwd && cwd !== mt.shellState.cwd) {
+          mt.shellState.cwd = cwd;
+          if (DrawerManager.getServerInfo(mt.id)) {
+            // SSH session: request remote directory listing via SFTP
+            if (mt.ws?.readyState === WebSocket.OPEN) {
+              try {
+                const req = JSON.stringify({ path: cwd });
+                mt.ws.send(encodeMessage(MsgFileList, new TextEncoder().encode(req)));
+              } catch { /* ignore */ }
+            }
+          } else {
+            // Local session: prefetch local directory cache
+            prefetchDirCache(cwd);
+          }
+        }
+        break;
+      }
+      case 'marker': {
+        const { id, data } = ev;
+        if (id === 'meterm_init') {
+          const shellTypes = ['bash', 'zsh', 'fish', 'powershell'] as const;
+          const code = parseInt(data, 10);
+          if (!isNaN(code) && code >= 0 && code < shellTypes.length) {
+            callbacks.onShellTypeDetected?.(mt.id, shellTypes[code]);
+          }
+          mt.shellState.hookInjected = true;
+        } else {
+          const resolver = mt._oscMarkerResolvers.get(id);
+          if (resolver) {
+            mt._oscMarkerResolvers.delete(id);
+            resolver(parseInt(data, 10) || 0);
+          }
+        }
+        break;
+      }
+      case 'shell': {
+        mt.shellState.lastExitCode = ev.exit ?? 0;
+        mt.shellState.cwd = ev.cwd ?? '';
+        mt.shellState.lastCommand = ev.cmd ?? '';
+        mt.shellState.phase = 'ready';
+        mt.shellState.hookInjected = true;
+        if (includePrefetch && ev.cwd) {
+          prefetchDirCache(ev.cwd);
+        }
+        callbacks.onShellIdle(mt.id);
+        break;
+      }
+      case 'progress': {
+        const state = ev.state ?? 0;
+        const percent = ev.percent ?? 0;
+        if (state < 0 || state > 3) break;
+        document.dispatchEvent(new CustomEvent('osc-progress', {
+          detail: { sessionId: mt.id, state, percent: state === 0 ? 0 : percent },
+        }));
+        break;
+      }
+      case 'notify': {
+        const title = sanitizeNotificationText(ev.title || 'Terminal');
+        const body = sanitizeNotificationText(ev.body || '');
+        if (!body) break;
+        document.dispatchEvent(new CustomEvent('osc-notify', {
+          detail: { sessionId: mt.id, title, body },
+        }));
+        break;
+      }
     }
-    callbacks.onShellIdle(mt.id);
-    return true;
-  });
-
-  // OSC 9: progress indicator (4;state;percent) + general notification
-  terminal.parser.registerOscHandler(9, (data: string) => {
-    const parts = data.split(';');
-    if (parts[0] === '4' && parts.length >= 3) {
-      const state = parseInt(parts[1], 10);
-      const percent = parseInt(parts[2], 10);
-      if (isNaN(state) || state < 0 || state > 3) return false;
-      if (state !== 0 && state !== 3 && (isNaN(percent) || percent < 0 || percent > 100)) return false;
-      document.dispatchEvent(new CustomEvent('osc-progress', {
-        detail: { sessionId: mt.id, state, percent: state === 0 ? 0 : percent },
-      }));
-      return true;
-    }
-    // General OSC 9 notification (plain text)
-    const body = sanitizeNotificationText(data);
-    if (!body) return false;
-    document.dispatchEvent(new CustomEvent('osc-notify', {
-      detail: { sessionId: mt.id, title: 'Terminal', body },
-    }));
-    return true;
-  });
-
-  // OSC 777: notify;title;body
-  terminal.parser.registerOscHandler(777, (data: string) => {
-    const parts = data.split(';');
-    if (parts[0] !== 'notify' || parts.length < 3) return false;
-    document.dispatchEvent(new CustomEvent('osc-notify', {
-      detail: {
-        sessionId: mt.id,
-        title: sanitizeNotificationText(parts[1]),
-        body: sanitizeNotificationText(parts.slice(2).join(';')),
-      },
-    }));
-    return true;
-  });
+  }
 }
+
+// --- Legacy xterm.js OSC handler registration (kept for OSC 7766 marker resolvers) ---
+// OSC 7/7768/9/777 are now handled by Rust OscFilter + handleOscEvents above.
+// OSC 7766 marker resolvers still need xterm.js registration because the AI agent
+// sends commands and waits for marker responses — but since Rust now intercepts 7766,
+// the resolver is triggered by handleOscEvents, not xterm.js.
+// So we keep registerOscHandlers as a no-op (callers still import it for type compat).
+
+/**
+ * @deprecated OSC handlers are now processed via Rust MSG_OSC_EVENT.
+ * This function is kept for backward compatibility but registers nothing.
+ */
+export function registerOscHandlers(
+  _mt: ManagedTerminal,
+  _terminal: import('@xterm/xterm').Terminal,
+  _callbacks: OscHandlerCallbacks,
+  _options?: { includeOsc7?: boolean; includePrefetch?: boolean },
+): void {
+  // No-op: OSC 7/7766/7768/9/777 are intercepted by Rust OscFilter.
+  // OSC 10/11 are registered in terminal-settings.ts (unchanged).
+}
+
+/** Payload types matching Rust OscEvent serde output */
+interface OscCwd { t: 'cwd'; cwd: string }
+interface OscMarker { t: 'marker'; id: string; data: string }
+interface OscShellState { t: 'shell'; exit: number; cwd: string; cmd: string }
+interface OscProgress { t: 'progress'; state: number; percent: number }
+interface OscNotify { t: 'notify'; title: string; body: string }
+type OscEventPayload = OscCwd | OscMarker | OscShellState | OscProgress | OscNotify;

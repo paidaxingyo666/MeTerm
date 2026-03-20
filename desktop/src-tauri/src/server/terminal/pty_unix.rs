@@ -71,7 +71,11 @@ impl PtyTerminal {
             None
         };
 
-        // ── macOS: two-stage login shell ────────────────────────────────────
+        // ── macOS: /usr/bin/login + two-stage shell ─────────────────────────
+        // Uses `login -fp <user> <shell> -c <inner_cmd>` which:
+        //   1. Prints "Last login: <time> on <tty>" (reads/writes utmpx with root via setuid)
+        //   2. Execs the specified shell as a login shell (argv[0] = "-zsh"/"-bash")
+        //   3. Shell runs inner_cmd which sets TERM and exec's to interactive Stage 2
         #[cfg(target_os = "macos")]
         {
             if !is_csh_family(&shell) {
@@ -87,7 +91,8 @@ impl PtyTerminal {
                 // Build Stage 2 inner command
                 let inner_cmd = if basename == "bash" {
                     if let Some(ref dir) = hook_dir {
-                        format!("export TERM=xterm-256color; exec {} -i --rcfile {}/.bashrc", shell, dir)
+                        // GNU long options (--rcfile) must precede short options (-i) for bash 3.2
+                        format!("export TERM=xterm-256color; exec {} --rcfile {}/.bashrc -i", shell, dir)
                     } else {
                         format!("export TERM=xterm-256color; exec {} -i", shell)
                     }
@@ -95,14 +100,29 @@ impl PtyTerminal {
                     format!("export TERM=xterm-256color; exec {} -i", shell)
                 };
 
-                // Use full shell path as argv[0] (matches Go exec.Command behavior).
-                // The -l flag marks login shell; no need for the Unix "-basename" convention.
                 let argv = cmd.get_argv_mut();
                 argv.clear();
-                argv.push(shell.clone().into());
-                argv.push("-l".into());
-                argv.push("-c".into());
-                argv.push(inner_cmd.into());
+
+                // Use /usr/bin/login for "Last login" message + utmpx tracking.
+                // login is setuid root so it can read/write utmpx.
+                // Format: login -fp <user> <shell> <shell_args...>
+                // login execs <shell> with argv[0]="-<basename>" (login shell convention),
+                // passing <shell_args> as additional arguments.
+                let username = std::env::var("USER").unwrap_or_default();
+                if !username.is_empty() {
+                    argv.push("/usr/bin/login".into());
+                    argv.push("-fp".into());
+                    argv.push(username.into());
+                    argv.push(shell.clone().into());
+                    argv.push("-c".into());
+                    argv.push(inner_cmd.into());
+                } else {
+                    // Fallback: direct spawn without login
+                    argv.push(shell.clone().into());
+                    argv.push("-l".into());
+                    argv.push("-c".into());
+                    argv.push(inner_cmd.into());
+                }
             } else {
                 cmd.env("TERM", "xterm-256color");
             }
@@ -279,6 +299,9 @@ fn create_zsh_hooks(dir: &std::path::Path) {
         dir.join(".zshrc"),
         "# MeTerm: proxy user zshrc + install precmd hook\n\
          ZDOTDIR=\"$HOME\"\n\
+         # Fix HISTFILE: ZDOTDIR override causes zsh default HISTFILE to point at temp hook dir.\n\
+         # Reset to standard default; user .zshrc can still override.\n\
+         HISTFILE=\"$HOME/.zsh_history\"\n\
          [[ -f \"$HOME/.zshrc\" ]] && source \"$HOME/.zshrc\"\n\
          \n\
          # ── MeTerm shell hook (precmd) ──\n\
@@ -355,6 +378,7 @@ mod tests {
         assert!(zshrc.contains("__meterm_precmd"));
         assert!(zshrc.contains("7766;meterm_init;1"));
         assert!(zshrc.contains("7768"));
+        assert!(zshrc.contains("HISTFILE=\"$HOME/.zsh_history\""), "HISTFILE fix must be present");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

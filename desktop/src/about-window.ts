@@ -3,6 +3,7 @@
  * Loaded when URL contains ?window=about.
  */
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { revealAfterPaint } from './window-utils';
 import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { loadSettings, resolveIsDark } from './themes';
@@ -63,8 +64,5 @@ export function initAboutWindow(): void {
     if (versionEl) versionEl.textContent = `v${version}`;
   }).catch(() => {});
 
-  // Show window after first paint (created with visible: false to prevent flash)
-  requestAnimationFrame(() => {
-    void getCurrentWindow().show().then(() => getCurrentWindow().setFocus());
-  });
+  void revealAfterPaint(getCurrentWindow().label);
 }

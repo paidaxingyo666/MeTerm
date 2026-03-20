@@ -356,6 +356,7 @@ export function createGeneralTab(
     <label><input type="checkbox" id="remember-drawer-layout" ${current.rememberDrawerLayout ? 'checked' : ''}> ${t('rememberDrawerLayout')}</label>
     <label><input type="checkbox" id="terminal-notifications-toggle" ${current.enableTerminalNotifications ? 'checked' : ''}> ${t('enableTerminalNotifications')}</label>
     <label><input type="checkbox" id="file-link-confirm-toggle" ${!current.fileLinkSkipConfirm ? 'checked' : ''}> ${t('fileLinkSkipConfirmSetting')}</label>
+    <label><input type="checkbox" id="auto-new-session-toggle" ${current.autoNewSession ? 'checked' : ''}> ${t('autoNewSession')}</label>
   `;
   rememberSection.appendChild(rememberGroup);
   const windowSizeCheckbox = rememberGroup.querySelector('#remember-window-size') as HTMLInputElement;
@@ -366,6 +367,8 @@ export function createGeneralTab(
   drawerLayoutCheckbox.onchange = () => { update({ rememberDrawerLayout: drawerLayoutCheckbox.checked }); };
   termNotifToggle.onchange = () => { update({ enableTerminalNotifications: termNotifToggle.checked }); };
   fileLinkConfirmToggle.onchange = () => { update({ fileLinkSkipConfirm: !fileLinkConfirmToggle.checked }); };
+  const autoNewSessionToggle = rememberGroup.querySelector('#auto-new-session-toggle') as HTMLInputElement;
+  autoNewSessionToggle.onchange = () => { update({ autoNewSession: autoNewSessionToggle.checked }); };
   tabGeneral.appendChild(rememberSection);
 
   // --- PiP Scale ---
@@ -383,6 +386,19 @@ export function createGeneralTab(
     update({ pipScale: val });
   };
   tabGeneral.appendChild(pipScaleSection);
+
+  // --- PiP Scale by Screen ---
+  const pipScreenSection = document.createElement('div');
+  pipScreenSection.className = 'settings-section settings-inline';
+  pipScreenSection.innerHTML = `
+    <label>${t('pipScaleByScreen')}</label>
+    <input type="checkbox" class="settings-checkbox" id="pip-scale-by-screen" ${current.pipScaleByScreen ? 'checked' : ''}>
+  `;
+  const pipScreenCheckbox = pipScreenSection.querySelector('#pip-scale-by-screen') as HTMLInputElement;
+  pipScreenCheckbox.onchange = () => {
+    update({ pipScaleByScreen: pipScreenCheckbox.checked });
+  };
+  tabGeneral.appendChild(pipScreenSection);
 
   // SSH Connections import/export
   const sshIoSection = document.createElement('div');

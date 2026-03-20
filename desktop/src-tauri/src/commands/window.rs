@@ -40,7 +40,9 @@ pub fn create_window_at_position(app: AppHandle, x: f64, y: f64) -> Result<Strin
         .position(win_x, win_y)
         .resizable(true)
         .decorations(true)
-        .transparent(true);
+        .transparent(true)
+        .visible(false)
+        .background_color(tauri::window::Color(45, 45, 45, 255));
 
     #[cfg(target_os = "macos")]
     {
@@ -52,16 +54,26 @@ pub fn create_window_at_position(app: AppHandle, x: f64, y: f64) -> Result<Strin
             .traffic_light_position(LogicalPosition::new(14.0, 18.0));
     }
 
-    // On Windows: disable both native chrome and window-level transparency.
-    // WebView2 does not reliably initialise the Direct Composition transparent
-    // compositor for dynamically created windows, leaving them permanently white.
-    // The app's dark background is fully CSS-driven, so native transparency is
-    // not required.
     #[cfg(target_os = "windows")]
     {
         builder = builder.decorations(false).transparent(false);
     }
-    builder.build().map_err(|e| e.to_string())?;
+    let win = builder.build().map_err(|e| e.to_string())?;
+
+    // macOS: alpha=0 + orderBack: adds window to compositor behind all others,
+    // so WKWebView renders in background without any visible flash.
+    // reveal_window later sets alpha=1 + makeKeyAndOrderFront:.
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2_app_kit::NSWindow;
+        let ns_ptr = win.ns_window().map_err(|e| e.to_string())? as *const NSWindow;
+        unsafe {
+            let _: () = msg_send![ns_ptr, setAlphaValue: 0.0_f64];
+            let nil: *const objc2::runtime::AnyObject = std::ptr::null();
+            let _: () = msg_send![ns_ptr, orderBack: nil];
+        }
+    }
 
     let lifecycle = app.state::<crate::AppLifecycleState>();
     lifecycle.track_window_created(&window_label);
@@ -175,7 +187,8 @@ pub fn create_transparent_window(
         .resizable(resizable)
         .center()
         .visible(false)
-        .transparent(true);
+        .transparent(true)
+        .background_color(tauri::window::Color(45, 45, 45, 255));
 
     #[cfg(target_os = "macos")]
     {
@@ -192,7 +205,22 @@ pub fn create_transparent_window(
         builder = builder.decorations(false);
     }
 
-    builder.build().map_err(|e| e.to_string())?;
+    let win = builder.build().map_err(|e| e.to_string())?;
+
+    // macOS: set alpha=0, then show() to add window to compositor invisibly.
+    // This avoids the orderFront: recomposite flash — the window is in the
+    // macOS: alpha=0 + orderBack: adds to compositor behind all windows
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2_app_kit::NSWindow;
+        let ns_ptr = win.ns_window().map_err(|e| e.to_string())? as *const NSWindow;
+        unsafe {
+            let _: () = msg_send![ns_ptr, setAlphaValue: 0.0_f64];
+            let nil: *const objc2::runtime::AnyObject = std::ptr::null();
+            let _: () = msg_send![ns_ptr, orderBack: nil];
+        }
+    }
 
     let lifecycle = app.state::<crate::AppLifecycleState>();
     lifecycle.track_window_created(&label);
@@ -330,4 +358,31 @@ pub fn restart_app_via_open(app: AppHandle) {
     }
     // Fallback: use Tauri's default restart
     app.restart();
+}
+
+/// Reveal a window that was created with alphaValue=0 (anti-flash).
+/// Called by JS after the first frame is fully painted.
+#[tauri::command]
+pub fn reveal_window(app: AppHandle, label: String) -> Result<(), String> {
+    let window = app
+        .get_webview_window(&label)
+        .ok_or_else(|| format!("window '{}' not found", label))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2_app_kit::NSWindow;
+        let ns_ptr = window.ns_window().map_err(|e| e.to_string())? as *const NSWindow;
+        unsafe {
+            let _: () = msg_send![ns_ptr, setAlphaValue: 1.0_f64];
+            let nil: *const objc2::runtime::AnyObject = std::ptr::null();
+            let _: () = msg_send![ns_ptr, makeKeyAndOrderFront: nil];
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    Ok(())
 }

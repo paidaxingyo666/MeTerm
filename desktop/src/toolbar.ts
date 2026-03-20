@@ -28,6 +28,22 @@ import { toggleJumpServerPanel, isJumpServerPanelOpen } from './jumpserver-panel
 import { isPipActive, togglePip } from './pip';
 import appIconUrl from '../src-tauri/icons/icon.svg';
 
+// ── Always-on-top state ──
+
+let isAlwaysOnTop = false;
+
+async function toggleAlwaysOnTop(): Promise<void> {
+  const win = getCurrentWindow();
+  isAlwaysOnTop = !isAlwaysOnTop;
+  await win.setAlwaysOnTop(isAlwaysOnTop);
+  renderToolbarActions();
+}
+
+/** Get current always-on-top state. */
+export function getAlwaysOnTop(): boolean {
+  return isAlwaysOnTop;
+}
+
 // ── DOM elements (lazily cached) ──
 
 let _toolbarLeftEl: HTMLDivElement | null = null;
@@ -340,17 +356,30 @@ export function renderToolbarActions(): void {
     toolbarRightEl.appendChild(updateBtn);
   }
 
-  // Pin button: only show when there are terminal tabs
+  // Always-on-top (pin) button: only show when there are terminal tabs and NOT in PiP
+  if (TabManager.tabs.length > 0 && !isPipActive()) {
+    const aotBtn = document.createElement('button');
+    aotBtn.className = `toolbar-icon-btn always-on-top-btn${isAlwaysOnTop ? ' active' : ''}`;
+    aotBtn.type = 'button';
+    aotBtn.title = isAlwaysOnTop
+      ? (settings?.language === 'zh' ? '取消置顶' : 'Unpin from top')
+      : (settings?.language === 'zh' ? '窗口置顶' : 'Always on top');
+    aotBtn.innerHTML = `<span class="tab-icon">${icon('pin')}</span>`;
+    aotBtn.onclick = () => { void toggleAlwaysOnTop(); };
+    toolbarRightEl.appendChild(aotBtn);
+  }
+
+  // PiP button: only show when there are terminal tabs
   if (TabManager.tabs.length > 0 || isPipActive()) {
-    const pinBtn = document.createElement('button');
-    pinBtn.className = `toolbar-icon-btn pip-pin-btn${isPipActive() ? ' active' : ''}`;
-    pinBtn.type = 'button';
-    pinBtn.title = isPipActive()
+    const pipBtn = document.createElement('button');
+    pipBtn.className = `toolbar-icon-btn pip-pin-btn${isPipActive() ? ' active' : ''}`;
+    pipBtn.type = 'button';
+    pipBtn.title = isPipActive()
       ? (settings?.language === 'zh' ? '退出画中画' : 'Exit Picture-in-Picture')
       : (settings?.language === 'zh' ? '画中画' : 'Picture-in-Picture');
-    pinBtn.innerHTML = `<span class="tab-icon">${icon('pin')}</span>`;
-    pinBtn.onclick = () => { void togglePip(); };
-    toolbarRightEl.appendChild(pinBtn);
+    pipBtn.innerHTML = `<span class="tab-icon">${icon('pip')}</span>`;
+    pipBtn.onclick = () => { void togglePip(); };
+    toolbarRightEl.appendChild(pipBtn);
   }
 
   const settingsBtn = document.createElement('button');

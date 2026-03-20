@@ -36,6 +36,9 @@ export const MsgFileDownloadPause = 0x20;
 export const MsgFileDownloadContinue = 0x21;
 export const MsgFileDownloadCancel = 0x22;
 
+// OSC events (server → client, JSON payload)
+export const MsgOscEvent = 0x40;
+
 // File editor messages
 export const MsgFileReadRequest = 0x30;
 export const MsgFileReadResponse = 0x31;

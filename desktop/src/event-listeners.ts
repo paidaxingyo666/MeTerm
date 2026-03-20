@@ -635,6 +635,9 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
       `${mod}D${sep}${t('shortcutSplitHorizontal')}`,
       `${mod}${shift}D${sep}${t('shortcutSplitVertical')}`,
       `${mod}${alt}←→↑↓${sep}${t('shortcutNavigatePanes')}`,
+      `${mod}1-8 / 9${sep}${t('shortcutSwitchToTab')}`,
+      `Ctrl+Tab${sep}${t('shortcutNextTab')}`,
+      `Ctrl+${shift}Tab${sep}${t('shortcutPrevTab')}`,
     ].join('\n');
     void showInfoSystem(body, t('shortcutsDialogTitle'));
   });

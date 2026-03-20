@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MeTerm",
-  "version": "0.2.0",
-  "identifier": "com.meterm.dev",
+  "version": "0.2.1",
+  "identifier": "com.meterm.app",
   "build": {
     "frontendDist": "../dist",
     "beforeDevCommand": "npm run dev",
@@ -50,7 +50,9 @@
           "y": 18
         },
         "hiddenTitle": true,
-        "acceptFirstMouse": true
+        "acceptFirstMouse": true,
+        "visible": false,
+        "backgroundColor": [45, 45, 45, 255]
       }
     ],
     "security": {

@@ -166,6 +166,9 @@ pub struct Session {
     /// Download control channel (pause/resume/cancel signals).
     pub download_ctrl: tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<DownloadSignal>>>,
 
+    /// OSC filter — intercepts MeTerm OSC sequences from terminal output.
+    osc_filter: Mutex<crate::server::osc_filter::OscFilter>,
+
     /// Cancellation token for the session's run loop.
     cancel: CancellationToken,
 }
@@ -195,6 +198,7 @@ impl Session {
             ssh_exec_handle: tokio::sync::Mutex::new(None),
             active_upload: tokio::sync::Mutex::new(None),
             download_ctrl: tokio::sync::Mutex::new(None),
+            osc_filter: Mutex::new(crate::server::osc_filter::OscFilter::new()),
             cancel: CancellationToken::new(),
         }
     }
@@ -211,15 +215,18 @@ impl Session {
         }
 
         let client_id = client.id.clone();
-        let is_first;
+        let should_promote;
         {
             let mut clients = self.clients.lock().unwrap();
-            is_first = clients.is_empty();
+            // Promote to master if no connected non-readonly clients exist.
+            // This handles: first client, all previous clients expired after
+            // system sleep (reconnect grace period elapsed while locked), etc.
+            should_promote = !clients.values().any(|c| c.is_connected() && c.role != ClientRole::ReadOnly);
             clients.insert(client_id.clone(), client.clone());
         }
 
-        // First non-readonly client becomes master and owner
-        if is_first && client.role != ClientRole::ReadOnly {
+        // Promote to master and owner when no active master exists
+        if should_promote && client.role != ClientRole::ReadOnly {
             *self.master_id.lock().unwrap() = client_id.clone();
             *self.owner_id.lock().unwrap() = client_id;
         }
@@ -296,12 +303,20 @@ impl Session {
             .get(client_id)
             .ok_or_else(|| "client not found".to_string())?;
 
-        if client.is_connected() {
-            return Err("client already connected".to_string());
+        let was_connected = client.is_connected();
+        if was_connected {
+            // Force-disconnect the stale connection. If a client reconnects with the
+            // same client_id, the old TCP connection must be dead (e.g., after system
+            // sleep/wake). Disconnecting drops the old send channel so the previous
+            // WebSocket handler exits cleanly via its rx.recv() returning None.
+            eprintln!("[ws] force-disconnecting stale client={} for reconnect", client_id);
+            client.disconnect();
         }
 
-        // Check grace period
-        if client.idle_duration() > grace {
+        // Check grace period — skip if the client was still "connected" (stale),
+        // since last_seen isn't updated during an active connection and would be
+        // stale itself (e.g., after system sleep).
+        if !was_connected && client.idle_duration() > grace {
             return Err("reconnect grace period expired".to_string());
         }
 
@@ -370,9 +385,20 @@ impl Session {
                                 return;
                             }
                             Ok(n) => {
-                                session.append_to_ring_buffer(&buf[..n]);
-                                let msg = protocol::encode_message(protocol::MSG_OUTPUT, &buf[..n]);
-                                session.broadcast(msg);
+                                // Filter OSC sequences in Rust — clean output goes to
+                                // xterm.js, events go as MSG_OSC_EVENT to frontend.
+                                let (clean, events) = session.osc_filter.lock().unwrap().feed(&buf[..n]);
+                                if !clean.is_empty() {
+                                    session.append_to_ring_buffer(&clean);
+                                    let msg = protocol::encode_message(protocol::MSG_OUTPUT, &clean);
+                                    session.broadcast(msg);
+                                }
+                                if !events.is_empty() {
+                                    if let Ok(json) = serde_json::to_vec(&events) {
+                                        let msg = protocol::encode_message(protocol::MSG_OSC_EVENT, &json);
+                                        session.broadcast(msg);
+                                    }
+                                }
                             }
                         }
                     }
@@ -533,18 +559,31 @@ impl Session {
     }
 
     /// Find disconnected clients whose grace period has expired.
+    /// Loopback clients are exempt — they are local (same machine) and will
+    /// reconnect after system wake, so expiring them only causes unnecessary
+    /// master-role loss and "remote control" overlay flashes.
     pub fn expired_disconnected_clients(&self, _now: Instant, grace: std::time::Duration) -> Vec<String> {
         let clients = self.clients.lock().unwrap();
         clients
             .values()
-            .filter(|c| !c.is_connected() && c.idle_duration() > grace)
+            .filter(|c| {
+                !c.is_connected()
+                    && c.idle_duration() > grace
+                    && !c.remote_addr.is_empty()
+                    && !is_loopback(&c.remote_addr)
+            })
             .map(|c| c.id.clone())
             .collect()
     }
 
     /// Permanently remove a client (after grace period expired).
     pub fn expire_client(&self, client_id: &str) {
+        let was_master = *self.master_id.lock().unwrap() == client_id;
         self.clients.lock().unwrap().remove(client_id);
+        // If the expired client was master, try to promote the next connected client
+        if was_master {
+            self.try_promote_next_master();
+        }
     }
 
     /// Cancel the session's run loop.

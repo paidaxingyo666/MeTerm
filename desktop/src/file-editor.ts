@@ -3,6 +3,7 @@
  * Each tab has its own EditorView + wrapper div. Switching tabs shows/hides wrappers.
  */
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { revealAfterPaint } from './window-utils';
 import { confirm } from '@tauri-apps/plugin-dialog';
 import { loadSettings, resolveIsDark } from './themes';
 import { t } from './i18n';
@@ -698,7 +699,5 @@ export function initEditorContent(): void {
     localStorage.setItem(`${LS_PREFIX}closed`, '1');
   });
 
-  requestAnimationFrame(() => {
-    void getCurrentWindow().show().then(() => getCurrentWindow().setFocus());
-  });
+  void revealAfterPaint(getCurrentWindow().label);
 }

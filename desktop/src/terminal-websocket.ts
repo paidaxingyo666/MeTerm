@@ -15,6 +15,7 @@ import {
   MsgMasterRequestNotify,
   MsgPairNotify,
   MsgFileListResp,
+  MsgOscEvent,
 } from './protocol';
 import { buildWsProtocols, buildWsUrl } from './connection';
 import { DrawerManager } from './drawer';
@@ -33,6 +34,8 @@ export interface WsCallbacks {
   getPingTimestamp: (sessionId: string) => number | undefined;
   deletePingTimestamp: (sessionId: string) => void;
   onReconnectNeeded: (mt: ManagedTerminal) => void;
+  /** Handle OSC events from Rust backend (MSG_OSC_EVENT) */
+  onOscEvent: (mt: ManagedTerminal, payload: Uint8Array) => void;
 }
 
 export function connectWebSocket(mt: ManagedTerminal, callbacks: WsCallbacks): void {
@@ -86,6 +89,11 @@ export function connectWebSocket(mt: ManagedTerminal, callbacks: WsCallbacks): v
     if (type === MsgHello) {
       const hello = decodeHello(payload);
       mt.clientId = hello.client_id;
+      return;
+    }
+
+    if (type === MsgOscEvent) {
+      callbacks.onOscEvent(mt, payload);
       return;
     }
 
@@ -224,13 +232,21 @@ export function connectWebSocket(mt: ManagedTerminal, callbacks: WsCallbacks): v
 }
 
 export function scheduleReconnect(mt: ManagedTerminal, connectFn: (mt: ManagedTerminal) => void): void {
-  if (mt.reconnectAttempt >= 10 || mt.ended) {
+  if (mt.reconnectAttempt >= 30 || mt.ended) {
     mt.onStatus('disconnected');
     return;
   }
 
-  const delay = Math.min(1000 * Math.pow(2, mt.reconnectAttempt), 16000);
+  // Exponential backoff: 1s, 2s, 4s, 8s, then cap at 10s.
+  // 30 attempts × ~10s max ≈ 5 minutes of retries — enough for server restart.
+  const delay = Math.min(1000 * Math.pow(2, mt.reconnectAttempt), 10000);
   mt.reconnectAttempt += 1;
   mt.onStatus('reconnecting');
-  mt.reconnectTimer = setTimeout(() => connectFn(mt), delay);
+  mt.reconnectTimer = setTimeout(() => {
+    // Suppress role-change events briefly to prevent false overlays when old
+    // and new server-side connections overlap during reconnect.
+    mt._transferGrace = true;
+    setTimeout(() => { mt._transferGrace = false; }, 3000);
+    connectFn(mt);
+  }, delay);
 }
