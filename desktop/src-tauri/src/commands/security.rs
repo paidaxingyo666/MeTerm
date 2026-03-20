@@ -46,6 +46,80 @@ pub async fn delete_credential(service: String, account: String) -> Result<(), S
     }
 }
 
+// ─── One-time localStorage migration from old bundle ID ───
+
+/// Read all localStorage entries from the old `com.meterm.dev` WebKit data directory.
+/// Returns a JSON object `{ key: value, ... }` of all entries with the "meterm-" prefix.
+/// Returns `null` if no old data is found or migration is not needed.
+#[tauri::command]
+pub async fn read_old_localstorage() -> Result<Option<std::collections::HashMap<String, String>>, String> {
+    let home = dirs::home_dir().ok_or("cannot determine home directory")?;
+    let old_base = home.join("Library/WebKit/com.meterm.dev/WebsiteData/Default");
+    if !old_base.exists() {
+        return Ok(None);
+    }
+
+    // Find all localstorage.sqlite3 files under the old data directory
+    let mut result = std::collections::HashMap::new();
+    if let Ok(entries) = std::fs::read_dir(&old_base) {
+        for entry in entries.flatten() {
+            let ls_path = entry.path()
+                .join(entry.file_name())
+                .join("LocalStorage/localstorage.sqlite3");
+            if ls_path.exists() {
+                if let Ok(items) = read_sqlite_localstorage(&ls_path) {
+                    for (k, v) in items {
+                        if k.starts_with("meterm-") {
+                            result.insert(k, v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if result.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(result))
+    }
+}
+
+fn read_sqlite_localstorage(path: &std::path::Path) -> Result<Vec<(String, String)>, String> {
+    let conn = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("sqlite open: {}", e))?;
+
+    let mut stmt = conn.prepare("SELECT key, value FROM ItemTable")
+        .map_err(|e| format!("sqlite prepare: {}", e))?;
+
+    let rows = stmt.query_map([], |row| {
+        let key: String = row.get(0)?;
+        // WKWebView stores values as UTF-16LE blobs
+        let value: String = match row.get::<_, String>(1) {
+            Ok(s) => s,
+            Err(_) => {
+                // Try reading as blob and decode UTF-16LE
+                let blob: Vec<u8> = row.get(1)?;
+                let utf16: Vec<u16> = blob.chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                String::from_utf16_lossy(&utf16)
+            }
+        };
+        Ok((key, value))
+    }).map_err(|e| format!("sqlite query: {}", e))?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        if let Ok(item) = row {
+            items.push(item);
+        }
+    }
+    Ok(items)
+}
+
 // ─── IP ban management ───
 
 #[tauri::command]

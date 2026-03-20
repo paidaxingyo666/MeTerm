@@ -881,6 +881,7 @@ pub fn run() {
             commands::security::store_credential,
             commands::security::get_credential,
             commands::security::delete_credential,
+            commands::security::read_old_localstorage,
             commands::security::list_banned_ips,
             commands::security::ban_ip,
             commands::security::unban_ip,

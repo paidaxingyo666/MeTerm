@@ -122,6 +122,9 @@ async function init(): Promise<void> {
     return;
   }
 
+    // One-time migration: import localStorage data from old bundle ID (com.meterm.dev → com.meterm.app)
+  await migrateOldLocalStorage();
+
   initLanguage();
   setSettings(loadSettings());
   setLanguage(settings.language);
@@ -329,6 +332,38 @@ async function init(): Promise<void> {
 
   // Post-ready event listeners (updater, etc.)
   setupPostReadyEventListeners(currentWindowLabel);
+}
+
+/**
+ * One-time migration: read localStorage from the old `com.meterm.dev` WebKit data
+ * and write entries into the current (new) localStorage under `com.meterm.app`.
+ * Skips keys that already exist in the new localStorage to avoid overwriting.
+ */
+async function migrateOldLocalStorage(): Promise<void> {
+  const MIGRATION_KEY = 'meterm-migrated-from-dev';
+  if (localStorage.getItem(MIGRATION_KEY)) return; // already migrated
+
+  try {
+    const data = await invoke<Record<string, string> | null>('read_old_localstorage');
+    if (!data) {
+      localStorage.setItem(MIGRATION_KEY, '1');
+      return;
+    }
+    let count = 0;
+    for (const [key, value] of Object.entries(data)) {
+      if (!localStorage.getItem(key)) {
+        localStorage.setItem(key, value);
+        count++;
+      }
+    }
+    localStorage.setItem(MIGRATION_KEY, '1');
+    if (count > 0) {
+      console.log(`[migration] Imported ${count} localStorage entries from com.meterm.dev`);
+    }
+  } catch (e) {
+    console.warn('[migration] Failed to read old localStorage:', e);
+    // Don't set the flag so it can retry next launch
+  }
 }
 
 init().catch((err) => {

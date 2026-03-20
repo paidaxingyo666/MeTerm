@@ -92,7 +92,8 @@ export interface ConnectionTokenResult {
 // ── Storage ──
 
 const JS_CONNECTIONS_KEY = 'meterm-jumpserver-connections';
-const JS_KEYCHAIN_SERVICE = 'com.meterm.dev.jumpserver';
+const JS_KEYCHAIN_SERVICE = 'com.meterm.app.jumpserver';
+const JS_KEYCHAIN_SERVICE_OLD = 'com.meterm.dev.jumpserver';
 
 export function loadJumpServerConfigs(): JumpServerConfig[] {
   try {
@@ -154,14 +155,30 @@ async function storeJSSecrets(name: string, password?: string, apiToken?: string
 }
 
 export async function loadJSSecrets(name: string): Promise<{ password?: string; apiToken?: string }> {
+  // Try new service name first
   try {
     const raw = await invoke<string>('get_credential', { service: JS_KEYCHAIN_SERVICE, account: name });
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return { password: parsed.password || undefined, apiToken: parsed.apiToken || undefined };
-  } catch {
-    return {};
-  }
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { password: parsed.password || undefined, apiToken: parsed.apiToken || undefined };
+    }
+  } catch { /* not found */ }
+  // Fallback: old service name (com.meterm.dev.jumpserver → com.meterm.app.jumpserver)
+  try {
+    const raw = await invoke<string>('get_credential', { service: JS_KEYCHAIN_SERVICE_OLD, account: name });
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const result = { password: parsed.password || undefined, apiToken: parsed.apiToken || undefined };
+      // Migrate to new service in background
+      setTimeout(() => {
+        invoke('store_credential', { service: JS_KEYCHAIN_SERVICE, account: name, secret: raw })
+          .then(() => invoke('delete_credential', { service: JS_KEYCHAIN_SERVICE_OLD, account: name }).catch(() => {}))
+          .catch(() => {});
+      }, 3000);
+      return result;
+    }
+  } catch { /* not found */ }
+  return {};
 }
 
 async function deleteJSSecrets(name: string): Promise<void> {

@@ -35,7 +35,8 @@ export interface RemoteSession {
 const REMOTE_CONNECTIONS_KEY = 'meterm-remote-connections';
 const REMOTE_RECENT_KEY = 'meterm-remote-recent';
 const MAX_REMOTE_RECENT = 5;
-const REMOTE_KEYCHAIN_SERVICE = 'com.meterm.dev.remote';
+const REMOTE_KEYCHAIN_SERVICE = 'com.meterm.app.remote';
+const REMOTE_KEYCHAIN_SERVICE_OLD = 'com.meterm.dev.remote';
 
 // ─── Secure token storage helpers ───
 
@@ -67,17 +68,29 @@ export async function loadRemoteToken(host: string, port: number): Promise<strin
   const existing = remoteTokenInflight.get(cacheKey);
   if (existing) return existing;
   const promise = (async () => {
+    const account = remoteKeychainAccount(host, port);
     try {
-      const token = await invoke<string>('get_credential', { service: REMOTE_KEYCHAIN_SERVICE, account: remoteKeychainAccount(host, port) });
+      const token = await invoke<string>('get_credential', { service: REMOTE_KEYCHAIN_SERVICE, account });
       remoteTokenCache.set(cacheKey, token || null);
       return token || undefined;
-    } catch {
-      remoteTokenCache.set(cacheKey, null);
-      return undefined;
-    } finally {
-      remoteTokenInflight.delete(cacheKey);
-    }
-  })();
+    } catch { /* not found in new service */ }
+    // Fallback: old service name (com.meterm.dev.remote → com.meterm.app.remote)
+    try {
+      const token = await invoke<string>('get_credential', { service: REMOTE_KEYCHAIN_SERVICE_OLD, account });
+      if (token) {
+        remoteTokenCache.set(cacheKey, token);
+        // Migrate to new service in background
+        setTimeout(() => {
+          invoke('store_credential', { service: REMOTE_KEYCHAIN_SERVICE, account, secret: token })
+            .then(() => invoke('delete_credential', { service: REMOTE_KEYCHAIN_SERVICE_OLD, account }).catch(() => {}))
+            .catch(() => {});
+        }, 3000);
+        return token;
+      }
+    } catch { /* not found */ }
+    remoteTokenCache.set(cacheKey, null);
+    return undefined;
+  })().finally(() => remoteTokenInflight.delete(cacheKey));
   remoteTokenInflight.set(cacheKey, promise);
   return promise;
 }

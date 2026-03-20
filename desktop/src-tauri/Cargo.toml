@@ -73,6 +73,7 @@ hostname = "0.4.2"
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 dirs = "6"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"

@@ -31,7 +31,8 @@ interface HostKeyError {
 }
 
 const SSH_CONNECTIONS_KEY = 'meterm-ssh-connections';
-const SSH_KEYCHAIN_SERVICE = 'com.meterm.dev.ssh';
+const SSH_KEYCHAIN_SERVICE = 'com.meterm.app.ssh';
+const SSH_KEYCHAIN_SERVICE_OLD = 'com.meterm.dev.ssh';
 
 // ─── Secure credential storage helpers ───
 
@@ -76,7 +77,7 @@ async function loadSSHSecrets(name: string): Promise<SSHSecrets> {
       sshSecretsCache.set(name, result);
       return result;
     } catch { /* not found or parse error — try legacy format */ }
-    // Fallback: legacy separate entries
+    // Fallback: legacy separate entries (current service)
     const result: SSHSecrets = {};
     try {
       result.password = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE, account: `${name}:password` });
@@ -84,15 +85,36 @@ async function loadSSHSecrets(name: string): Promise<SSHSecrets> {
     try {
       result.passphrase = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE, account: `${name}:passphrase` });
     } catch { /* not found */ }
+    // Fallback: old service name (com.meterm.dev.ssh → com.meterm.app.ssh)
+    if (!result.password && !result.passphrase) {
+      try {
+        const json = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:secrets` });
+        const old: SSHSecrets = JSON.parse(json);
+        result.password = old.password;
+        result.passphrase = old.passphrase;
+      } catch { /* not found */ }
+      if (!result.password && !result.passphrase) {
+        try {
+          result.password = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:password` });
+        } catch { /* not found */ }
+        try {
+          result.passphrase = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:passphrase` });
+        } catch { /* not found */ }
+      }
+    }
     sshSecretsCache.set(name, result);
-    // Deferred migration: write unified format in background after a delay
-    // to avoid triggering a keychain prompt during the connect flow.
+    // Deferred migration: write unified format to new service + clean up old service
     if (result.password || result.passphrase) {
       setTimeout(() => {
         invoke('store_credential', {
           service: SSH_KEYCHAIN_SERVICE,
           account: `${name}:secrets`,
           secret: JSON.stringify(result),
+        }).then(() => {
+          // Clean up old service entries
+          invoke('delete_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:secrets` }).catch(() => {});
+          invoke('delete_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:password` }).catch(() => {});
+          invoke('delete_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:passphrase` }).catch(() => {});
         }).catch(() => {});
       }, 3000);
     }

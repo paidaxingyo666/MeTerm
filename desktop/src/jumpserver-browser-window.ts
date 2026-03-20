@@ -11,6 +11,7 @@ import { applyVibrancy } from './appearance';
 import { escapeHtml } from './status-bar';
 import { createOverlayScrollbar } from './overlay-scrollbar';
 import { getCurrentWindow, LogicalSize, LogicalPosition } from '@tauri-apps/api/window';
+import { revealAfterPaint } from './window-utils';
 import { emit, listen } from '@tauri-apps/api/event';
 import {
   type JumpServerConfig,
@@ -237,6 +238,8 @@ export function initJumpServerBrowserWindow(): void {
   const config: JumpServerConfig = JSON.parse(configJson);
 
   renderAssetBrowser(config);
+
+  void revealAfterPaint(getCurrentWindow().label);
 
   // Listen for theme/opacity changes from settings window
   void listen('settings-changed', () => {
