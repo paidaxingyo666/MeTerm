@@ -35,11 +35,13 @@ export function adaptPipeline(state: PipelineState): PipelineState {
   return { ...state, pipelineSize, pipelineAckCount };
 }
 
+export type SendFn = (data: Uint8Array) => void;
+
 /** 发送创建远程目录请求 */
-export function sendMkdirRequest(ws: WebSocket, remotePath: string): void {
+export function sendMkdirRequest(send: SendFn, remotePath: string): void {
   const request: FileOperationRequest = { operation: 'mkdir', path: remotePath };
   const message = encodeMessage(MsgFileOperation, new TextEncoder().encode(JSON.stringify(request)));
-  ws.send(message);
+  send(message);
 }
 
 /** 递归收集本地目录下所有文件（纯 Tauri API，无状态依赖） */

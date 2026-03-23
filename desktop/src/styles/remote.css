@@ -595,6 +595,23 @@
   padding: 4px 6px;
 }
 
+.remote-list-repair-btn {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 10px;
+  font-size: 11px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(var(--bg-button), 0.4);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.remote-list-repair-btn:hover {
+  background: rgba(var(--bg-button), 0.6);
+}
+
 .remote-list-btn .tab-icon svg {
   color: #22c55e;
 }

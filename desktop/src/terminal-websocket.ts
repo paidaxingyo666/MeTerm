@@ -21,6 +21,7 @@ import { buildWsProtocols, buildWsUrl } from './connection';
 import { DrawerManager } from './drawer';
 import { setSSHDirProbe } from './terminal-file-link';
 import { filterPostResizeNewlines } from './terminal-resize';
+import { IpcTransport } from './terminal-transport';
 import type { AppSettings } from './themes';
 import type { ManagedTerminal } from './terminal-types';
 
@@ -36,6 +37,131 @@ export interface WsCallbacks {
   onReconnectNeeded: (mt: ManagedTerminal) => void;
   /** Handle OSC events from Rust backend (MSG_OSC_EVENT) */
   onOscEvent: (mt: ManagedTerminal, payload: Uint8Array) => void;
+}
+
+export function handleIncomingMessage(
+  mt: ManagedTerminal,
+  data: ArrayBuffer,
+  callbacks: WsCallbacks,
+  closeFn?: () => void,
+): void {
+  const decoded = decodeMessage(data);
+  const type = decoded.type;
+  const payload = decoded.payload;
+
+  if (type === MsgHello) {
+    const hello = decodeHello(payload);
+    mt.clientId = hello.client_id;
+    return;
+  }
+
+  if (type === MsgOscEvent) {
+    callbacks.onOscEvent(mt, payload);
+    return;
+  }
+
+  if (type === MsgOutput) {
+    let outData: Uint8Array | null = payload;
+    if (mt._postResizeNewlineFilter > 0) {
+      outData = filterPostResizeNewlines(mt, outData);
+      if (!outData) return;
+    }
+
+    const outListeners = callbacks.getOutputListeners(mt.id);
+    if (outListeners && outListeners.size > 0) {
+      const text = new TextDecoder().decode(outData);
+      outListeners.forEach(cb => cb(text));
+    }
+
+    mt.terminal.write(outData);
+    mt.thumbnailTerminal.write(outData);
+
+    if (!mt.hasOscTitle) {
+      callbacks.updateShellTitle(mt);
+    }
+    return;
+  }
+
+  if (type === MsgRoleChange) {
+    const role = payload[0];
+    if (mt._transferGrace) {
+      if (role === 1) {
+        mt._transferGrace = false;
+      }
+      return;
+    }
+    if (mt.ended) return;
+    if (role === 0) {
+      document.dispatchEvent(new CustomEvent('master-lost', { detail: { sessionId: mt.id } }));
+    } else if (role === 1) {
+      document.dispatchEvent(new CustomEvent('master-gained', { detail: { sessionId: mt.id } }));
+    }
+    return;
+  }
+
+  if (type === MsgMasterRequestNotify) {
+    try {
+      const d = JSON.parse(new TextDecoder().decode(payload));
+      document.dispatchEvent(new CustomEvent('master-request', {
+        detail: { sessionId: d.session_id, requesterId: d.requester_id },
+      }));
+    } catch { /* ignore malformed */ }
+    return;
+  }
+
+  if (type === MsgPairNotify) {
+    try {
+      const d = JSON.parse(new TextDecoder().decode(payload));
+      document.dispatchEvent(new CustomEvent('pair-request', {
+        detail: { pairId: d.pair_id, deviceInfo: d.device_info, remoteAddr: d.remote_addr },
+      }));
+    } catch { /* ignore malformed */ }
+    return;
+  }
+
+  if (type === MsgSessionEnd) {
+    console.warn(`[terminal] MsgSessionEnd received for session ${mt.id} — marking as ended`);
+    mt.ended = true;
+    mt.onStatus('ended');
+    DrawerManager.notifyDisconnect(mt.id);
+    if (closeFn) closeFn();
+    return;
+  }
+
+  if (type === MsgPong) {
+    callbacks.setPongTime(mt.id, Date.now());
+    const sentTs = callbacks.getPingTimestamp(mt.id);
+    if (sentTs !== undefined) {
+      callbacks.deletePingTimestamp(mt.id);
+      let rtt: number;
+      if (payload.length >= 4) {
+        const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+        rtt = view.getUint32(0);
+      } else {
+        rtt = Date.now() - sentTs;
+      }
+      document.dispatchEvent(new CustomEvent('status-bar-pong', { detail: { sessionId: mt.id, rtt } }));
+    }
+    return;
+  }
+
+  if (type === MsgError) {
+    const code = payload[0];
+    if (code === ErrSessionNotFound) {
+      mt.ended = true;
+      mt.onStatus('notfound');
+      if (closeFn) closeFn();
+    } else if (code === ErrKicked) {
+      mt.ended = true;
+      mt.kicked = true;
+      mt.onStatus('ended');
+      document.dispatchEvent(new CustomEvent('client-kicked', { detail: { sessionId: mt.id } }));
+      if (closeFn) closeFn();
+    } else if (code === ErrNotMaster) {
+      document.dispatchEvent(new CustomEvent('master-request-denied', { detail: { sessionId: mt.id } }));
+    }
+    return;
+  }
 }
 
 export function connectWebSocket(mt: ManagedTerminal, callbacks: WsCallbacks): void {
@@ -62,156 +188,25 @@ export function connectWebSocket(mt: ManagedTerminal, callbacks: WsCallbacks): v
 
     // SSH 会话：CWD 追踪 + 远程目录缓存
     if (DrawerManager.getServerInfo(mt.id)) {
-      // 监听 MsgFileListResp 更新远程目录缓存
       socket.addEventListener('message', (ev) => {
         try {
           const buf = ev.data as ArrayBuffer;
           if (buf.byteLength < 2) return;
           const msgType = new DataView(buf).getUint8(0);
           if (msgType === MsgFileListResp) {
-            const payload = new Uint8Array(buf, 1);
-            const resp = JSON.parse(new TextDecoder().decode(payload));
+            const p = new Uint8Array(buf, 1);
+            const resp = JSON.parse(new TextDecoder().decode(p));
             if (resp.path && Array.isArray(resp.files)) {
               setSSHDirProbe(mt.id, resp.path, resp.files);
             }
           }
         } catch { /* ignore */ }
       });
-
     }
   };
 
   socket.onmessage = (event) => {
-    const decoded = decodeMessage(event.data as ArrayBuffer);
-    const type = decoded.type;
-    const payload = decoded.payload;
-
-    if (type === MsgHello) {
-      const hello = decodeHello(payload);
-      mt.clientId = hello.client_id;
-      return;
-    }
-
-    if (type === MsgOscEvent) {
-      callbacks.onOscEvent(mt, payload);
-      return;
-    }
-
-    if (type === MsgOutput) {
-      let data: Uint8Array | null = payload;
-      // Filter pure-newline chunks that zsh themes output before prompt redraw after SIGWINCH
-      if (mt._postResizeNewlineFilter > 0) {
-        data = filterPostResizeNewlines(mt, data);
-        if (!data) return;
-      }
-
-      // Notify output listeners (event-driven capture for AI agent)
-      const outListeners = callbacks.getOutputListeners(mt.id);
-      if (outListeners && outListeners.size > 0) {
-        const text = new TextDecoder().decode(data);
-        outListeners.forEach(cb => cb(text));
-      }
-
-      // Write to terminal — OSC 7766 markers are consumed by the parser
-      // and never appear in the terminal buffer, so no filtering needed.
-      mt.terminal.write(data);
-      mt.thumbnailTerminal.write(data);
-
-      if (!mt.hasOscTitle) {
-        callbacks.updateShellTitle(mt);
-      }
-      return;
-    }
-
-    if (type === MsgRoleChange) {
-      const role = payload[0]; // 0=viewer, 1=master, 2=readonly
-      // Suppress role changes during tab transfer grace period to avoid
-      // false "remote control" overlays when both old and new connections
-      // are briefly active for the same session.
-      if (mt._transferGrace) {
-        if (role === 1) {
-          // Got master — end grace period early
-          mt._transferGrace = false;
-        }
-        return;
-      }
-      if (mt.ended) return;
-      if (role === 0) {
-        // Lost master — show reclaim button
-        document.dispatchEvent(new CustomEvent('master-lost', { detail: { sessionId: mt.id } }));
-      } else if (role === 1) {
-        // Regained master — hide reclaim button
-        document.dispatchEvent(new CustomEvent('master-gained', { detail: { sessionId: mt.id } }));
-      }
-      return;
-    }
-
-    if (type === MsgMasterRequestNotify) {
-      try {
-        const data = JSON.parse(new TextDecoder().decode(payload));
-        document.dispatchEvent(new CustomEvent('master-request', {
-          detail: { sessionId: data.session_id, requesterId: data.requester_id },
-        }));
-      } catch { /* ignore malformed */ }
-      return;
-    }
-
-    if (type === MsgPairNotify) {
-      try {
-        const data = JSON.parse(new TextDecoder().decode(payload));
-        document.dispatchEvent(new CustomEvent('pair-request', {
-          detail: { pairId: data.pair_id, deviceInfo: data.device_info, remoteAddr: data.remote_addr },
-        }));
-      } catch { /* ignore malformed */ }
-      return;
-    }
-
-    if (type === MsgSessionEnd) {
-      console.warn(`[terminal] MsgSessionEnd received for session ${mt.id} — marking as ended`);
-      mt.ended = true;
-      mt.onStatus('ended');
-      DrawerManager.notifyDisconnect(mt.id);
-      socket.close();
-      return;
-    }
-
-    if (type === MsgPong) {
-      callbacks.setPongTime(mt.id, Date.now());
-      const sentTs = callbacks.getPingTimestamp(mt.id);
-      if (sentTs !== undefined) {
-        callbacks.deletePingTimestamp(mt.id);
-        // Check if backend sent SSH RTT in payload (4 bytes, big-endian uint32)
-        let rtt: number;
-        if (payload.length >= 4) {
-          // SSH session: backend measured actual SSH round-trip time
-          const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-          rtt = view.getUint32(0);
-        } else {
-          // Local session: use client-side RTT measurement
-          rtt = Date.now() - sentTs;
-        }
-        document.dispatchEvent(new CustomEvent('status-bar-pong', { detail: { sessionId: mt.id, rtt } }));
-      }
-      return;
-    }
-
-    if (type === MsgError) {
-      const code = payload[0];
-      if (code === ErrSessionNotFound) {
-        mt.ended = true;
-        mt.onStatus('notfound');
-        socket.close();
-      } else if (code === ErrKicked) {
-        mt.ended = true;
-        mt.kicked = true;
-        mt.onStatus('ended');
-        document.dispatchEvent(new CustomEvent('client-kicked', { detail: { sessionId: mt.id } }));
-        socket.close();
-      } else if (code === ErrNotMaster) {
-        document.dispatchEvent(new CustomEvent('master-request-denied', { detail: { sessionId: mt.id } }));
-      }
-      return;
-    }
+    handleIncomingMessage(mt, event.data as ArrayBuffer, callbacks, () => socket.close());
   };
 
   socket.onclose = () => {
@@ -231,7 +226,50 @@ export function connectWebSocket(mt: ManagedTerminal, callbacks: WsCallbacks): v
   };
 }
 
+async function connectIpc(mt: ManagedTerminal, callbacks: WsCallbacks): Promise<void> {
+  mt.onStatus('connecting');
+  const transport = new IpcTransport(mt.id);
+
+  transport.onmessage = (data) => {
+    handleIncomingMessage(mt, data, callbacks, () => transport.close());
+  };
+  transport.onclose = () => {
+    if (mt.transport === transport) {
+      mt.transport = null;
+      DrawerManager.notifyDisconnect(mt.id);
+    }
+  };
+
+  try {
+    await transport.connect();
+    mt.transport = transport;
+    mt.clientId = transport.clientId;
+    mt.onStatus('connected');
+    callbacks.scheduleSettleResize(mt);
+
+    const settings = callbacks.getSettings();
+    if (settings && settings.encoding !== 'utf-8') {
+      callbacks.sendEncoding(mt, settings.encoding);
+    }
+
+    DrawerManager.setTransport(mt.id, transport);
+  } catch (e) {
+    console.error(`[terminal] IPC connect failed for session ${mt.id}:`, e);
+    mt.onStatus('disconnected');
+  }
+}
+
+export function connectTerminal(mt: ManagedTerminal, callbacks: WsCallbacks): void {
+  if (mt.isRemote) {
+    connectWebSocket(mt, callbacks);
+  } else {
+    void connectIpc(mt, callbacks);
+  }
+}
+
 export function scheduleReconnect(mt: ManagedTerminal, connectFn: (mt: ManagedTerminal) => void): void {
+  if (!mt.isRemote) return;
+
   if (mt.reconnectAttempt >= 30 || mt.ended) {
     mt.onStatus('disconnected');
     return;

@@ -7,6 +7,7 @@ import {
   MsgFileDownloadResume,
   type FileInfo,
 } from './protocol';
+import type { SendFn } from './file-upload';
 
 /** 下载缓冲写入批次大小 */
 export const WRITE_BATCH_SIZE = 8 * 1024 * 1024; // 8MB per disk write
@@ -63,11 +64,11 @@ export function createDownloadState(): DownloadState {
  */
 export async function startDownloadFromQueue(
   item: DownloadQueueItem,
-  ws: WebSocket | null,
+  send: SendFn | null,
   state: DownloadState,
   callbacks: DownloadCallbacks,
 ): Promise<DownloadState> {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
+  if (!send) {
     callbacks.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
     callbacks.onDownloadFinished?.();
     return state;
@@ -76,11 +77,9 @@ export async function startDownloadFromQueue(
   const newState = { ...state };
 
   try {
-    // 复用入队时已创建的 pending 传输记录，切换为 inprogress
     newState.currentDownloadId = item.transferId;
     callbacks.updateTransferProgress(newState.currentDownloadId, 0, 'inprogress');
 
-    // 创建空文件（后续以 append 模式追加写入）
     await fsWriteFile(item.savePath, new Uint8Array(0));
     newState.writeQueue = [];
     newState.isWriting = false;
@@ -97,7 +96,7 @@ export async function startDownloadFromQueue(
     const request = JSON.stringify({ path: item.remotePath });
     const message = encodeMessage(MsgFileDownloadStart, new TextEncoder().encode(request));
     try {
-      ws.send(message);
+      send(message);
     } catch (sendErr) {
       console.error('Failed to send download request:', sendErr);
       newState.pendingDownload = null;
@@ -138,7 +137,8 @@ export async function downloadFile(
   filename: string,
   currentPath: string,
   files: FileInfo[],
-  ws: WebSocket | null,
+  send: SendFn | null,
+  isConnected: () => boolean,
   state: DownloadState,
   callbacks: DownloadCallbacks,
   isDir: boolean = false,
@@ -147,12 +147,11 @@ export async function downloadFile(
     ? `/${filename}`
     : `${currentPath}/${filename}`;
 
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    console.error('WebSocket not ready');
+  if (!send || !isConnected()) {
+    console.error('Not connected');
     return state;
   }
 
-  // 复制 state 以进行更新
   const newState = { ...state };
 
   try {
@@ -167,9 +166,8 @@ export async function downloadFile(
 
     if (!savePath) return newState;
 
-    // 保存对话框期间 WebSocket 可能已断开，重新检查
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      console.error('WebSocket disconnected during save dialog');
+    if (!isConnected()) {
+      console.error('Disconnected during save dialog');
       alert('连接已断开，请稍后重试');
       return newState;
     }
@@ -194,7 +192,7 @@ export async function downloadFile(
     const request = JSON.stringify({ path: filePath });
     const message = encodeMessage(MsgFileDownloadStart, new TextEncoder().encode(request));
     try {
-      ws.send(message);
+      send(message);
     } catch (sendErr) {
       console.error('Failed to send download request:', sendErr);
       newState.pendingDownload = null;
@@ -369,11 +367,11 @@ export async function cleanupDownloadState(state: DownloadState): Promise<void> 
 
 /** 断点续传：检查已写入磁盘的大小，从断点继续下载 */
 export async function resumeDownload(
-  ws: WebSocket | null,
+  send: SendFn | null,
   state: DownloadState,
   callbacks: DownloadCallbacks,
 ): Promise<void> {
-  if (!state.pendingDownload || !ws || ws.readyState !== WebSocket.OPEN) {
+  if (!state.pendingDownload || !send) {
     // Cannot resume, mark as failed
     if (state.pendingDownload) {
       if (state.currentDownloadId) {
@@ -413,5 +411,5 @@ export async function resumeDownload(
   console.log(`Attempting download resume for ${state.pendingDownload.remotePath} from offset ${state.pendingDownload.receivedSize}`);
   const request = JSON.stringify({ path: state.pendingDownload.remotePath, offset: state.pendingDownload.receivedSize });
   const message = encodeMessage(MsgFileDownloadResume, new TextEncoder().encode(request));
-  ws.send(message);
+  send(message);
 }

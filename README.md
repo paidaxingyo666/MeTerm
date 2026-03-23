@@ -121,7 +121,6 @@
 
 | Dependency | Version | Installation |
 |------------|---------|-------------|
-| **Go** | 1.24+ | [golang.org/dl](https://golang.org/dl/) or `brew install go` |
 | **Node.js** | 20+ | [nodejs.org](https://nodejs.org/) or `brew install node` |
 | **Rust** | latest stable | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | **Make** | — | macOS built-in; Linux: `sudo apt install build-essential` |
@@ -136,15 +135,14 @@ cd MeTerm
 # Install desktop frontend dependencies
 cd desktop && npm install && cd ..
 
-# Start desktop app in dev mode (auto-builds Go sidecar)
+# Start desktop app in dev mode
 make desktop-dev
 ```
 
 Windows development (from WSL):
 
 ```bash
-make desktop-dev-win-rebuild      # Rebuild Go sidecar + start dev
-make desktop-dev-win              # Start dev (skip sidecar rebuild)
+make desktop-dev-win              # Start dev
 ```
 
 <details>
@@ -180,25 +178,52 @@ make desktop-build                # Tauri production build (current platform)
 
 ## Architecture
 
+Since v0.2.0, MeTerm has migrated from a Go sidecar architecture to a **pure Rust in-process backend**, eliminating external process management and inter-process communication overhead.
+
 ```text
 MeTerm/
-├── backend/           # Go backend (HTTP/WebSocket, PTY/SSH, SFTP)
-├── frontend/          # Web frontend (xterm.js + Vite)
-├── desktop/           # Tauri v2 desktop app (Rust + TypeScript)
-│   ├── src/           #   Frontend TypeScript modules (90+ files)
-│   └── src-tauri/     #   Rust backend (Tauri commands, sidecar management)
-├── cloudflare-worker/ # CF Worker auto-update service
-└── scripts/           # Build helper scripts
+├── desktop/              # Tauri v2 desktop app
+│   ├── src/              #   Frontend TypeScript (90+ modules)
+│   │   ├── ai-capsule*   #     AI assistant (floating dialog, tools, agent)
+│   │   ├── file-manager  #     SFTP file manager
+│   │   ├── session       #     Session management (Tauri IPC)
+│   │   ├── terminal-*    #     Terminal instances (local/remote)
+│   │   ├── split-pane    #     Split pane layout
+│   │   └── ...
+│   └── src-tauri/        #   Rust backend
+│       └── src/
+│           ├── commands/  #     Tauri IPC commands (session, window, menu, AI, etc.)
+│           └── server/    #     In-process HTTP/WebSocket server
+│               ├── session/    # Session state machine & manager
+│               ├── terminal/   # Cross-platform PTY (Unix/Windows/WSL/SSH)
+│               ├── executor/   # Local & SSH executors
+│               ├── jumpserver/ # JumpServer asset browser
+│               ├── dispatch    # Binary protocol message routing
+│               ├── file_handler# File transfer (SFTP adaptive pipeline)
+│               ├── auth        # Bearer token authentication
+│               ├── discover    # mDNS service discovery
+│               └── ...
+├── frontend/             # Standalone web frontend (xterm.js + Vite)
+├── cloudflare-worker/    # CF Worker auto-update service
+└── scripts/              # Build helper scripts
 ```
 
 ## Tech Stack
 
 | Layer | Technologies |
 |-------|-------------|
-| **Backend** | Go, gorilla/websocket, creack/pty, pkg/sftp, grandcat/zeroconf |
+| **Backend** | Rust, Axum, Tokio, xpty (cross-platform PTY), russh (SSH/SFTP), mdns-sd |
 | **Frontend** | TypeScript, Vite, xterm.js 5.x, CodeMirror 6 |
-| **Desktop** | Tauri v2 (Rust + TypeScript), tokio, reqwest, keyring |
+| **Desktop** | Tauri v2 (Rust + TypeScript), reqwest, keyring, rusqlite |
 | **Update** | Tauri Updater + Cloudflare Worker |
+
+### Architecture Highlights
+
+- **Single-process** — Backend server runs in-process via Tokio, no external sidecar management
+- **Cross-platform PTY** — Unified abstraction over Unix PTY, Windows ConPTY, WSL, and SSH
+- **Session state machine** — Created → Running → Draining (with ring buffer) → Closed, supporting seamless reconnection
+- **Binary protocol** — Custom binary messaging over WebSocket for efficient terminal I/O
+- **Adaptive SFTP pipeline** — Dynamic window scaling (2→64) based on RTT for high-throughput file transfers
 
 ---
 

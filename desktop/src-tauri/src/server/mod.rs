@@ -21,6 +21,7 @@ pub mod server_info;
 pub mod session;
 pub mod terminal;
 pub mod web_embed;
+pub mod dispatch;
 pub mod osc_filter;
 pub mod ws;
 
@@ -31,8 +32,8 @@ use std::sync::Arc;
 
 use axum::routing::{any, delete, get, post};
 use axum::{middleware, Router};
-use tokio::sync::Mutex;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tokio_util::sync::CancellationToken;
 
 use auth::Authenticator;
 use ban::BanManager;
@@ -67,13 +68,20 @@ pub struct ServerState {
     pub port: u16,
     pub lan_port: AtomicU16,
     pub ready: AtomicBool,
-    pub proxy_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub proxy_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub proxy_cancel: std::sync::Mutex<Option<CancellationToken>>,
     pub config: ServerConfig,
     pub session_manager: Arc<SessionManager>,
     pub authenticator: Arc<Authenticator>,
     pub ban_manager: Arc<BanManager>,
     pub pairing_manager: Arc<PairingManager>,
     pub discovery_manager: Option<DiscoveryManager>,
+    /// When true, all outgoing HTTP requests bypass system proxy (direct connection).
+    pub bypass_proxy: AtomicBool,
+    /// When true, accept connections from non-loopback addresses (LAN sharing).
+    pub lan_sharing: AtomicBool,
+    /// Custom device name for LAN sharing (empty = OS hostname).
+    pub device_name: std::sync::Mutex<String>,
 }
 
 impl ServerState {
@@ -99,6 +107,35 @@ impl ServerState {
 
     pub fn update_token(&self, new_token: String) {
         self.authenticator.set_token(new_token);
+    }
+
+    /// Get the display name for this device (custom name or OS hostname).
+    pub fn display_name(&self) -> String {
+        let custom = self.device_name.lock().unwrap().clone();
+        if custom.is_empty() {
+            hostname::get()
+                .map(|h| h.to_string_lossy().to_string())
+                .unwrap_or_else(|_| "MeTerm".to_string())
+        } else {
+            custom
+        }
+    }
+
+    /// Enable LAN sharing. Since the server already binds on 0.0.0.0,
+    /// no separate proxy is needed — just return the server port for mDNS registration.
+    /// Non-loopback connections are gated by the lan_access_guard middleware.
+    pub fn start_lan_proxy(&self) -> Result<u16, String> {
+        self.lan_sharing.store(true, Ordering::SeqCst);
+        self.lan_port.store(self.port, Ordering::Relaxed);
+        eprintln!("[lan] LAN sharing enabled on server port {}", self.port);
+        Ok(self.port)
+    }
+
+    /// Disable LAN sharing. Non-loopback connections will be rejected.
+    pub fn stop_lan_proxy(&self) {
+        self.lan_sharing.store(false, Ordering::SeqCst);
+        self.lan_port.store(self.port, Ordering::Relaxed);
+        eprintln!("[lan] LAN sharing disabled");
     }
 }
 
@@ -227,8 +264,30 @@ fn build_router(state: Arc<ServerState>) -> Router {
         router = router.fallback(web_embed::serve_static);
     }
 
+    // LAN access guard: reject non-loopback connections when sharing is disabled.
+    let lan_guard = middleware::from_fn({
+        let state = state.clone();
+        move |req: axum::extract::Request, next: middleware::Next| {
+            let state = state.clone();
+            async move {
+                if !state.lan_sharing.load(Ordering::SeqCst) {
+                    // Check if connection is from loopback
+                    let is_local = req.extensions()
+                        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                        .map(|ci| ci.0.ip().is_loopback())
+                        .unwrap_or(true); // no ConnectInfo = assume local
+                    if !is_local {
+                        return Err(axum::http::StatusCode::FORBIDDEN);
+                    }
+                }
+                Ok(next.run(req).await)
+            }
+        }
+    });
+
     router
         .layer(cors)
+        .layer(lan_guard)
         .layer(axum::Extension(state))
 }
 
@@ -247,13 +306,17 @@ pub fn create_dummy_state() -> ServerState {
         port: 0,
         lan_port: AtomicU16::new(0),
         ready: AtomicBool::new(false),
-        proxy_handle: Mutex::new(None),
+        proxy_handle: std::sync::Mutex::new(None),
+        proxy_cancel: std::sync::Mutex::new(None),
         config: ServerConfig::default(),
         session_manager: sm,
         authenticator: auth,
         ban_manager: bm,
         pairing_manager: pm,
         discovery_manager: None,
+        bypass_proxy: AtomicBool::new(true),
+        lan_sharing: AtomicBool::new(false),
+        device_name: std::sync::Mutex::new(String::new()),
     }
 }
 
@@ -284,19 +347,32 @@ pub async fn start(config: ServerConfig) -> Result<Arc<ServerState>, String> {
         ban_manager.clone(),
     );
 
-    let discovery_manager = DiscoveryManager::new(port).ok();
+    let discovery_manager = match DiscoveryManager::new(port) {
+        Ok(dm) => {
+            eprintln!("[meterm] mDNS discovery manager initialized");
+            Some(dm)
+        }
+        Err(e) => {
+            eprintln!("[meterm] mDNS discovery manager failed: {} — LAN scanning disabled", e);
+            None
+        }
+    };
 
     let state = Arc::new(ServerState {
         port,
         lan_port: AtomicU16::new(port),
         ready: AtomicBool::new(false),
-        proxy_handle: Mutex::new(None),
+        proxy_handle: std::sync::Mutex::new(None),
+        proxy_cancel: std::sync::Mutex::new(None),
         config,
         session_manager,
         authenticator,
         ban_manager,
         pairing_manager,
         discovery_manager,
+        bypass_proxy: AtomicBool::new(true),
+        lan_sharing: AtomicBool::new(false),
+        device_name: std::sync::Mutex::new(String::new()),
     });
 
     let app = build_router(state.clone());
@@ -315,7 +391,7 @@ pub async fn start(config: ServerConfig) -> Result<Arc<ServerState>, String> {
     tokio::spawn(async move {
         // First run uses the already-bound listener.
         log_serve_exit(
-            tokio::spawn(axum::serve(listener, app).into_future()).await
+            tokio::spawn(axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).into_future()).await
         );
 
         // Auto-restart loop: rebind to the same port and rebuild the router.
@@ -336,7 +412,7 @@ pub async fn start(config: ServerConfig) -> Result<Arc<ServerState>, String> {
             eprintln!("[meterm-server] restarted on {}", addr_for_restart);
 
             log_serve_exit(
-                tokio::spawn(axum::serve(listener, app).into_future()).await
+                tokio::spawn(axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).into_future()).await
             );
         }
     });

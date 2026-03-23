@@ -292,6 +292,8 @@ export interface AppSettings {
   pipScaleByScreen: boolean;
   /** Auto-create a new local session on app startup */
   autoNewSession: boolean;
+  /** Custom device name for LAN sharing/pairing (empty = OS hostname) */
+  deviceName: string;
 }
 
 const SETTINGS_KEY = 'meterm-settings';
@@ -343,6 +345,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   pipScale: 30,
   pipScaleByScreen: false,
   autoNewSession: false,
+  deviceName: '',
 };
 
 export function loadSettings(): AppSettings {

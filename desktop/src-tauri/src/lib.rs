@@ -1,7 +1,6 @@
 mod commands;
 #[allow(dead_code, unused_imports)]
 mod server;
-mod sidecar;
 mod tldr;
 mod vibrancy;
 
@@ -30,7 +29,6 @@ use serde::Serialize;
 struct WindowEvent {
 	target_window: String,
 }
-use sidecar::MeTermProcess;
 use std::sync::Arc;
 
 use std::collections::{HashSet, HashMap};
@@ -613,11 +611,6 @@ pub fn run() {
     let initial_path = extract_open_path(&cli_args);
     startup_log(&format!("CLI args: {:?}, initial_path: {:?}", cli_args, initial_path));
 
-    // Rust in-process backend is now the default. Go sidecar only if METERM_GO_SIDECAR=1.
-    let use_go_sidecar = std::env::var("METERM_GO_SIDECAR").unwrap_or_default() == "1";
-    startup_log(&format!("Backend mode: {}", if use_go_sidecar { "Go (sidecar)" } else { "Rust (in-process)" }));
-
-    let meterm = MeTermProcess::new();
     let lifecycle = AppLifecycleState::new_with_path(initial_path);
 
     // Server state is created in setup() where Tauri's async runtime is available.
@@ -644,14 +637,12 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init()) // kept for optional Go sidecar fallback
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .manage(meterm)
         .manage(lifecycle)
         .manage(tldr::TldrState::new())
         .setup(|app| {
@@ -692,8 +683,6 @@ pub fn run() {
                 }
             }
 
-            let use_go_sidecar = std::env::var("METERM_GO_SIDECAR").unwrap_or_default() == "1";
-
             // Start the in-process Rust server
             let server_state: Arc<server::ServerState> = {
                 let config = server::ServerConfig::default();
@@ -710,37 +699,7 @@ pub fn run() {
                     }
                 }
             };
-            let server_state_for_inject = server_state.clone();
             app.manage(server_state);
-
-            if use_go_sidecar {
-                // Legacy Go sidecar mode (for testing/comparison only).
-                let meterm = app.state::<MeTermProcess>();
-                let port = match meterm.start(app.handle()) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        startup_log(&format!("FATAL: Go sidecar failed: {}", e));
-                        eprintln!("FATAL: Go sidecar failed: {}", e);
-                        use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-                        app.dialog()
-                            .message(&e)
-                            .title("MeTerm")
-                            .kind(MessageDialogKind::Error)
-                            .blocking_show();
-                        std::process::exit(1);
-                    }
-                };
-                startup_log(&format!("Setup: Go sidecar on port {}", port));
-                eprintln!("meterm sidecar started on 127.0.0.1:{}", port);
-            } else {
-                // Default: Rust backend — inject port/token into MeTermProcess
-                let meterm = app.state::<MeTermProcess>();
-                meterm.inject_rust_backend(
-                    server_state_for_inject.port(),
-                    server_state_for_inject.token().unwrap_or_default(),
-                );
-                startup_log("Setup: using Rust backend");
-            }
 
             let quit_item = MenuItem::with_id(app, "quit", "Close Window", true, None::<&str>)?;
             let quit_all_item = MenuItem::with_id(app, "quit_all", "Quit Application", true, None::<&str>)?;
@@ -836,8 +795,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // session
             commands::session::get_meterm_connection_info,
-            commands::session::get_meterm_port,
-            commands::session::is_meterm_running,
             commands::session::get_pairing_info,
             commands::session::create_session,
             commands::session::list_sessions,
@@ -852,7 +809,6 @@ pub fn run() {
             // lifecycle
             commands::lifecycle::set_has_open_tabs,
             commands::lifecycle::request_app_quit,
-            commands::lifecycle::restart_meterm,
             commands::lifecycle::allow_window_close,
             commands::lifecycle::mark_window_initialized,
             commands::lifecycle::track_window_created_ts,
@@ -871,6 +827,10 @@ pub fn run() {
             commands::window::reveal_window,
             // lan
             commands::lan::toggle_lan_sharing,
+            commands::lan::discover_lan,
+            commands::lan::get_device_name,
+            commands::lan::set_device_name,
+            commands::lan::ping_remote,
             commands::lan::set_discoverable_state,
             commands::lan::list_clients,
             commands::lan::kick_client,
@@ -888,6 +848,14 @@ pub fn run() {
             commands::security::refresh_token,
             commands::security::set_custom_token,
             commands::security::revoke_all_clients,
+            commands::security::set_proxy_mode,
+            // ipc terminal
+            commands::ipc_terminal::ipc_connect_session,
+            commands::ipc_terminal::ipc_disconnect_session,
+            commands::ipc_terminal::ipc_session_input,
+            commands::ipc_terminal::ipc_session_resize,
+            commands::ipc_terminal::ipc_session_ping,
+            commands::ipc_terminal::ipc_session_control,
             // ai
             commands::ai::fetch_ai_models,
             commands::ai::fetch_ai_stream,
@@ -937,9 +905,9 @@ pub fn run() {
                         lifecycle.remove_initialized_window(&label);
 
                         // When a utility window is destroyed, skip the main-window check
-                        let is_utility = label == "settings" || label == "tray-dialog" || label == "updater" || label == "about";
+                        let is_utility = label == "settings" || label == "tray-dialog" || label == "updater" || label == "about" || label == "editor";
                         if !is_utility {
-                            const UTIL_LABELS: &[&str] = &["settings", "tray-dialog", "updater", "about"];
+                            const UTIL_LABELS: &[&str] = &["settings", "tray-dialog", "updater", "about", "editor"];
                             let lifecycle = app_handle.state::<AppLifecycleState>();
                             let has_main_windows = app_handle.webview_windows().keys()
                                 .any(|k| {
@@ -953,7 +921,7 @@ pub fn run() {
 
                             if !has_main_windows {
                                 // Last main window closed — close all utility windows
-                                for util_label in &["settings", "updater", "about"] {
+                                for util_label in &["settings", "updater", "about", "editor"] {
                                     if let Some(w) = app_handle.get_webview_window(util_label) {
                                         let _ = w.close();
                                     }
@@ -965,7 +933,7 @@ pub fn run() {
                         let lifecycle = app_handle.state::<AppLifecycleState>();
 
                         // Always allow utility windows to close
-                        if label == "settings" || label == "tray-dialog" || label == "updater" || label == "about" {
+                        if label == "settings" || label == "tray-dialog" || label == "updater" || label == "about" || label == "editor" {
                             debug_log!("[DEBUG] Window {} close allowed (utility)", label);
                             return;
                         }
@@ -1037,11 +1005,9 @@ pub fn run() {
                     }
                 }
                 RunEvent::Exit => {
-                    // Stop Go sidecar (if running)
-                    let meterm = app_handle.state::<MeTermProcess>();
-                    meterm.stop();
-                    // Stop Rust server session manager
+                    // Stop Rust server session manager and LAN proxy
                     let server = app_handle.state::<Arc<server::ServerState>>();
+                    server.stop_lan_proxy();
                     server.session_manager.stop();
                 }
                 _ => {}

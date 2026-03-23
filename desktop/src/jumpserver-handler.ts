@@ -23,6 +23,7 @@ import { ensureMeTermReady } from './session-actions';
 import { renderTabs } from './tab-renderer';
 import { renderToolbarActions } from './toolbar';
 import { createSSHSession, type SSHConnectionConfig } from './ssh';
+import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
@@ -146,11 +147,15 @@ export async function handleJumpServerConnect(config: JumpServerConfig): Promise
     apiToken: config.apiToken || secrets.apiToken,
   };
 
-  // Step 2: Authenticate (+ MFA)
+  // Step 2: Set proxy mode based on JumpServer config (before HTTP API calls)
+  const proxyMode = fullConfig.bypassProxy !== false ? 'direct' : 'system';
+  void invoke('set_proxy_mode', { mode: proxyMode });
+
+  // Step 3: Authenticate (+ MFA)
   const authed = await ensureJSAuthenticated(fullConfig);
   if (!authed) return;
 
-  // Step 3: Open standalone asset browser window
+  // Step 4: Open standalone asset browser window
   await openJumpServerBrowserWindow(fullConfig);
   StatusBar.setConnection('connected', `JumpServer: ${fullConfig.name}`);
 }
@@ -179,7 +184,11 @@ export async function connectToAsset(
     throw new Error(tokenResult.error || 'Failed to create connection token');
   }
 
-  // Step 2: Create SSH config using connection token
+  // Step 2: Set proxy mode based on JumpServer config
+  const proxyMode = config.bypassProxy !== false ? 'direct' : 'system';
+  void invoke('set_proxy_mode', { mode: proxyMode });
+
+  // Step 3: Create SSH config using connection token
   // Koko accepts JMS-{token} as username:
   //   v2/v3: JMS-{short_token}
   //   v4:    JMS-{token_id} (UUID)
@@ -194,6 +203,11 @@ export async function connectToAsset(
     authMethod: 'password',
     password: tokenResult.secret || tokenResult.token || '',
     skipShellHook: true,
+    proxyType: config.proxyType,
+    proxyHost: config.proxyHost,
+    proxyPort: config.proxyPort,
+    proxyUsername: config.proxyUsername,
+    proxyPassword: config.proxyPassword,
   };
 
   let jsTabId = '';

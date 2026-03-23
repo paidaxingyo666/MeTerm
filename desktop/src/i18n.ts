@@ -97,6 +97,14 @@ export interface Translations {
   sshConnectionName: string;
   sshSaveConnection: string;
   sshTestConnection: string;
+  sshProxy: string;
+  advancedOptions: string;
+  sshProxyType: string;
+  sshProxyNone: string;
+  sshProxyHost: string;
+  sshProxyPort: string;
+  sshProxyUsername: string;
+  sshProxyPassword: string;
   sshTestSuccess: string;
   sshTestFailed: string;
   sshTesting: string;
@@ -287,6 +295,11 @@ export interface Translations {
   remoteConnecting: string;
   remoteConnected: string;
   remoteFailed: string;
+  remoteTokenExpired: string;
+  remoteRepairBtn: string;
+  remoteRepairWaiting: string;
+  remoteRepairApproved: string;
+  remoteRepairDenied: string;
   remoteInvalidUrl: string;
   remoteInvalidJson: string;
   remoteScanComingSoon: string;
@@ -386,6 +399,7 @@ export interface Translations {
   sessionPrivateCannotConnect: string;
   remoteSessionClosed: string;
   enableTerminalNotifications: string;
+  jsBypassProxy: string;
   banDevice: string;
   banDeviceConfirm: string;
   remoteTypeBadge: string;
@@ -428,6 +442,10 @@ export interface Translations {
   fileLinkConfirmOpen: string;
   fileLinkSkipConfirmSetting: string;
   autoNewSession: string;
+  deviceName: string;
+  deviceNamePlaceholder: string;
+  deviceAlias: string;
+  deviceAliasPlaceholder: string;
   // tldr & command completion
   tldrHelp: string;
   tldrEnable: string;
@@ -623,6 +641,14 @@ const translations: Record<Language, Translations> = {
     sshConnectionName: 'Connection Name',
     sshSaveConnection: 'Save',
     sshTestConnection: 'Test',
+    sshProxy: 'Proxy',
+    advancedOptions: 'Advanced Options',
+    sshProxyType: 'Proxy Type',
+    sshProxyNone: 'Direct',
+    sshProxyHost: 'Proxy Host',
+    sshProxyPort: 'Port',
+    sshProxyUsername: 'Username',
+    sshProxyPassword: 'Password',
     sshTestSuccess: 'Connection successful!',
     sshTestFailed: 'Connection failed',
     sshTesting: 'Testing...',
@@ -796,6 +822,11 @@ const translations: Record<Language, Translations> = {
     remoteConnecting: 'Connecting...',
     remoteConnected: 'Connected',
     remoteFailed: 'Connection failed',
+    remoteTokenExpired: 'Token expired or revoked',
+    remoteRepairBtn: 'Re-pair',
+    remoteRepairWaiting: 'Waiting for approval...',
+    remoteRepairApproved: 'Paired! Loading sessions...',
+    remoteRepairDenied: 'Pairing denied or timed out',
     remoteInvalidUrl: 'Invalid address or missing token',
     remoteInvalidJson: 'Invalid JSON format',
     remoteScanComingSoon: 'LAN scan coming soon',
@@ -895,6 +926,7 @@ const translations: Record<Language, Translations> = {
     sessionPrivateCannotConnect: 'This session is private and cannot be connected.',
     remoteSessionClosed: 'The remote session has been closed by the host.',
     enableTerminalNotifications: 'Terminal Notifications',
+    jsBypassProxy: 'Bypass system proxy (for internal JumpServer)',
     banDevice: 'Ban Device',
     banDeviceConfirm: 'Ban this device and disconnect all its connections?',
     remoteTypeBadge: 'Remote',
@@ -937,6 +969,10 @@ const translations: Record<Language, Translations> = {
     fileLinkConfirmOpen: 'Open',
     fileLinkSkipConfirmSetting: 'Show file link open confirmation',
     autoNewSession: 'Auto-create local session on startup',
+    deviceName: 'Device Name',
+    deviceNamePlaceholder: 'Use OS hostname',
+    deviceAlias: 'Alias',
+    deviceAliasPlaceholder: 'Set a nickname',
     // JumpServer
     jsEditServer: 'Edit JumpServer',
     jsAddServer: 'Add JumpServer',
@@ -1146,6 +1182,14 @@ const translations: Record<Language, Translations> = {
     sshConnectionName: '连接名称',
     sshSaveConnection: '保存',
     sshTestConnection: '测试连接',
+    sshProxy: '代理',
+    advancedOptions: '高级选项',
+    sshProxyType: '代理类型',
+    sshProxyNone: '直连',
+    sshProxyHost: '代理地址',
+    sshProxyPort: '端口',
+    sshProxyUsername: '用户名',
+    sshProxyPassword: '密码',
     sshTestSuccess: '连接成功！',
     sshTestFailed: '连接失败',
     sshTesting: '测试中...',
@@ -1319,6 +1363,11 @@ const translations: Record<Language, Translations> = {
     remoteConnecting: '连接中...',
     remoteConnected: '已连接',
     remoteFailed: '连接失败',
+    remoteTokenExpired: '令牌已过期或被撤销',
+    remoteRepairBtn: '重新配对',
+    remoteRepairWaiting: '等待对方批准...',
+    remoteRepairApproved: '已配对！加载会话...',
+    remoteRepairDenied: '配对被拒绝或超时',
     remoteInvalidUrl: '地址无效或缺少令牌',
     remoteInvalidJson: 'JSON 格式无效',
     remoteScanComingSoon: '局域网扫描即将推出',
@@ -1418,6 +1467,7 @@ const translations: Record<Language, Translations> = {
     sessionPrivateCannotConnect: '该会话为私有模式，无法连接。',
     remoteSessionClosed: '远程会话已被主机关闭。',
     enableTerminalNotifications: '终端通知',
+    jsBypassProxy: '绕过系统代理（内网 JumpServer）',
     banDevice: '封禁设备',
     banDeviceConfirm: '封禁该设备并断开所有连接？',
     remoteTypeBadge: '远程',
@@ -1460,6 +1510,10 @@ const translations: Record<Language, Translations> = {
     fileLinkConfirmOpen: '打开',
     fileLinkSkipConfirmSetting: '显示文件链接打开确认弹窗',
     autoNewSession: '启动时自动创建本地会话',
+    deviceName: '设备名称',
+    deviceNamePlaceholder: '使用系统主机名',
+    deviceAlias: '别名',
+    deviceAliasPlaceholder: '设置昵称',
     // JumpServer
     jsEditServer: '编辑 JumpServer',
     jsAddServer: '添加 JumpServer',

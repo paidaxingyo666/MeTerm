@@ -102,6 +102,7 @@ jobs:
           name: meterm-windows-nsis
           path: desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/nsis/*.exe
           if-no-files-found: error
+          retention-days: 1
 
       - name: Upload MSI installer
         uses: actions/upload-artifact@v4
@@ -109,6 +110,7 @@ jobs:
           name: meterm-windows-msi
           path: desktop/src-tauri/target/${{ env.RUST_TARGET }}/release/bundle/msi/*.msi
           if-no-files-found: ignore
+          retention-days: 1
 
       - name: Publish release assets (tag only)
         if: ${{ startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'workflow_dispatch' || inputs.upload_release) }}

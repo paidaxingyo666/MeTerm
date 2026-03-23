@@ -1,5 +1,6 @@
 import { FileManager } from './file-manager';
 import { MsgInput, type SysInfoResponse, type ServerInfoResponse, type NetIfaceInfo } from './protocol';
+import type { TerminalTransport } from './terminal-transport';
 import { loadSettings } from './themes';
 import { t } from './i18n';
 import { escapeHtml } from './status-bar';
@@ -1160,25 +1161,36 @@ class DrawerManagerClass {
     const instance = this.drawers.get(sessionId);
     if (instance?.fileManager) {
       instance.fileManager.setWebSocket(ws);
-      // JumpServer 连接：SFTP 子系统初始化较慢，跳过自动加载，
-      // 在用户首次打开抽屉时再加载，并自动进入唯一的资产子目录
-      if (jumpServerConfigMap.has(sessionId)) {
-        // JumpServer SFTP 错误静默处理（Koko 网关 SFTP 初始化延迟）
-        instance.fileManager.suppressListErrors = true;
-        instance.fileManager.onFirstLoad = (files, _path) => {
-          // SFTP 成功后关闭静默，后续错误正常提示
-          if (instance.fileManager) instance.fileManager.suppressListErrors = false;
-          const dirs = files.filter(f => f.is_dir);
-          if (dirs.length === 1) {
-            instance.fileManager?.loadDirectory(dirs[0].name);
-          }
-        };
-        return;
-      }
-      // SSH 会话加载 "."（SFTP 主目录），本地会话加载 "/"
-      const initialPath = instance.serverConnectionInfo ? '.' : '/';
-      instance.fileManager.loadDirectory(initialPath);
+      this._afterConnect(sessionId, instance);
     }
+  }
+
+  setTransport(sessionId: string, transport: TerminalTransport): void {
+    const instance = this.drawers.get(sessionId);
+    if (instance?.fileManager) {
+      instance.fileManager.setTransport(transport);
+      this._afterConnect(sessionId, instance);
+    }
+  }
+
+  private _afterConnect(sessionId: string, instance: DrawerInstance): void {
+    if (!instance.fileManager) return;
+    // JumpServer 连接：SFTP 子系统初始化较慢，跳过自动加载，
+    // 在用户首次打开抽屉时再加载，并自动进入唯一的资产子目录
+    if (jumpServerConfigMap.has(sessionId)) {
+      instance.fileManager.suppressListErrors = true;
+      instance.fileManager.onFirstLoad = (files, _path) => {
+        if (instance.fileManager) instance.fileManager.suppressListErrors = false;
+        const dirs = files.filter(f => f.is_dir);
+        if (dirs.length === 1) {
+          instance.fileManager?.loadDirectory(dirs[0].name);
+        }
+      };
+      return;
+    }
+    // SSH 会话加载 "."（SFTP 主目录），本地会话加载 "/"
+    const initialPath = instance.serverConnectionInfo ? '.' : '/';
+    instance.fileManager.loadDirectory(initialPath);
   }
 
   getServerInfo(sessionId: string): { host: string; username: string; port: number } | null {

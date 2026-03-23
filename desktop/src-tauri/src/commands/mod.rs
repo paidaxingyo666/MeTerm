@@ -7,12 +7,10 @@ pub mod ai;
 pub mod window;
 pub mod fs;
 pub mod lifecycle;
+pub mod ipc_terminal;
 pub mod context_menu;
 
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::Serialize;
-
-use crate::sidecar::MeTermProcess;
 
 /// Validates that an ID string (session_id, client_id) contains only safe characters.
 fn validate_id(id: &str) -> Result<(), String> {
@@ -37,24 +35,6 @@ fn validate_ip(ip: &str) -> Result<(), String> {
 pub struct MeTermConnectionInfo {
     pub port: u16,
     pub token: String,
-}
-
-fn make_auth_headers(token: &str) -> Result<HeaderMap, String> {
-    let mut headers = HeaderMap::new();
-    let value = HeaderValue::from_str(&format!("Bearer {}", token)).map_err(|e| e.to_string())?;
-    headers.insert(AUTHORIZATION, value);
-    Ok(headers)
-}
-
-fn auth_client(state: &MeTermProcess) -> Result<reqwest::Client, String> {
-    let token = state
-        .token()
-        .ok_or_else(|| "meterm token not ready".to_string())?;
-    let headers = make_auth_headers(&token)?;
-    reqwest::Client::builder()
-        .default_headers(headers)
-        .build()
-        .map_err(|e| e.to_string())
 }
 
 // Re-export functions used directly (not via generate_handler!) in lib.rs

@@ -624,7 +624,8 @@ function createRunCommandTool(): ToolHandler {
       const timeout = (args.timeout as number) || 30;
 
       const mt = TerminalRegistry.get(ctx.sessionId);
-      if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) {
+      const connected = (mt?.transport && mt.transport.connected) || (mt?.ws && mt.ws.readyState === WebSocket.OPEN);
+      if (!connected) {
         return 'Error: terminal connection lost';
       }
 
@@ -853,7 +854,8 @@ function createSendInputTool(): ToolHandler {
     async execute(args, ctx): Promise<string> {
       const raw = args.text as string;
       const mt = TerminalRegistry.get(ctx.sessionId);
-      if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) {
+      const connected = (mt?.transport && mt.transport.connected) || (mt?.ws && mt.ws.readyState === WebSocket.OPEN);
+      if (!connected) {
         return 'Error: terminal connection lost';
       }
 
@@ -898,7 +900,8 @@ function createWatchTerminalTool(): ToolHandler {
 
     async execute(args, ctx): Promise<string> {
       const mt = TerminalRegistry.get(ctx.sessionId);
-      if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) {
+      const connected = (mt?.transport && mt.transport.connected) || (mt?.ws && mt.ws.readyState === WebSocket.OPEN);
+      if (!connected) {
         return 'Error: terminal connection lost';
       }
 

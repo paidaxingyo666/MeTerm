@@ -7,6 +7,7 @@ import { getFontFamily } from './fonts';
 import { encodeMessage, encodeResize, MsgInput } from './protocol';
 import { isWindowsPlatform } from './app-state';
 import { patchCanvasBgOpacity } from './terminal-patches';
+import { sendToTerminal } from './terminal-transport';
 import type { ManagedTerminal } from './terminal-types';
 
 export function applySettingsToTerminal(mt: ManagedTerminal, settings: AppSettings): void {
@@ -131,9 +132,11 @@ export function registerOscColorHandlers(
     if (data !== '?') return true; // Intercept color SET — prevent xterm.js from overriding our theme
     const settings = getSettings();
     const theme = settings ? getTheme(settings.theme) : null;
-    if (!theme || !mt.ws || mt.ws.readyState !== WebSocket.OPEN) return true;
+    if (!theme) return true;
+    const canSend = (mt.transport && mt.transport.connected) || (mt.ws && mt.ws.readyState === WebSocket.OPEN);
+    if (!canSend) return true;
     const response = `\x1b]10;${hexToOscRgb(theme.foreground)}\x07`;
-    mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode(response)));
+    sendToTerminal(mt, encodeMessage(MsgInput, new TextEncoder().encode(response)));
     return true;
   });
 
@@ -141,9 +144,11 @@ export function registerOscColorHandlers(
     if (data !== '?') return true; // Intercept color SET — prevent xterm.js from overriding our theme
     const settings = getSettings();
     const theme = settings ? getTheme(settings.theme) : null;
-    if (!theme || !mt.ws || mt.ws.readyState !== WebSocket.OPEN) return true;
+    if (!theme) return true;
+    const canSend = (mt.transport && mt.transport.connected) || (mt.ws && mt.ws.readyState === WebSocket.OPEN);
+    if (!canSend) return true;
     const response = `\x1b]11;${hexToOscRgb(theme.background)}\x07`;
-    mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode(response)));
+    sendToTerminal(mt, encodeMessage(MsgInput, new TextEncoder().encode(response)));
     return true;
   });
 }
@@ -163,23 +168,21 @@ export function registerOscColorHandlers(
  * limitation of the app, not the terminal.
  */
 export function notifyColorSchemeChange(mt: ManagedTerminal, theme: { foreground: string; background: string }): void {
-  if (!mt.ws || mt.ws.readyState !== WebSocket.OPEN) return;
+  const canSend = (mt.transport && mt.transport.connected) || (mt.ws && mt.ws.readyState === WebSocket.OPEN);
+  if (!canSend) return;
   if (mt._lastOscBg === theme.background) return;
   const isFirstSet = mt._lastOscBg === undefined;
   mt._lastOscBg = theme.background;
-  // First call is just initialization — don't nudge on app startup.
   if (isFirstSet) return;
 
-  // Nudge resize: shrink by 1 col then restore after a short delay.
-  // This triggers SIGWINCH, causing TUI apps that re-query terminal
-  // capabilities on resize to pick up the new background color via OSC 11.
   const cols = mt.lastSentCols || mt.terminal.cols;
   const rows = mt.lastSentRows || mt.terminal.rows;
   if (cols > 1) {
-    mt.ws.send(encodeResize(cols - 1, rows));
+    sendToTerminal(mt, encodeResize(cols - 1, rows));
     setTimeout(() => {
-      if (mt.ws?.readyState === WebSocket.OPEN) {
-        mt.ws.send(encodeResize(cols, rows));
+      const stillConnected = (mt.transport && mt.transport.connected) || (mt.ws && mt.ws.readyState === WebSocket.OPEN);
+      if (stillConnected) {
+        sendToTerminal(mt, encodeResize(cols, rows));
       }
     }, 80);
   }

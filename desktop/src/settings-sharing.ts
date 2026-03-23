@@ -1,10 +1,35 @@
 import { escapeHtml } from './status-bar';
 import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
+import { loadSettings, saveSettings } from './themes';
 import { listen } from '@tauri-apps/api/event';
 import { confirm } from '@tauri-apps/plugin-dialog';
 import { getPairingInfo } from './pairing';
 import QRCode from 'qrcode';
+
+const ALIAS_KEY = 'meterm-device-aliases';
+
+export function getDeviceAlias(ip: string): string {
+  try {
+    const map = JSON.parse(localStorage.getItem(ALIAS_KEY) || '{}');
+    return map[ip] || '';
+  } catch { return ''; }
+}
+
+export function setDeviceAlias(ip: string, alias: string): void {
+  try {
+    const map = JSON.parse(localStorage.getItem(ALIAS_KEY) || '{}');
+    if (alias) { map[ip] = alias; } else { delete map[ip]; }
+    localStorage.setItem(ALIAS_KEY, JSON.stringify(map));
+  } catch { /* ignore */ }
+}
+
+function deviceDisplayName(ip: string, serverName?: string): string {
+  const alias = getDeviceAlias(ip);
+  if (alias) return alias;
+  if (serverName && serverName !== ip) return serverName;
+  return ip;
+}
 
 export function createSharingTab(): HTMLDivElement {
   const tabSharing = document.createElement('div');
@@ -34,10 +59,64 @@ export function createSharingTab(): HTMLDivElement {
 
     const infoCol = document.createElement('div');
     infoCol.className = 'sharing-info-col';
-    infoCol.innerHTML = `
-      <div class="sharing-info-item"><span class="sharing-label">${t('pairingDeviceName')}</span><span class="sharing-value">${escapeHtml(data.name)}</span></div>
-      <div class="sharing-info-item"><span class="sharing-label">${t('pairingAddress')}</span><span class="sharing-value">${escapeHtml(data.addrs.join(', '))}</span></div>
-    `;
+
+    // Device name with edit
+    const nameItem = document.createElement('div');
+    nameItem.className = 'sharing-info-item';
+    const nameLabel = document.createElement('span');
+    nameLabel.className = 'sharing-label';
+    nameLabel.textContent = t('pairingDeviceName');
+    const nameValueRow = document.createElement('span');
+    nameValueRow.className = 'sharing-value';
+    nameValueRow.style.display = 'inline-flex';
+    nameValueRow.style.alignItems = 'center';
+    nameValueRow.style.gap = '6px';
+    const nameText = document.createElement('span');
+    nameText.textContent = data.name;
+    const nameEditBtn = document.createElement('button');
+    nameEditBtn.className = 'sharing-edit-btn';
+    nameEditBtn.title = t('deviceAlias');
+    nameEditBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'ssh-input';
+    nameInput.style.display = 'none';
+    nameInput.style.width = '100%';
+    nameInput.style.fontSize = '12px';
+    nameInput.value = data.name;
+    nameEditBtn.onclick = () => {
+      nameText.style.display = 'none';
+      nameEditBtn.style.display = 'none';
+      nameInput.style.display = '';
+      nameInput.focus();
+      nameInput.select();
+    };
+    const saveName = () => {
+      const name = nameInput.value.trim() || data.name;
+      nameText.textContent = name;
+      nameText.style.display = '';
+      nameEditBtn.style.display = '';
+      nameInput.style.display = 'none';
+      const s = loadSettings();
+      s.deviceName = name;
+      saveSettings(s);
+      void invoke('set_device_name', { name });
+    };
+    nameInput.addEventListener('blur', saveName);
+    nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveName(); });
+    nameValueRow.appendChild(nameText);
+    nameValueRow.appendChild(nameEditBtn);
+    nameItem.appendChild(nameLabel);
+    nameItem.appendChild(nameValueRow);
+    nameItem.appendChild(nameInput);
+    infoCol.appendChild(nameItem);
+
+    // Address
+    const addrItem = document.createElement('div');
+    addrItem.className = 'sharing-info-item';
+    addrItem.innerHTML = `<span class="sharing-label">${t('pairingAddress')}</span><span class="sharing-value">${escapeHtml(data.addrs.join(', '))}</span>`;
+    infoCol.appendChild(addrItem);
+
     qrRow.appendChild(infoCol);
     sharingSection.appendChild(qrRow);
 
@@ -324,7 +403,23 @@ export function createSharingTab(): HTMLDivElement {
 
           const ipEl = document.createElement('span');
           ipEl.className = 'device-card-ip';
-          ipEl.textContent = device.name ? `${device.name} (${device.ip})` : device.ip;
+          const displayName = deviceDisplayName(device.ip, device.name);
+          ipEl.textContent = displayName !== device.ip ? `${displayName} (${device.ip})` : device.ip;
+
+          // Alias edit button
+          const aliasBtn = document.createElement('button');
+          aliasBtn.className = 'device-card-alias-btn';
+          aliasBtn.title = t('deviceAlias');
+          aliasBtn.textContent = '✏';
+          aliasBtn.onclick = () => {
+            const current = getDeviceAlias(device.ip);
+            const input = prompt(t('deviceAliasPlaceholder'), current);
+            if (input !== null) {
+              setDeviceAlias(device.ip, input.trim());
+              const newName = deviceDisplayName(device.ip, device.name);
+              ipEl.textContent = newName !== device.ip ? `${newName} (${device.ip})` : device.ip;
+            }
+          };
 
           const countEl = document.createElement('span');
           countEl.className = 'device-card-count';
@@ -333,6 +428,7 @@ export function createSharingTab(): HTMLDivElement {
             : t('devicePairedIdle');
 
           infoArea.appendChild(ipEl);
+          infoArea.appendChild(aliasBtn);
           infoArea.appendChild(countEl);
 
           const actionsArea = document.createElement('div');

@@ -1,8 +1,4 @@
-//! WebSocket client — mirrors Go `session/client.go`.
-//!
-//! Each client has a background "write pump" task that drains `send_tx`
-//! and writes to the WebSocket.  The `connGen` counter prevents stale
-//! write-pump tasks from operating on a reconnected socket.
+//! Session client — supports both WebSocket (mpsc) and local IPC (Tauri Channel) downstream.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -16,15 +12,22 @@ use crate::server::protocol;
 /// Channel capacity for the send buffer (matches Go's 256).
 const SEND_CHANNEL_SIZE: usize = 256;
 
-/// A connected (or recently-disconnected) WebSocket client.
+/// Downstream transport for sending data to a client.
+enum DownStream {
+    /// WebSocket client: push to mpsc channel, WS handler reads from receiver.
+    Mpsc(mpsc::Sender<Vec<u8>>),
+    /// Local IPC client: push directly to Tauri Channel (no intermediate buffer).
+    IpcChannel(tauri::ipc::Channel<Vec<u8>>),
+}
+
+/// A connected (or recently-disconnected) client.
 pub struct Client {
     pub id: String,
     pub role: ClientRole,
     pub connected: AtomicBool,
     pub remote_addr: String,
     pub last_seen: Mutex<Instant>,
-    /// Sender half — write pump reads from the corresponding receiver.
-    send_tx: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
+    downstream: Mutex<Option<DownStream>>,
     /// Connection generation — incremented on each reconnect.
     conn_gen: AtomicU64,
 }
@@ -42,7 +45,7 @@ pub struct ClientInfo {
 }
 
 impl Client {
-    /// Create a new client with a fresh send channel.
+    /// Create a new WebSocket client with a fresh mpsc send channel.
     pub fn new(id: String, remote_addr: String, role: ClientRole) -> (Self, mpsc::Receiver<Vec<u8>>) {
         let (tx, rx) = mpsc::channel(SEND_CHANNEL_SIZE);
         let client = Self {
@@ -51,10 +54,28 @@ impl Client {
             connected: AtomicBool::new(true),
             remote_addr,
             last_seen: Mutex::new(Instant::now()),
-            send_tx: Mutex::new(Some(tx)),
+            downstream: Mutex::new(Some(DownStream::Mpsc(tx))),
             conn_gen: AtomicU64::new(0),
         };
         (client, rx)
+    }
+
+    /// Create a new local IPC client backed by a Tauri Channel.
+    pub fn new_ipc(
+        id: String,
+        remote_addr: String,
+        role: ClientRole,
+        channel: tauri::ipc::Channel<Vec<u8>>,
+    ) -> Self {
+        Self {
+            id,
+            role,
+            connected: AtomicBool::new(true),
+            remote_addr,
+            last_seen: Mutex::new(Instant::now()),
+            downstream: Mutex::new(Some(DownStream::IpcChannel(channel))),
+            conn_gen: AtomicU64::new(0),
+        }
     }
 
     /// Current connection generation.
@@ -82,50 +103,72 @@ impl Client {
             .unwrap_or_default()
     }
 
-    /// Non-blocking send. If the channel is full, the client is considered
-    /// a slow consumer and will be disconnected.
+    /// Non-blocking send. If the mpsc channel is full, the client is considered
+    /// a slow consumer and will be disconnected. IPC Channel has no backpressure.
     pub fn send(&self, data: Vec<u8>) -> bool {
         if !self.is_connected() {
             return false;
         }
-        let guard = self.send_tx.lock().unwrap();
-        if let Some(tx) = guard.as_ref() {
-            match tx.try_send(data) {
+        let guard = self.downstream.lock().unwrap();
+        match guard.as_ref() {
+            Some(DownStream::Mpsc(tx)) => match tx.try_send(data) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    // Slow consumer — close the channel so write pump exits.
                     drop(guard);
                     self.disconnect();
                     false
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
+            },
+            Some(DownStream::IpcChannel(ch)) => {
+                if ch.send(data).is_err() {
+                    drop(guard);
+                    self.disconnect();
+                    return false;
+                }
+                true
             }
-        } else {
-            false
+            None => false,
         }
     }
 
-    /// Mark the client as disconnected but keep identity for potential reconnect.
+    /// Blocking send for bulk transfers (file download).
+    /// Waits for mpsc channel capacity instead of disconnecting on full.
+    /// IPC Channel send is always non-blocking (no capacity limit).
+    pub async fn send_async(&self, data: Vec<u8>) -> bool {
+        if !self.is_connected() {
+            return false;
+        }
+        let downstream = {
+            let guard = self.downstream.lock().unwrap();
+            match guard.as_ref() {
+                Some(DownStream::Mpsc(tx)) => Some(DownStream::Mpsc(tx.clone())),
+                _ => None,
+            }
+        };
+        match downstream {
+            Some(DownStream::Mpsc(tx)) => tx.send(data).await.is_ok(),
+            _ => self.send(data), // IPC: use non-blocking send
+        }
+    }
+
+    /// Mark the client as disconnected.
     pub fn disconnect(&self) {
         self.connected.store(false, Ordering::SeqCst);
-        // Drop the sender so the write pump exits.
-        let mut guard = self.send_tx.lock().unwrap();
+        let mut guard = self.downstream.lock().unwrap();
         *guard = None;
     }
 
-    /// Reconnect with a new send channel. Returns the new receiver for the write pump.
+    /// Reconnect with a new mpsc send channel. Returns the new receiver for the WS write pump.
     pub fn reconnect(&self, _remote_addr: String) -> mpsc::Receiver<Vec<u8>> {
         let (tx, rx) = mpsc::channel(SEND_CHANNEL_SIZE);
         {
-            let mut guard = self.send_tx.lock().unwrap();
-            *guard = Some(tx);
+            let mut guard = self.downstream.lock().unwrap();
+            *guard = Some(DownStream::Mpsc(tx));
         }
         self.connected.store(true, Ordering::SeqCst);
         self.conn_gen.fetch_add(1, Ordering::SeqCst);
         self.touch();
-        // Note: remote_addr is not re-assignable through &self since it's not interior-mutable.
-        // In Go, RemoteAddr is updated on reconnect. We'd need Mutex<String> for that.
-        // For now, the original remote_addr is preserved.
         rx
     }
 

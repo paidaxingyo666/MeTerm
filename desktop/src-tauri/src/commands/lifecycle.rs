@@ -1,7 +1,6 @@
 use tauri::{AppHandle, Manager, State};
 
 use crate::AppLifecycleState;
-use crate::sidecar::MeTermProcess;
 
 #[tauri::command]
 pub fn set_has_open_tabs(state: State<'_, AppLifecycleState>, has_open_tabs: bool) {
@@ -36,18 +35,4 @@ pub fn track_window_created_ts(app: AppHandle, window_label: String) {
 pub fn request_app_quit(app: AppHandle, state: State<'_, AppLifecycleState>) {
     state.mark_quitting();
     app.exit(0);
-}
-
-/// Restart the meterm sidecar in-place. Called by the frontend when it detects
-/// the sidecar has crashed (meterm-exited event) and wants to auto-recover
-/// instead of quitting the app.
-#[tauri::command]
-pub async fn restart_meterm(
-    app: AppHandle,
-    meterm: State<'_, MeTermProcess>,
-) -> Result<(), String> {
-    meterm.stop();
-    // Brief pause to allow the OS to release the port before rebinding.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    meterm.start(&app).map(|_| ())
 }

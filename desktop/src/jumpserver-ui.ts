@@ -152,6 +152,132 @@ export function showJumpServerConfigDialog(
     // Org ID (optional, collapsed)
     const orgInput = createFormInput(form, t('jsOrgId'), 'text', prefill?.orgId || '', t('jsOrgIdPlaceholder'));
 
+    // ── Proxy settings (collapsible) ──
+    const proxyDetails = document.createElement('details');
+    proxyDetails.className = 'ssh-proxy-section';
+    const proxySummary = document.createElement('summary');
+    proxySummary.className = 'ssh-proxy-summary';
+    const proxyArrow = document.createElement('span');
+    proxyArrow.className = 'ssh-proxy-arrow';
+    proxyArrow.textContent = '▾';
+    proxySummary.append(t('advancedOptions'), proxyArrow);
+    proxyDetails.appendChild(proxySummary);
+
+    // Bypass + Proxy type in one row
+    const proxyTopRow = document.createElement('div');
+    proxyTopRow.className = 'ssh-form-row';
+
+    const bypassGroup = document.createElement('div');
+    bypassGroup.className = 'ssh-form-group ssh-form-group-flex';
+    const bypassLabel = document.createElement('label');
+    bypassLabel.style.display = 'flex';
+    bypassLabel.style.alignItems = 'center';
+    bypassLabel.style.gap = '4px';
+    bypassLabel.style.whiteSpace = 'nowrap';
+    const bypassCheckbox = document.createElement('input');
+    bypassCheckbox.type = 'checkbox';
+    bypassCheckbox.checked = prefill?.bypassProxy !== false;
+    bypassLabel.appendChild(bypassCheckbox);
+    bypassLabel.appendChild(document.createTextNode(t('jsBypassProxy')));
+    bypassGroup.appendChild(bypassLabel);
+
+    const jsProxyTypeGroup = document.createElement('div');
+    jsProxyTypeGroup.className = 'ssh-form-group ssh-form-group-flex';
+    const jsProxyTypeLabel = document.createElement('label');
+    jsProxyTypeLabel.textContent = t('sshProxyType');
+    const jsProxyTypeSelect = document.createElement('select');
+    jsProxyTypeSelect.className = 'ssh-input';
+    for (const [val, label] of [['', t('sshProxyNone')], ['socks5', 'SOCKS5'], ['http', 'HTTP CONNECT']] as const) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if (val === (prefill?.proxyType || '')) opt.selected = true;
+      jsProxyTypeSelect.appendChild(opt);
+    }
+    jsProxyTypeGroup.appendChild(jsProxyTypeLabel);
+    jsProxyTypeGroup.appendChild(jsProxyTypeSelect);
+
+    proxyTopRow.appendChild(bypassGroup);
+    proxyTopRow.appendChild(jsProxyTypeGroup);
+    proxyDetails.appendChild(proxyTopRow);
+
+    // Proxy host + port row
+    const jsProxyHostRow = document.createElement('div');
+    jsProxyHostRow.className = 'ssh-form-row';
+    jsProxyHostRow.style.display = prefill?.proxyType ? '' : 'none';
+
+    const jsProxyHostGroup = document.createElement('div');
+    jsProxyHostGroup.className = 'ssh-form-group ssh-form-group-flex';
+    const jsProxyHostLabel = document.createElement('label');
+    jsProxyHostLabel.textContent = t('sshProxyHost');
+    const jsProxyHostInput = document.createElement('input');
+    jsProxyHostInput.type = 'text';
+    jsProxyHostInput.className = 'ssh-input';
+    jsProxyHostInput.value = prefill?.proxyHost || '';
+    jsProxyHostInput.placeholder = '127.0.0.1';
+    jsProxyHostInput.autocomplete = 'off';
+    jsProxyHostGroup.appendChild(jsProxyHostLabel);
+    jsProxyHostGroup.appendChild(jsProxyHostInput);
+
+    const jsProxyPortGroup = document.createElement('div');
+    jsProxyPortGroup.className = 'ssh-form-group ssh-form-group-port';
+    const jsProxyPortLabel = document.createElement('label');
+    jsProxyPortLabel.textContent = t('sshProxyPort');
+    const jsProxyPortInput = document.createElement('input');
+    jsProxyPortInput.type = 'text';
+    jsProxyPortInput.inputMode = 'numeric';
+    jsProxyPortInput.pattern = '[0-9]*';
+    jsProxyPortInput.className = 'ssh-input';
+    jsProxyPortInput.value = prefill?.proxyPort ? String(prefill.proxyPort) : '';
+    jsProxyPortInput.placeholder = '1080';
+    jsProxyPortGroup.appendChild(jsProxyPortLabel);
+    jsProxyPortGroup.appendChild(jsProxyPortInput);
+
+    jsProxyHostRow.appendChild(jsProxyHostGroup);
+    jsProxyHostRow.appendChild(jsProxyPortGroup);
+    proxyDetails.appendChild(jsProxyHostRow);
+
+    // Proxy username + password row
+    const jsProxyAuthRow = document.createElement('div');
+    jsProxyAuthRow.className = 'ssh-form-row';
+    jsProxyAuthRow.style.display = prefill?.proxyType ? '' : 'none';
+
+    const jsProxyUserGroup = document.createElement('div');
+    jsProxyUserGroup.className = 'ssh-form-group ssh-form-group-flex';
+    const jsProxyUserLabel = document.createElement('label');
+    jsProxyUserLabel.textContent = t('sshProxyUsername');
+    const jsProxyUserInput = document.createElement('input');
+    jsProxyUserInput.type = 'text';
+    jsProxyUserInput.className = 'ssh-input';
+    jsProxyUserInput.value = prefill?.proxyUsername || '';
+    jsProxyUserInput.autocomplete = 'off';
+    jsProxyUserGroup.appendChild(jsProxyUserLabel);
+    jsProxyUserGroup.appendChild(jsProxyUserInput);
+
+    const jsProxyPassGroup = document.createElement('div');
+    jsProxyPassGroup.className = 'ssh-form-group ssh-form-group-flex';
+    const jsProxyPassLabel = document.createElement('label');
+    jsProxyPassLabel.textContent = t('sshProxyPassword');
+    const jsProxyPassInput = document.createElement('input');
+    jsProxyPassInput.type = 'password';
+    jsProxyPassInput.className = 'ssh-input';
+    jsProxyPassInput.value = prefill?.proxyPassword || '';
+    jsProxyPassGroup.appendChild(jsProxyPassLabel);
+    jsProxyPassGroup.appendChild(jsProxyPassInput);
+
+    jsProxyAuthRow.appendChild(jsProxyUserGroup);
+    jsProxyAuthRow.appendChild(jsProxyPassGroup);
+    proxyDetails.appendChild(jsProxyAuthRow);
+
+    jsProxyTypeSelect.addEventListener('change', () => {
+      const show = jsProxyTypeSelect.value !== '';
+      jsProxyHostRow.style.display = show ? '' : 'none';
+      jsProxyAuthRow.style.display = show ? '' : 'none';
+    });
+
+    if (prefill?.proxyType) proxyDetails.open = true;
+    form.appendChild(proxyDetails);
+
     // Group selector
     const groupRow = document.createElement('div');
     groupRow.className = 'ssh-form-row ssh-group-row';
@@ -232,6 +358,12 @@ export function showJumpServerConfigDialog(
         password: passwordInput.value || undefined,
         apiToken: tokenInput.value || undefined,
         orgId: orgInput.value.trim() || undefined,
+        bypassProxy: bypassCheckbox.checked,
+        proxyType: jsProxyTypeSelect.value || undefined,
+        proxyHost: jsProxyHostInput.value.trim() || undefined,
+        proxyPort: parseInt(jsProxyPortInput.value) || undefined,
+        proxyUsername: jsProxyUserInput.value.trim() || undefined,
+        proxyPassword: jsProxyPassInput.value || undefined,
       };
       if (!config.name || !config.baseUrl || !config.username) {
         setStatus(t('jsFieldsRequired'), 'error');

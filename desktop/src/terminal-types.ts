@@ -3,6 +3,7 @@ import type { CanvasAddon } from '@xterm/addon-canvas';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { LigaturesAddon } from '@xterm/addon-ligatures';
 import type { WebglAddon } from '@xterm/addon-webgl';
+import type { TerminalTransport } from './terminal-transport';
 
 export type SessionStatus = 'connecting' | 'connected' | 'reconnecting' | 'ended' | 'notfound' | 'disconnected';
 
@@ -26,6 +27,7 @@ export interface ManagedTerminal {
   container: HTMLDivElement;
   thumbnailContainer: HTMLDivElement;
   ws: WebSocket | null;
+  transport: TerminalTransport | null;
   clientId: string | null;
   ended: boolean;
   reconnectAttempt: number;
@@ -58,6 +60,8 @@ export interface ManagedTerminal {
   kicked?: boolean;
   /** Last reported OSC background color — used to detect actual theme change */
   _lastOscBg?: string;
+  // _userScrolledUp and scroll stabilization are handled via closures
+  // in terminal.ts (not stored on ManagedTerminal).
   /** OSC 7766 marker resolvers — key is marker ID, value resolves with exit code */
   _oscMarkerResolvers: Map<string, (exitCode: number) => void>;
   /** Shell integration state — tracked via OSC 7768 prompt hook */

@@ -58,6 +58,7 @@ pub fn create_window_at_position(app: AppHandle, x: f64, y: f64) -> Result<Strin
     {
         builder = builder.decorations(false).transparent(false);
     }
+    #[allow(unused)]
     let win = builder.build().map_err(|e| e.to_string())?;
 
     // macOS: alpha=0 + orderBack: adds window to compositor behind all others,
@@ -205,6 +206,7 @@ pub fn create_transparent_window(
         builder = builder.decorations(false);
     }
 
+    #[allow(unused)]
     let win = builder.build().map_err(|e| e.to_string())?;
 
     // macOS: set alpha=0, then show() to add window to compositor invisibly.
@@ -238,9 +240,9 @@ pub fn set_window_vibrancy(
     app: AppHandle,
     label: String,
     enabled: bool,
-    fallback_r: Option<f64>,
-    fallback_g: Option<f64>,
-    fallback_b: Option<f64>,
+    _fallback_r: Option<f64>,
+    _fallback_g: Option<f64>,
+    _fallback_b: Option<f64>,
 ) -> Result<(), String> {
     let window = app
         .get_webview_window(&label)
@@ -264,7 +266,7 @@ pub fn set_window_vibrancy(
 
         // Set solid fallback background color for vibrancy flash prevention
         #[cfg(target_os = "macos")]
-        if let (Some(r), Some(g), Some(b)) = (fallback_r, fallback_g, fallback_b) {
+        if let (Some(r), Some(g), Some(b)) = (_fallback_r, _fallback_g, _fallback_b) {
             let _ = crate::vibrancy::set_vibrancy_fallback_color(&window, r, g, b);
         }
     } else {
@@ -313,7 +315,7 @@ pub fn set_traffic_lights_visible(window: tauri::Window, visible: bool) -> Resul
 
 #[tauri::command]
 pub fn get_main_window_count(app: AppHandle) -> u32 {
-    const UTILITY_LABELS: &[&str] = &["settings", "jumpserver-browser", "about", "updater", "tray-dialog"];
+    const UTILITY_LABELS: &[&str] = &["settings", "jumpserver-browser", "about", "updater", "tray-dialog", "editor"];
     app.webview_windows()
         .keys()
         .filter(|k| !UTILITY_LABELS.contains(&k.as_str()))

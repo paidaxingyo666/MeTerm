@@ -55,6 +55,19 @@ async function getAvailableShells(): Promise<ShellInfo[]> {
   return cachedShells;
 }
 
+/** Pre-cache shell list in background so context menu opens instantly. */
+export function preloadShells(): void {
+  void getAvailableShells();
+}
+
+/** Return the resolved default shell path from cached data (sync, best-effort). */
+export function getDefaultShellPath(): string | undefined {
+  if (!cachedShells) return undefined;
+  const userDefault = settings.defaultShell;
+  if (userDefault) return userDefault;
+  return cachedShells.find((s) => s.is_default)?.path;
+}
+
 // ── Tab context menu ──
 
 export function showTabContextMenu(event: MouseEvent, tab: Tab, tabIndex: number): void {

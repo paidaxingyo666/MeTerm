@@ -109,4 +109,5 @@ pub use inner::*;
 
 /// No-op on non-macOS platforms.
 #[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
 pub struct VibrancyGuard;

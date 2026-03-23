@@ -39,7 +39,8 @@ impl DiscoveryManager {
     }
 
     /// Enable or disable mDNS service registration.
-    pub fn set_discoverable(&self, enabled: bool, port: Option<u16>) -> Result<(), String> {
+    pub fn set_discoverable(&self, enabled: bool, port: Option<u16>, name: Option<&str>) -> Result<(), String> {
+        eprintln!("[mdns] set_discoverable: enabled={} port={:?} name={:?}", enabled, port, name);
         if let Some(p) = port {
             *self.port.lock().unwrap() = p;
         }
@@ -47,25 +48,35 @@ impl DiscoveryManager {
 
         if enabled {
             if *self.registered.lock().unwrap() {
-                return Ok(()); // already registered
+                eprintln!("[mdns] already registered, skipping");
+                return Ok(());
             }
 
+            let display_name = name.unwrap_or(&self.hostname);
+            eprintln!("[mdns] registering service: name={} port={}", display_name, current_port);
             let service_info = ServiceInfo::new(
                 SERVICE_TYPE,
-                &self.hostname,
-                &format!("{}.", self.hostname),
+                display_name,
+                &format!("{}.local.", self.hostname),
                 "",
                 current_port,
                 None,
             )
-            .map_err(|e| format!("service info: {}", e))?;
+            .map_err(|e| {
+                eprintln!("[mdns] ServiceInfo creation failed: {}", e);
+                format!("service info: {}", e)
+            })?
+            .enable_addr_auto();
 
             self.daemon
                 .register(service_info)
-                .map_err(|e| format!("register: {}", e))?;
+                .map_err(|e| {
+                    eprintln!("[mdns] register failed: {}", e);
+                    format!("register: {}", e)
+                })?;
 
             *self.registered.lock().unwrap() = true;
-            eprintln!("[mdns] Registered: {}.{} port={}", self.hostname, SERVICE_TYPE, current_port);
+            eprintln!("[mdns] Registered: {}.{} port={}", display_name, SERVICE_TYPE, current_port);
         } else {
             if !*self.registered.lock().unwrap() {
                 return Ok(());
@@ -84,6 +95,7 @@ impl DiscoveryManager {
 
     /// Scan for MeTerm services on the LAN.
     pub async fn discover(&self, timeout_secs: u64) -> Vec<DiscoveredService> {
+        eprintln!("[mdns] starting browse for {}", SERVICE_TYPE);
         let receiver = match self.daemon.browse(SERVICE_TYPE) {
             Ok(r) => r,
             Err(e) => {
@@ -108,34 +120,69 @@ impl DiscoveryManager {
                 move || receiver.recv_timeout(Duration::from_millis(500))
             })).await {
                 Ok(Ok(Ok(event))) => {
-                    if let ServiceEvent::ServiceResolved(info) = event {
-                        let port = info.get_port();
-                        let host = info.get_addresses()
-                            .iter()
-                            .next()
-                            .map(|a| a.to_string())
-                            .unwrap_or_default();
-
-                        // Filter out self
-                        if port == my_port && local_ips.contains(&host) {
-                            continue;
+                    match &event {
+                        ServiceEvent::ServiceFound(svc_type, name) => {
+                            eprintln!("[mdns] found: {} {}", svc_type, name);
                         }
+                        ServiceEvent::ServiceResolved(info) => {
+                            let port = info.get_port();
+                            let addrs = info.get_addresses();
 
-                        if services.len() < 50 {
-                            services.push(DiscoveredService {
-                                name: info.get_fullname().to_string(),
-                                host,
-                                port,
-                            });
+                            // Prefer IPv4 over IPv6
+                            let host = addrs.iter()
+                                .find(|a| a.is_ipv4())
+                                .or_else(|| addrs.iter().next())
+                                .map(|a| a.to_string())
+                                .unwrap_or_default();
+
+                            eprintln!("[mdns] resolved: {} host={} port={} (addrs={:?})", info.get_fullname(), host, port, addrs);
+
+                            // Filter out self: check if ANY address is local
+                            let is_self = port == my_port && addrs.iter().any(|a| local_ips.contains(&a.to_string()));
+                            if is_self {
+                                eprintln!("[mdns] skipping self");
+                                continue;
+                            }
+
+                            // Extract instance name from fullname (strip "._meterm._tcp.local.")
+                            let fullname = info.get_fullname().to_string();
+                            let instance_name = fullname
+                                .strip_suffix(&format!(".{}", SERVICE_TYPE))
+                                .unwrap_or(&fullname)
+                                .to_string();
+
+                            if services.iter().any(|s: &DiscoveredService| s.name == instance_name) {
+                                continue;
+                            }
+
+                            if services.len() < 50 {
+                                services.push(DiscoveredService {
+                                    name: instance_name,
+                                    host,
+                                    port,
+                                });
+                            }
+                        }
+                        ServiceEvent::ServiceRemoved(svc_type, name) => {
+                            eprintln!("[mdns] removed: {} {}", svc_type, name);
+                        }
+                        other => {
+                            eprintln!("[mdns] event: {:?}", other);
                         }
                     }
                 }
-                _ => continue,
+                Ok(Ok(Err(_))) => continue, // recv_timeout timed out
+                Ok(Err(e)) => {
+                    eprintln!("[mdns] spawn_blocking error: {}", e);
+                    break;
+                }
+                Err(_) => break, // overall timeout
             }
         }
 
         // Stop browsing
         let _ = self.daemon.stop_browse(SERVICE_TYPE);
+        eprintln!("[mdns] browse complete: {} services found", services.len());
         services
     }
 }

@@ -1,5 +1,6 @@
 import { encodeResize } from './protocol';
 import { isWindowsPlatform, isPipMode } from './app-state';
+import { sendToTerminal } from './terminal-transport';
 import type { ManagedTerminal } from './terminal-types';
 
 export function isVisible(mt: ManagedTerminal): boolean {
@@ -14,12 +15,11 @@ export function sendResize(mt: ManagedTerminal, cols: number, rows: number): voi
   if (cols <= 0 || rows <= 0) {
     return;
   }
-  if (mt.ws?.readyState !== WebSocket.OPEN) {
+  const canSend = (mt.transport && mt.transport.connected) || (mt.ws && mt.ws.readyState === WebSocket.OPEN);
+  if (!canSend) {
     return;
   }
-  // Always send resize to trigger SIGWINCH for TUI apps
-  // The backend will ignore if dimensions unchanged but still sends signal
-  mt.ws.send(encodeResize(cols, rows));
+  sendToTerminal(mt, encodeResize(cols, rows));
   mt.lastSentCols = cols;
   mt.lastSentRows = rows;
 }

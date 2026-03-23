@@ -27,10 +27,11 @@ import {
   registerOscColorHandlers,
 } from './terminal-settings';
 import { scheduleResize as _scheduleResize, sendResize } from './terminal-resize';
-import { initIMEState, setupKeyHandler, setupCompositionListeners } from './terminal-ime';
+import { setupKeyHandler, setupPasteListener } from './terminal-ime';
 import { handleOscEvents, type OscHandlerCallbacks } from './terminal-osc';
 import { setShellType } from './ai-tools';
-import { connectWebSocket, scheduleReconnect as _scheduleReconnect } from './terminal-websocket';
+import { connectTerminal, connectWebSocket, scheduleReconnect as _scheduleReconnect } from './terminal-websocket';
+import { sendToTerminal } from './terminal-transport';
 import { InlineCompletion } from './cmd-completion';
 import { globalCompletionIndex } from './cmd-completion-data';
 
@@ -51,38 +52,40 @@ class TerminalRegistryClass {
 
   sendPing(sessionId: string): void {
     const mt = this.terminals.get(sessionId);
-    if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) return;
+    if (!mt) return;
+    const canSend = (mt.transport && mt.transport.connected) || (mt.ws && mt.ws.readyState === WebSocket.OPEN);
+    if (!canSend) return;
     const ts = Date.now();
     this.pingTimestamps.set(sessionId, ts);
     const payload = new Uint8Array(4);
     const view = new DataView(payload.buffer);
     view.setUint32(0, ts & 0xffffffff);
-    mt.ws.send(encodeMessage(MsgPing, payload));
+    sendToTerminal(mt, encodeMessage(MsgPing, payload));
   }
 
   /** Send master request (viewer requesting control) */
   sendMasterRequest(sessionId: string): void {
     const mt = this.terminals.get(sessionId);
-    if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) return;
-    mt.ws.send(encodeMessage(MsgMasterRequest, new Uint8Array(0)));
+    if (!mt) return;
+    sendToTerminal(mt, encodeMessage(MsgMasterRequest, new Uint8Array(0)));
   }
 
   /** Send master approval/denial for a session */
   sendMasterApproval(sessionId: string, approved: boolean, requesterId: string): void {
     const mt = this.terminals.get(sessionId);
-    if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) return;
+    if (!mt) return;
     const requesterBytes = new TextEncoder().encode(requesterId);
     const payload = new Uint8Array(1 + requesterBytes.length);
     payload[0] = approved ? 1 : 0;
     payload.set(requesterBytes, 1);
-    mt.ws.send(encodeMessage(MsgMasterApproval, payload));
+    sendToTerminal(mt, encodeMessage(MsgMasterApproval, payload));
   }
 
   /** Reclaim master control for a session */
   sendMasterReclaim(sessionId: string): void {
     const mt = this.terminals.get(sessionId);
-    if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) return;
-    mt.ws.send(encodeMessage(MsgMasterReclaim, new Uint8Array(0)));
+    if (!mt) return;
+    sendToTerminal(mt, encodeMessage(MsgMasterReclaim, new Uint8Array(0)));
   }
 
   /** Send pairing approval/denial via any active master session.
@@ -92,10 +95,11 @@ class TerminalRegistryClass {
     const payload = new Uint8Array(1 + pairIdBytes.length);
     payload[0] = approved ? 1 : 0;
     payload.set(pairIdBytes, 1);
-    // Send through any active WebSocket connection
+    // Send through any active connection (IPC or WebSocket)
     for (const mt of this.terminals.values()) {
-      if (mt.ws && mt.ws.readyState === WebSocket.OPEN) {
-        mt.ws.send(encodeMessage(MsgPairApproval, payload));
+      const canSend = (mt.transport && mt.transport.connected) || (mt.ws && mt.ws.readyState === WebSocket.OPEN);
+      if (canSend) {
+        sendToTerminal(mt, encodeMessage(MsgPairApproval, payload));
         return true;
       }
     }
@@ -127,9 +131,7 @@ class TerminalRegistryClass {
   }
 
   private sendEncoding(mt: ManagedTerminal, encoding: string): void {
-    if (mt.ws?.readyState === WebSocket.OPEN) {
-      mt.ws.send(encodeMessage(MsgSetEncoding, new TextEncoder().encode(encoding)));
-    }
+    sendToTerminal(mt, encodeMessage(MsgSetEncoding, new TextEncoder().encode(encoding)));
   }
 
   private _applySettingsToTerminal(mt: ManagedTerminal): void {
@@ -141,11 +143,16 @@ class TerminalRegistryClass {
     registerOscColorHandlers(mt, terminal, () => this.settings);
   }
 
+  isSessionActive(sessionId: string): boolean {
+    const mt = this.terminals.get(sessionId);
+    return !!mt && !mt.ended;
+  }
+
   getAllSessions(): SessionInfo[] {
     return Array.from(this.terminals.values()).map((mt) => ({
       id: mt.id,
       title: mt.shellTitle || mt.title,
-      status: mt.ended ? 'ended' : mt.ws ? 'connected' : 'disconnected',
+      status: mt.ended ? 'ended' : (mt.transport?.connected || mt.ws) ? 'connected' : 'disconnected',
     }));
   }
 
@@ -373,6 +380,7 @@ class TerminalRegistryClass {
       container,
       thumbnailContainer,
       ws: null,
+      transport: null,
       clientId: null,
       ended: false,
       reconnectAttempt: 0,
@@ -398,10 +406,74 @@ class TerminalRegistryClass {
     // via MSG_OSC_EVENT → wsCallbacks.onOscEvent → handleOscEvents.
     // OSC 10/11 (color queries) remain in terminal-settings.ts.
 
-    // IME 修复 + 快捷键处理
-    initIMEState(mt);
+    // Viewport scroll stabilization.
+    //
+    // xterm.js's _refresh() transiently sets scrollArea.style.height to
+    // smaller values during buffer reflow (e.g. Ink cursor-up + rewrite).
+    // This causes the BROWSER to natively clamp scrollTop (bypassing any
+    // JS-level interception). When the height recovers, scrollTop stays
+    // at the clamped value — the viewport jumps to the top.
+    //
+    // Fix: prevent the scroll area height from shrinking. We intercept
+    // style.height writes on the scroll-area element and enforce a floor
+    // equal to the last seen maximum. This stops the browser from ever
+    // needing to clamp scrollTop. The floor resets on terminal resize
+    // (which legitimately changes the scroll area).
+    const viewportEl = container.querySelector('.xterm-viewport') as HTMLElement | null;
+    if (viewportEl) {
+      const scrollAreaEl = viewportEl.querySelector('.xterm-scroll-area') as HTMLElement | null;
+      if (scrollAreaEl) {
+        let _heightFloor = 0;
+        let _userScrolledUp = false;
+
+        viewportEl.addEventListener('wheel', (e) => {
+          if (e.deltaY < 0) _userScrolledUp = true;
+        }, { passive: true, capture: true });
+
+        viewportEl.addEventListener('scroll', () => {
+          const maxScroll = viewportEl.scrollHeight - viewportEl.clientHeight;
+          if (maxScroll <= 0 || viewportEl.scrollTop >= maxScroll - 1) {
+            _userScrolledUp = false;
+          }
+        }, { passive: true });
+
+        // Intercept style.height on the scroll area element.
+        const styleProto = Object.getPrototypeOf(scrollAreaEl.style);
+        const heightDesc = Object.getOwnPropertyDescriptor(styleProto, 'height')
+          || Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, 'height');
+        if (heightDesc?.set && heightDesc?.get) {
+          const origGet = heightDesc.get;
+          const origSet = heightDesc.set;
+          Object.defineProperty(scrollAreaEl.style, 'height', {
+            get() { return origGet.call(this); },
+            set(v: string) {
+              const num = parseFloat(v);
+              if (!isNaN(num)) {
+                if (num >= _heightFloor) {
+                  // Height increasing or equal — update floor and allow
+                  _heightFloor = num;
+                } else if (!_userScrolledUp) {
+                  // Height shrinking while viewport should be at bottom —
+                  // keep the floor to prevent browser scrollTop clamping
+                  origSet.call(this, _heightFloor + 'px');
+                  return;
+                }
+                // If user scrolled up, allow shrinking (don't interfere)
+              }
+              origSet.call(this, v);
+            },
+            configurable: true,
+          });
+        }
+
+        // Reset height floor on terminal resize (legitimate height change).
+        terminal.onResize(() => { _heightFloor = 0; });
+      }
+    }
+
+    // 快捷键 + paste 事件处理（IME composition 完全由 xterm.js 原生处理）
     setupKeyHandler(mt, terminal);
-    setupCompositionListeners(mt, terminal);
+    setupPasteListener(terminal);
 
     // Inline ghost text completion
     if (this.settings?.cmdCompletionEnabled && globalCompletionIndex.ready) {
@@ -421,11 +493,9 @@ class TerminalRegistryClass {
       if (mt.shellState.phase === 'agent_executing') {
         mt.shellState.lastInputSource = 'user';
       }
-      if (mt.ws?.readyState === WebSocket.OPEN) {
-        mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode(data)));
-        // For SSH sessions: if last pong is stale, send an immediate ping to detect dead connections
-        this.maybePingOnInput(mt.id);
-      }
+      sendToTerminal(mt, encodeMessage(MsgInput, new TextEncoder().encode(data)));
+      // For SSH sessions: if last pong is stale, send an immediate ping to detect dead connections
+      this.maybePingOnInput(mt.id);
       // Notify input listeners
       const listeners = this.inputListeners.get(mt.id);
       if (listeners) {
@@ -509,7 +579,7 @@ class TerminalRegistryClass {
   };
 
   private connect(mt: ManagedTerminal): void {
-    connectWebSocket(mt, this.wsCallbacks);
+    connectTerminal(mt, this.wsCallbacks);
   }
 
   private scheduleReconnect(mt: ManagedTerminal): void {
@@ -718,9 +788,9 @@ class TerminalRegistryClass {
 
   sendCommand(sessionId: string, command: string): void {
     const mt = this.terminals.get(sessionId);
-    if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) return;
+    if (!mt) return;
     const payload = new TextEncoder().encode('\x15' + command + '\n');
-    mt.ws.send(encodeMessage(MsgInput, payload));
+    sendToTerminal(mt, encodeMessage(MsgInput, payload));
   }
 
   /**
@@ -730,12 +800,12 @@ class TerminalRegistryClass {
    */
   sendAgentCommand(sessionId: string, command: string): void {
     const mt = this.terminals.get(sessionId);
-    if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) return;
+    if (!mt) return;
     mt.shellState.phase = 'agent_executing';
     mt.shellState.lastInputSource = 'agent';
     mt.shellState.agentCommandSeq++;
     const payload = new TextEncoder().encode('\x15' + command + '\n');
-    mt.ws.send(encodeMessage(MsgInput, payload));
+    sendToTerminal(mt, encodeMessage(MsgInput, payload));
   }
 
   /**
@@ -744,9 +814,9 @@ class TerminalRegistryClass {
    */
   sendInput(sessionId: string, text: string): void {
     const mt = this.terminals.get(sessionId);
-    if (!mt?.ws || mt.ws.readyState !== WebSocket.OPEN) return;
+    if (!mt) return;
     const payload = new TextEncoder().encode(text);
-    mt.ws.send(encodeMessage(MsgInput, payload));
+    sendToTerminal(mt, encodeMessage(MsgInput, payload));
   }
 
   /**
@@ -950,6 +1020,7 @@ class TerminalRegistryClass {
       container,
       thumbnailContainer,
       ws: null,
+      transport: null,
       clientId,
       ended: false,
       reconnectAttempt: 0,
@@ -973,8 +1044,7 @@ class TerminalRegistryClass {
 
     // OSC handlers are processed by Rust OscFilter → MSG_OSC_EVENT → handleOscEvents.
 
-    // IME 修复 + 快捷键处理（register before open — these work before open()）
-    initIMEState(mt);
+    // 快捷键处理（register before open — works before open()）
     setupKeyHandler(mt, terminal);
 
     terminal.onData((data) => {
@@ -985,9 +1055,7 @@ class TerminalRegistryClass {
       if (mt.shellState.phase === 'agent_executing') {
         mt.shellState.lastInputSource = 'user';
       }
-      if (mt.ws?.readyState === WebSocket.OPEN) {
-        mt.ws.send(encodeMessage(MsgInput, new TextEncoder().encode(data)));
-      }
+      sendToTerminal(mt, encodeMessage(MsgInput, new TextEncoder().encode(data)));
       const listeners = this.inputListeners.get(mt.id);
       if (listeners) {
         listeners.forEach((cb) => cb(data));
@@ -1031,8 +1099,8 @@ class TerminalRegistryClass {
     patchOverlayScrollbar(mt.terminal, mt.container);
     // patchConPtyAlternateScreen removed — see note above
 
-    // IME composition event listeners（textarea available after open）
-    setupCompositionListeners(mt, mt.terminal);
+    // paste 事件监听（textarea available after open）
+    setupPasteListener(mt.terminal);
 
     // Apply opacity to explicit TUI backgrounds (iTerm2-like transparency)
     const opacityVal = this.settings ? Math.max(20, Math.min(100, this.settings.opacity)) / 100 : 1;
@@ -1101,7 +1169,11 @@ class TerminalRegistryClass {
       // Reset reconnect counter
       mt.reconnectAttempt = 0;
 
-      // Close existing WebSocket if still open/connecting
+      // Close existing transport/WebSocket if still open/connecting
+      if (mt.transport) {
+        try { mt.transport.close(); } catch { /* ignore */ }
+        mt.transport = null;
+      }
       if (mt.ws) {
         try { mt.ws.close(); } catch { /* ignore */ }
         mt.ws = null;
@@ -1141,6 +1213,9 @@ class TerminalRegistryClass {
     }
     if (mt.canvasAddon) {
       mt.canvasAddon.dispose();
+    }
+    if (mt.transport) {
+      mt.transport.close();
     }
     if (mt.ws) {
       mt.ws.close();

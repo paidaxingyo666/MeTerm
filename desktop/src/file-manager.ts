@@ -54,7 +54,20 @@ let _activeDragDropInstance: FileManager | null = null;
 export class FileManager {
   private sessionId: string;
   private ws: WebSocket | null = null;
+  private transport: import('./terminal-transport').TerminalTransport | null = null;
   private currentPath: string = '/';
+
+  private get _isConnected(): boolean {
+    return !!(this.transport?.connected) || (this.ws?.readyState === WebSocket.OPEN);
+  }
+
+  private _send(data: Uint8Array): void {
+    if (this.transport?.connected) {
+      this.transport.send(data);
+    } else if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(data);
+    }
+  }
   private files: FileInfo[] = [];
   private listElement: HTMLElement;
   private pathInput: HTMLInputElement;
@@ -159,10 +172,20 @@ export class FileManager {
 
   setWebSocket(ws: WebSocket): void {
     this.ws = ws;
-    this.hideDisconnected();
+    this._onConnected();
+    this.setupMessageHandler();
+    this._resumeTransfers();
+  }
 
-    // 重置加载状态：旧的 WebSocket 断开后，之前的加载请求不会收到响应
-    // 必须在 setupMessageHandler 之前重置，否则后续 loadDirectory 会被防抖跳过
+  setTransport(transport: import('./terminal-transport').TerminalTransport): void {
+    this.transport = transport;
+    this._onConnected();
+    this.setupTransportMessageHandler();
+    this._resumeTransfers();
+  }
+
+  private _onConnected(): void {
+    this.hideDisconnected();
     if (this.isLoadingDirectory) {
       this.isLoadingDirectory = false;
       this.hideLoading();
@@ -171,23 +194,19 @@ export class FileManager {
       clearTimeout(this.loadingTimeout);
       this.loadingTimeout = null;
     }
-    // 重置真实进度状态
     this.useRealProgress = false;
     this.totalFiles = 0;
+  }
 
-    this.setupMessageHandler();
-
-    // Attempt to resume interrupted transfers instead of discarding them
+  private _resumeTransfers(): void {
     if (this.pendingUpload) {
       this.resumeUpload();
     } else if (this.uploadQueue.length > 0) {
-      // Reconnected between uploads — kick the queue
       this.processNextUpload();
     }
     if (this._dlState.pendingDownload) {
       this.resumeDownload();
     } else if (this.downloadQueue.length > 0) {
-      // Reconnected between downloads — kick the queue
       this.processNextDownload();
     }
   }
@@ -266,24 +285,67 @@ export class FileManager {
     };
   }
 
+  private setupTransportMessageHandler(): void {
+    if (!this.transport) return;
+    const originalOnMessage = this.transport.onmessage;
+    this.transport.onmessage = (data: ArrayBuffer) => {
+      const view = new Uint8Array(data);
+      if (view.length === 0) { originalOnMessage?.(data); return; }
+      const msgType = view[0];
+      if (!this.handleFileMessage(msgType, view.slice(1))) {
+        originalOnMessage?.(data);
+      }
+    };
+  }
+
+  private handleFileMessage(msgType: number, payload: Uint8Array): boolean {
+    const isFileMsg = (msgType >= 0x0a && msgType <= 0x16) || msgType === MsgFileReadResponse;
+
+    if (msgType === MsgError) {
+      this.handleError(payload);
+    } else if (msgType === MsgFileListProgress) {
+      this.handleFileListProgress(payload);
+    } else if (msgType === MsgFileListResp) {
+      this.handleFileListResponse(payload);
+    } else if (msgType === MsgFileDownloadChunk) {
+      _handleDownloadChunk(payload, this._dlState, this._dlCallbacks());
+    } else if (msgType === MsgFileUploadChunk) {
+      if (this.pendingUpload) {
+        if (payload.length === 8) {
+          const resumeView = new DataView(payload.buffer, payload.byteOffset, 8);
+          this.pendingUpload.offset = Number(resumeView.getBigUint64(0));
+          this.inFlightChunks = 0;
+          this.pipelineSize = 2;
+          this.pipelineAckCount = 0;
+          console.log(`Upload resume ACK: continuing from offset ${this.pendingUpload.offset}`);
+        } else {
+          this.inFlightChunks = Math.max(0, this.inFlightChunks - 1);
+          this.adaptPipeline();
+        }
+        this.sendUploadChunk();
+      }
+    } else if (msgType === MsgFileOperationResp) {
+      this.handleOperationResponse(payload);
+    } else if (msgType === MsgServerInfo) {
+      try {
+        const data = JSON.parse(new TextDecoder().decode(payload)) as ServerInfoResponse;
+        if (this.onServerInfo) this.onServerInfo(data);
+      } catch (e) {
+        console.error('Failed to parse server info:', e);
+      }
+    } else if (msgType === MsgFileReadResponse) {
+      handleFileReadResponse(payload);
+    }
+
+    return isFileMsg;
+  }
+
   async loadDirectory(path: string): Promise<void> {
-    // 详细的 WebSocket 状态检查
-    if (!this.ws) {
-      console.error('❌ WebSocket 未初始化 (ws = null)');
+    if (!this._isConnected) {
+      console.error('FileManager: not connected');
       alert('文件管理器未连接到服务器\n请关闭并重新打开抽屉，或刷新页面');
       return;
     }
-
-    const wsStates = ['CONNECTING (0)', 'OPEN (1)', 'CLOSING (2)', 'CLOSED (3)'];
-    const wsStateStr = wsStates[this.ws.readyState] || `UNKNOWN (${this.ws.readyState})`;
-
-    if (this.ws.readyState !== WebSocket.OPEN) {
-      console.error('❌ WebSocket 未就绪，当前状态:', wsStateStr);
-      alert(`WebSocket 连接已断开\n当前状态: ${wsStateStr}\n请关闭并重新打开抽屉，或刷新页面`);
-      return;
-    }
-
-    console.log('✅ WebSocket 状态正常:', wsStateStr);
 
     // 防抖：忽略300ms内对同一路径的重复请求
     const now = Date.now();
@@ -341,7 +403,7 @@ export class FileManager {
       const request = JSON.stringify({ path, request_id: requestId });
       const message = this.encodeMessage(MsgFileList, new TextEncoder().encode(request));
       console.log('📤 发送目录请求到服务器，路径:', path, 'requestId:', requestId, '消息大小:', message.length, 'bytes');
-      this.ws.send(message);
+      this._send(message);
       console.log('✅ 请求已发送，等待服务器响应...');
     } catch (err) {
       console.error('❌ 发送目录请求失败:', err);
@@ -465,8 +527,8 @@ export class FileManager {
         this.pendingUpload.offset = 0;
         const request = JSON.stringify({ path: this.pendingUpload.path, size: this.pendingUpload.content.length });
         const message = this.encodeMessage(MsgFileUploadStart, new TextEncoder().encode(request));
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send(message);
+        if (this._isConnected) {
+          this._send(message);
         }
         return;
       }
@@ -851,7 +913,7 @@ export class FileManager {
       ? `/${filename}`
       : `${dir}/${filename}`;
 
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this._isConnected) {
       console.error('WebSocket not ready');
       return;
     }
@@ -887,7 +949,7 @@ export class FileManager {
       return;
     }
     if (this.pendingUpload) return;
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this._isConnected) {
       // WebSocket 不可用，将队列中所有等待文件标记为失败
       for (const item of this.uploadQueue) {
         this.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
@@ -909,7 +971,7 @@ export class FileManager {
 
     const request = JSON.stringify({ path: item.path, size: item.size });
     const message = this.encodeMessage(MsgFileUploadStart, new TextEncoder().encode(request));
-    this.ws.send(message);
+    this._send(message);
     console.log(`Starting upload of ${item.filename} to ${item.path}`);
   }
 
@@ -972,7 +1034,7 @@ export class FileManager {
 
   private ensureRemoteDir(remotePath: string): Promise<void> {
     return new Promise((resolve) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this._isConnected) {
         resolve();
         return;
       }
@@ -987,7 +1049,7 @@ export class FileManager {
         resolve();
       };
 
-      sendMkdirRequest(this.ws, remotePath);
+      sendMkdirRequest((data) => this._send(data), remotePath);
     });
   }
 
@@ -1011,8 +1073,7 @@ export class FileManager {
     // Send as many chunks as the adaptive pipeline window allows.
     while (
       this.pendingUpload &&
-      this.ws &&
-      this.ws.readyState === WebSocket.OPEN &&
+      this._isConnected &&
       this.inFlightChunks < this.pipelineSize &&
       !this.isUploadPaused
     ) {
@@ -1032,7 +1093,7 @@ export class FileManager {
       view.setBigUint64(8, BigInt(offset));
       payload.set(chunkData, 16);
 
-      this.ws.send(this.encodeMessage(MsgFileUploadChunk, payload));
+      this._send(this.encodeMessage(MsgFileUploadChunk, payload));
 
       this.pendingUpload.offset = end;
       this.inFlightChunks++;
@@ -1047,7 +1108,7 @@ export class FileManager {
   }
 
   private resumeUpload(): void {
-    if (!this.pendingUpload || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.pendingUpload || !this._isConnected) {
       // Cannot resume, mark as failed
       if (this.pendingUpload) {
         this.pendingUpload = null;
@@ -1062,11 +1123,11 @@ export class FileManager {
     console.log(`Attempting upload resume for ${this.pendingUpload.path}`);
     const request = JSON.stringify({ path: this.pendingUpload.path, size: this.pendingUpload.content.length });
     const message = this.encodeMessage(MsgFileUploadResume, new TextEncoder().encode(request));
-    this.ws.send(message);
+    this._send(message);
   }
 
   private async resumeDownload(): Promise<void> {
-    await _resumeDownload(this.ws, this._dlState, this._dlCallbacks());
+    await _resumeDownload(this._isConnected ? (data: Uint8Array) => this._send(data) : null, this._dlState, this._dlCallbacks());
   }
 
   private handleOperationResponse(payload: Uint8Array): void {
@@ -1161,7 +1222,7 @@ export class FileManager {
       ? `/${filename}`
       : `${this.currentPath}/${filename}`;
 
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this._isConnected) {
       console.error('WebSocket not ready');
       return;
     }
@@ -1179,7 +1240,7 @@ export class FileManager {
       if (!savePath) return;
 
       // 保存对话框期间 WebSocket 可能已断开
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this._isConnected) {
         alert('连接已断开，请稍后重试');
         return;
       }
@@ -1206,7 +1267,7 @@ export class FileManager {
   private async processNextDownload(): Promise<void> {
     if (this.downloadQueue.length === 0) return;
     if (this._dlState.pendingDownload || this._isProcessingDownload) return;
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this._isConnected) {
       // WebSocket 不可用，将队列中所有等待文件标记为失败
       for (const item of this.downloadQueue) {
         this.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
@@ -1217,7 +1278,7 @@ export class FileManager {
 
     this._isProcessingDownload = true;
     const item = this.downloadQueue.shift()!;
-    this._dlState = await _startDownloadFromQueue(item, this.ws, this._dlState, this._dlCallbacks());
+    this._dlState = await _startDownloadFromQueue(item, this._isConnected ? (data: Uint8Array) => this._send(data) : null, this._dlState, this._dlCallbacks());
     this._isProcessingDownload = false;
   }
 
@@ -1253,7 +1314,7 @@ export class FileManager {
   }
 
   async deleteFile(path: string): Promise<void> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this._isConnected) {
       console.error('WebSocket not ready');
       return;
     }
@@ -1269,7 +1330,7 @@ export class FileManager {
 
     this.showFileOpLoading('删除中...');
     const message = this.encodeMessage(MsgFileOperation, new TextEncoder().encode(JSON.stringify(request)));
-    this.ws.send(message);
+    this._send(message);
     console.log(`Deleting ${fullPath}`);
   }
 
@@ -1279,7 +1340,7 @@ export class FileManager {
       return;
     }
 
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this._isConnected) {
       console.error('WebSocket not ready');
       return;
     }
@@ -1300,7 +1361,7 @@ export class FileManager {
 
     this.showFileOpLoading('重命名中...');
     const message = this.encodeMessage(MsgFileOperation, new TextEncoder().encode(JSON.stringify(request)));
-    this.ws.send(message);
+    this._send(message);
     console.log(`Renaming ${fullOldPath} to ${fullNewPath}`);
   }
 
@@ -1309,12 +1370,12 @@ export class FileManager {
   }
 
   requestServerInfo(type: 'sysinfo' | 'processes'): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this._isConnected) return;
     const payload = new TextEncoder().encode(JSON.stringify({ type }));
     const message = new Uint8Array(1 + payload.length);
     message[0] = MsgServerInfo;
     message.set(payload, 1);
-    this.ws.send(message);
+    this._send(message);
   }
 
   getFullPath(name: string): string {
@@ -1327,7 +1388,7 @@ export class FileManager {
       return;
     }
 
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this._isConnected) {
       console.error('WebSocket not ready');
       return;
     }
@@ -1340,7 +1401,7 @@ export class FileManager {
     };
 
     const message = this.encodeMessage(MsgFileOperation, new TextEncoder().encode(JSON.stringify(request)));
-    this.ws.send(message);
+    this._send(message);
     console.log(`Creating file ${fullPath}`);
   }
 
@@ -1350,7 +1411,7 @@ export class FileManager {
       return;
     }
 
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this._isConnected) {
       console.error('WebSocket not ready');
       return;
     }
@@ -1365,14 +1426,14 @@ export class FileManager {
     };
 
     const message = this.encodeMessage(MsgFileOperation, new TextEncoder().encode(JSON.stringify(request)));
-    this.ws.send(message);
+    this._send(message);
     console.log(`Creating directory ${fullPath}`);
   }
 
   // 检查远程文件是否存在
   private checkFileExists(path: string): Promise<{ exists: boolean; is_dir?: boolean; size?: number }> {
     return new Promise((resolve) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this._isConnected) {
         resolve({ exists: false });
         return;
       }
@@ -1397,7 +1458,7 @@ export class FileManager {
         path: path
       };
       const message = this.encodeMessage(MsgFileOperation, new TextEncoder().encode(JSON.stringify(request)));
-      this.ws.send(message);
+      this._send(message);
     });
   }
 
@@ -1763,20 +1824,20 @@ export class FileManager {
 
   // 发送下载流控消息给服务端
   private sendDownloadCtrl(msgType: number): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this._isConnected) return;
     try {
-      this.ws.send(this.encodeMessage(msgType, new Uint8Array(0)));
+      this._send(this.encodeMessage(msgType, new Uint8Array(0)));
     } catch { /* ignore */ }
   }
 
   // 删除远程 .meterm.part 临时文件
   private deleteRemotePartFile(remotePath: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this._isConnected) return;
     this.pendingPartCleanup = true;
     const partPath = remotePath + '.meterm.part';
     const request: FileOperationRequest = { operation: 'delete', path: partPath };
     const message = this.encodeMessage(MsgFileOperation, new TextEncoder().encode(JSON.stringify(request)));
-    this.ws.send(message);
+    this._send(message);
     console.log(`Cleaning up remote temp file: ${partPath}`);
   }
 

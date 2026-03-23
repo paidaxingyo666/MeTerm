@@ -2,6 +2,7 @@ import { encodeMessage, MsgFileList } from './protocol';
 import { sanitizeNotificationText } from './terminal-patches';
 import { prefetchDirCache } from './terminal-file-link';
 import { DrawerManager } from './drawer';
+import { sendToTerminal } from './terminal-transport';
 import type { ManagedTerminal } from './terminal-types';
 
 export interface OscHandlerCallbacks {
@@ -44,12 +45,10 @@ export function handleOscEvents(
           mt.shellState.cwd = cwd;
           if (DrawerManager.getServerInfo(mt.id)) {
             // SSH session: request remote directory listing via SFTP
-            if (mt.ws?.readyState === WebSocket.OPEN) {
-              try {
-                const req = JSON.stringify({ path: cwd });
-                mt.ws.send(encodeMessage(MsgFileList, new TextEncoder().encode(req)));
-              } catch { /* ignore */ }
-            }
+            try {
+              const req = JSON.stringify({ path: cwd });
+              sendToTerminal(mt, encodeMessage(MsgFileList, new TextEncoder().encode(req)));
+            } catch { /* ignore */ }
           } else {
             // Local session: prefetch local directory cache
             prefetchDirCache(cwd);
@@ -81,7 +80,8 @@ export function handleOscEvents(
         mt.shellState.lastCommand = ev.cmd ?? '';
         mt.shellState.phase = 'ready';
         mt.shellState.hookInjected = true;
-        if (includePrefetch && ev.cwd) {
+        // Only prefetch local directories — SSH sessions use SFTP via 'cwd' handler
+        if (includePrefetch && ev.cwd && !DrawerManager.getServerInfo(mt.id)) {
           prefetchDirCache(ev.cwd);
         }
         callbacks.onShellIdle(mt.id);

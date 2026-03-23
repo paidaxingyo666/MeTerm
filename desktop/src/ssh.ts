@@ -12,6 +12,11 @@ export interface SSHConnectionConfig {
   privateKey?: string;
   passphrase?: string;
   skipShellHook?: boolean;
+  proxyType?: string;      // 'socks5' | 'http' | '' (direct)
+  proxyHost?: string;
+  proxyPort?: number;
+  proxyUsername?: string;
+  proxyPassword?: string;
 }
 
 type SSHSessionCreateResponse = {
@@ -341,6 +346,11 @@ export async function createSSHSession(config: SSHConnectionConfig, trustedFinge
     passphrase: passphrase || null,
     trustedFingerprint: trustedFingerprint || null,
     skipShellHook: config.skipShellHook || null,
+    proxyType: config.proxyType || null,
+    proxyHost: config.proxyHost || null,
+    proxyPort: config.proxyPort || null,
+    proxyUsername: config.proxyUsername || null,
+    proxyPassword: config.proxyPassword || null,
   });
   const parsed = JSON.parse(raw);
 
@@ -449,6 +459,11 @@ export async function testSSHConnection(config: SSHConnectionConfig, trustedFing
     privateKey: config.privateKey || null,
     passphrase: passphrase || null,
     trustedFingerprint: trustedFingerprint || null,
+    proxyType: config.proxyType || null,
+    proxyHost: config.proxyHost || null,
+    proxyPort: config.proxyPort || null,
+    proxyUsername: config.proxyUsername || null,
+    proxyPassword: config.proxyPassword || null,
   });
   console.log('[ssh] test result raw:', raw);
   const parsed = JSON.parse(raw);
@@ -769,7 +784,125 @@ function createConnectionForm(
   statusMsg.id = 'ssh-form-status';
   form.appendChild(statusMsg);
 
-  // Helper to read form values
+  // ── Proxy settings (collapsible) ──
+  const proxySection = document.createElement('details');
+  proxySection.className = 'ssh-proxy-section';
+  const proxySummary = document.createElement('summary');
+  proxySummary.className = 'ssh-proxy-summary';
+  const proxyArrow = document.createElement('span');
+  proxyArrow.className = 'ssh-proxy-arrow';
+  proxyArrow.textContent = '▾';
+  proxySummary.append(t('advancedOptions'), proxyArrow);
+  proxySection.appendChild(proxySummary);
+
+  // Proxy type selector
+  const proxyTypeGroup = document.createElement('div');
+  proxyTypeGroup.className = 'ssh-form-group';
+  const proxyTypeLabel = document.createElement('label');
+  proxyTypeLabel.textContent = t('sshProxyType');
+  const proxyTypeSelect = document.createElement('select');
+  proxyTypeSelect.id = 'ssh-proxy-type';
+  proxyTypeSelect.className = 'ssh-input';
+  for (const [val, label] of [['', t('sshProxyNone')], ['socks5', 'SOCKS5'], ['http', 'HTTP CONNECT']]) {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = label;
+    if (val === (prefill?.proxyType || '')) opt.selected = true;
+    proxyTypeSelect.appendChild(opt);
+  }
+  proxyTypeGroup.appendChild(proxyTypeLabel);
+  proxyTypeGroup.appendChild(proxyTypeSelect);
+  proxySection.appendChild(proxyTypeGroup);
+
+  // Proxy host + port row (same structure as SSH host + port)
+  const proxyHostRow = document.createElement('div');
+  proxyHostRow.className = 'ssh-form-row';
+  proxyHostRow.style.display = prefill?.proxyType ? '' : 'none';
+
+  const proxyHostGroup = document.createElement('div');
+  proxyHostGroup.className = 'ssh-form-group ssh-form-group-flex';
+  const proxyHostLabel = document.createElement('label');
+  proxyHostLabel.textContent = t('sshProxyHost');
+  const proxyHostInput = document.createElement('input');
+  proxyHostInput.type = 'text';
+  proxyHostInput.id = 'ssh-proxy-host';
+  proxyHostInput.className = 'ssh-input';
+  proxyHostInput.value = prefill?.proxyHost || '';
+  proxyHostInput.placeholder = '127.0.0.1';
+  proxyHostInput.autocomplete = 'off';
+  proxyHostGroup.appendChild(proxyHostLabel);
+  proxyHostGroup.appendChild(proxyHostInput);
+
+  const proxyPortGroup = document.createElement('div');
+  proxyPortGroup.className = 'ssh-form-group ssh-form-group-port';
+  const proxyPortLabel = document.createElement('label');
+  proxyPortLabel.textContent = t('sshProxyPort');
+  const proxyPortInput = document.createElement('input');
+  proxyPortInput.type = 'text';
+  proxyPortInput.inputMode = 'numeric';
+  proxyPortInput.pattern = '[0-9]*';
+  proxyPortInput.id = 'ssh-proxy-port';
+  proxyPortInput.className = 'ssh-input';
+  proxyPortInput.value = prefill?.proxyPort ? String(prefill.proxyPort) : '';
+  proxyPortInput.placeholder = '1080';
+  proxyPortInput.addEventListener('focus', () => proxyPortInput.select());
+  proxyPortInput.addEventListener('input', () => {
+    const digits = proxyPortInput.value.replace(/\D/g, '');
+    const num = parseInt(digits, 10);
+    if (!digits || isNaN(num)) { proxyPortInput.value = ''; }
+    else if (num > 65535) { proxyPortInput.value = '65535'; }
+    else { proxyPortInput.value = String(num); }
+  });
+  proxyPortGroup.appendChild(proxyPortLabel);
+  proxyPortGroup.appendChild(proxyPortInput);
+
+  proxyHostRow.appendChild(proxyHostGroup);
+  proxyHostRow.appendChild(proxyPortGroup);
+  proxySection.appendChild(proxyHostRow);
+
+  // Proxy username + password row (same structure as SSH username + password)
+  const proxyAuthRow = document.createElement('div');
+  proxyAuthRow.className = 'ssh-form-row';
+  proxyAuthRow.style.display = prefill?.proxyType ? '' : 'none';
+
+  const proxyUserGroup = document.createElement('div');
+  proxyUserGroup.className = 'ssh-form-group ssh-form-group-flex';
+  const proxyUserLabel = document.createElement('label');
+  proxyUserLabel.textContent = t('sshProxyUsername');
+  const proxyUserInput = document.createElement('input');
+  proxyUserInput.type = 'text';
+  proxyUserInput.id = 'ssh-proxy-username';
+  proxyUserInput.className = 'ssh-input';
+  proxyUserInput.value = prefill?.proxyUsername || '';
+  proxyUserInput.autocomplete = 'off';
+  proxyUserGroup.appendChild(proxyUserLabel);
+  proxyUserGroup.appendChild(proxyUserInput);
+
+  const proxyPassGroup = document.createElement('div');
+  proxyPassGroup.className = 'ssh-form-group ssh-form-group-flex';
+  const proxyPassLabel = document.createElement('label');
+  proxyPassLabel.textContent = t('sshProxyPassword');
+  const proxyPassInput = document.createElement('input');
+  proxyPassInput.type = 'password';
+  proxyPassInput.id = 'ssh-proxy-password';
+  proxyPassInput.className = 'ssh-input';
+  proxyPassInput.value = prefill?.proxyPassword || '';
+  proxyPassGroup.appendChild(proxyPassLabel);
+  proxyPassGroup.appendChild(proxyPassInput);
+
+  proxyAuthRow.appendChild(proxyUserGroup);
+  proxyAuthRow.appendChild(proxyPassGroup);
+  proxySection.appendChild(proxyAuthRow);
+
+  proxyTypeSelect.addEventListener('change', () => {
+    const show = proxyTypeSelect.value !== '';
+    proxyHostRow.style.display = show ? '' : 'none';
+    proxyAuthRow.style.display = show ? '' : 'none';
+  });
+
+  if (prefill?.proxyType) proxySection.open = true;
+  form.appendChild(proxySection);
+
   const readFormConfig = (): SSHConnectionConfig => ({
     name: (document.getElementById('ssh-name') as HTMLInputElement).value || 'Unnamed',
     host: (document.getElementById('ssh-host') as HTMLInputElement).value,
@@ -778,6 +911,11 @@ function createConnectionForm(
     authMethod: (document.getElementById('ssh-authMethod') as HTMLSelectElement).value as 'password' | 'key',
     password: (document.getElementById('ssh-password') as HTMLInputElement).value,
     privateKey: (document.getElementById('ssh-privateKey') as HTMLInputElement).value,
+    proxyType: (document.getElementById('ssh-proxy-type') as HTMLSelectElement).value || undefined,
+    proxyHost: (document.getElementById('ssh-proxy-host') as HTMLInputElement)?.value || undefined,
+    proxyPort: parseInt((document.getElementById('ssh-proxy-port') as HTMLInputElement)?.value) || undefined,
+    proxyUsername: (document.getElementById('ssh-proxy-username') as HTMLInputElement)?.value || undefined,
+    proxyPassword: (document.getElementById('ssh-proxy-password') as HTMLInputElement)?.value || undefined,
   });
 
   const showStatus = (msg: string, type: 'success' | 'error' | 'info') => {

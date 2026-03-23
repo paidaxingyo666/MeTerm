@@ -2,6 +2,7 @@ import { t } from './i18n';
 import { icon } from './icons';
 import { escapeHtml } from './status-bar';
 import { invoke } from '@tauri-apps/api/core';
+import { getDeviceAlias } from './settings-sharing';
 import { loadGroupOrder, remoteKey, setConnectionGroup, removeConnectionGroup, getConnectionGroup } from './connection-groups';
 
 export interface RemoteServerInfo {
@@ -207,6 +208,37 @@ export function removeRecentRemoteConnection(host: string, port: number): void {
   saveRecentRemoteConnections(conns);
 }
 
+/**
+ * Check availability of recent remote connections via TCP ping,
+ * remove unreachable ones. Called on app startup.
+ */
+export async function pruneUnreachableRecentRemotes(): Promise<void> {
+  const recents = loadRecentRemoteConnections();
+  if (recents.length === 0) return;
+
+  const results = await Promise.allSettled(
+    recents.map(async (info) => {
+      try {
+        await invoke<string>('ping_remote', { host: info.host, port: info.port });
+        return true;
+      } catch {
+        return false;
+      }
+    }),
+  );
+
+  const reachable = recents.filter((_, i) => {
+    const r = results[i];
+    return r.status === 'fulfilled' && r.value;
+  });
+
+  if (reachable.length < recents.length) {
+    const removed = recents.length - reachable.length;
+    console.log(`[remote] pruned ${removed} unreachable recent remote connection(s)`);
+    saveRecentRemoteConnections(reachable);
+  }
+}
+
 type RemoteConnectHandler = (info: RemoteServerInfo, sessionId: string) => void;
 let connectHandler: RemoteConnectHandler | null = null;
 
@@ -258,6 +290,11 @@ export function parsePairingJson(json: string): RemoteServerInfo {
   return { host, port, token: data.token, name: data.name };
 }
 
+/** Error subclass for 401 responses — token expired / revoked. */
+export class TokenExpiredError extends Error {
+  constructor(msg: string) { super(msg); this.name = 'TokenExpiredError'; }
+}
+
 export async function fetchRemoteSessions(info: RemoteServerInfo): Promise<RemoteSession[]> {
   // Load token from keychain if not present in info (e.g., connecting from saved/recent card)
   let token = info.token;
@@ -268,10 +305,60 @@ export async function fetchRemoteSessions(info: RemoteServerInfo): Promise<Remot
   const resp = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  if (resp.status === 401) {
+    throw new TokenExpiredError(t('remoteTokenExpired'));
+  }
   if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
   const data = await resp.json();
   const sessions = data?.sessions ?? data;
   return Array.isArray(sessions) ? sessions : [];
+}
+
+/**
+ * Standalone pairing request — reusable from card popup and connect dialog.
+ * Calls onStatus for progress updates.
+ * Returns the new token on success, or null if denied/cancelled/timeout.
+ */
+export async function requestPairing(
+  host: string,
+  port: number,
+  secure: boolean | undefined,
+  signal: AbortSignal,
+): Promise<string | null> {
+  const baseUrl = remoteHttpBase({ host, port, token: '', secure });
+  const deviceName = await invoke<string>('get_device_name');
+
+  const createResp = await fetch(`${baseUrl}/api/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_info: deviceName }),
+    signal,
+  });
+  if (!createResp.ok) return null;
+  const { pair_id, secret } = await createResp.json();
+
+  // Poll for approval (every 2s, max 60s)
+  for (let i = 0; i < 30; i++) {
+    if (signal.aborted) return null;
+    await new Promise((r) => setTimeout(r, 2000));
+    if (signal.aborted) return null;
+
+    const pollResp = await fetch(
+      `${baseUrl}/api/pair/${pair_id}?secret=${encodeURIComponent(secret)}`,
+      { signal },
+    );
+    if (!pollResp.ok) continue;
+    const result = await pollResp.json();
+
+    if (result.status === 'approved' && result.token) {
+      await storeRemoteToken(host, port, result.token);
+      return result.token;
+    }
+    if (result.status === 'denied' || result.status === 'expired') {
+      return null;
+    }
+  }
+  return null; // timeout
 }
 
 function closeRemoteModal(): void {
@@ -568,7 +655,7 @@ export function showRemoteConnectDialog(): void {
         createResp = await fetch(`${baseUrl}/api/pair`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ device_info: 'MeTerm Desktop' }),
+          body: JSON.stringify({ device_info: await invoke<string>('get_device_name') }),
           signal,
         });
       } catch (fetchErr) {
@@ -957,7 +1044,63 @@ export function showRemoteCardSessionPopup(anchor: HTMLElement, info: RemoteServ
         };
       });
     } catch (err) {
-      content.innerHTML = `<div class="remote-list-error">${escapeHtml(String(err))}</div>`;
+      if (err instanceof TokenExpiredError) {
+        // Show re-pair UI inline
+        content.innerHTML = `<div class="remote-list-error">${escapeHtml(String(err))}</div>`;
+        const repairBtn = document.createElement('button');
+        repairBtn.className = 'remote-list-repair-btn';
+        repairBtn.textContent = t('remoteRepairBtn');
+        repairBtn.onclick = () => {
+          void startCardRepair();
+        };
+        content.appendChild(repairBtn);
+        // Stop auto-refresh while showing repair UI
+        cleanupCardPopup();
+      } else {
+        content.innerHTML = `<div class="remote-list-error">${escapeHtml(String(err))}</div>`;
+      }
+    }
+  }
+
+  let repairAbort: AbortController | null = null;
+
+  async function startCardRepair(): Promise<void> {
+    if (repairAbort) repairAbort.abort();
+    repairAbort = new AbortController();
+    content.innerHTML = `<div class="remote-list-loading">${escapeHtml(t('remoteRepairWaiting'))}</div>`;
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'remote-list-repair-btn';
+    cancelBtn.textContent = t('remotePairCancel');
+    cancelBtn.onclick = () => { repairAbort?.abort(); void loadSessions(); };
+    content.appendChild(cancelBtn);
+
+    try {
+      const newToken = await requestPairing(info.host, info.port, info.secure, repairAbort.signal);
+      if (newToken) {
+        // Update info with new token and reload sessions
+        info = { ...info, token: newToken };
+        content.innerHTML = `<div class="remote-list-loading">${escapeHtml(t('remoteRepairApproved'))}</div>`;
+        // Restart auto-refresh
+        cardPopupTimer = setInterval(() => {
+          if (document.querySelector('.remote-card-popup')) {
+            void loadSessions();
+          } else {
+            cleanupCardPopup();
+          }
+        }, 5000);
+        void loadSessions();
+      } else {
+        content.innerHTML = `<div class="remote-list-error">${escapeHtml(t('remoteRepairDenied'))}</div>`;
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'remote-list-repair-btn';
+        retryBtn.textContent = t('remoteRepairBtn');
+        retryBtn.onclick = () => { void startCardRepair(); };
+        content.appendChild(retryBtn);
+      }
+    } catch {
+      if (!repairAbort.signal.aborted) {
+        content.innerHTML = `<div class="remote-list-error">${escapeHtml(t('remoteFailed'))}</div>`;
+      }
     }
   }
 
@@ -1082,18 +1225,8 @@ function buildScanPanel(
     results.appendChild(scanningState);
 
     try {
-      const { port, token } = await invoke<{ port: number; token: string }>('get_meterm_connection_info');
-
-      const resp = await fetch(`http://127.0.0.1:${port}/api/discover?timeout=5`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: scanAbort.signal,
-      });
-
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}`);
-      }
-
-      const data = await resp.json();
+      const raw = await invoke<string>('discover_lan');
+      const data = JSON.parse(raw);
       const services: ScanService[] = data.services || [];
 
       if (services.length === 0) {
@@ -1169,7 +1302,8 @@ function renderScanCard(
 
   const name = document.createElement('div');
   name.className = 'remote-scan-card-name';
-  name.textContent = svc.name;
+  const alias = getDeviceAlias(svc.host);
+  name.textContent = alias || svc.name;
 
   const addr = document.createElement('div');
   addr.className = 'remote-scan-card-addr';
@@ -1217,10 +1351,8 @@ async function verifyScanService(
   connectBtn: HTMLButtonElement,
 ): Promise<void> {
   try {
-    const resp = await fetch(`${remoteHttpBase({ host: svc.host, port: svc.port, token: '' })}/api/ping`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    const data = await resp.json();
+    const raw = await invoke<string>('ping_remote', { host: svc.host, port: svc.port });
+    const data = JSON.parse(raw);
     if (data.service === 'meterm') {
       badge.className = 'remote-scan-card-badge verified';
       badge.textContent = t('remoteScanVerified');
@@ -1256,7 +1388,7 @@ async function startScanPairing(
     const createResp = await fetch(`${baseUrl}/api/pair`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device_info: 'MeTerm Desktop' }),
+      body: JSON.stringify({ device_info: await invoke<string>('get_device_name') }),
       signal,
     });
     if (!createResp.ok) {

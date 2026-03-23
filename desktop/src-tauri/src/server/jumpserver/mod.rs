@@ -151,9 +151,28 @@ pub struct ConnectionTokenRequest {
     pub protocol: String,
 }
 
+/// Global proxy bypass flag — when true, all JumpServer HTTP requests bypass system proxy.
+pub static BYPASS_PROXY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Build a reqwest Client respecting the global proxy bypass setting.
+fn build_http_client(timeout_secs: u64) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(std::time::Duration::from_secs(timeout_secs));
+    if BYPASS_PROXY.load(std::sync::atomic::Ordering::Relaxed) {
+        builder = builder.no_proxy();
+    }
+    builder.build().unwrap_or_default()
+}
+
 /// Client pool — caches JumpServerClient instances by base_url.
 static CLIENT_POOL: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<JumpServerClient>>>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Clear all cached clients (called when proxy mode changes).
+pub fn clear_client_pool() {
+    CLIENT_POOL.lock().unwrap().clear();
+}
 
 /// Get or create a cached JumpServer client for the given base URL.
 pub fn get_or_create_client(base_url: &str) -> Arc<tokio::sync::Mutex<JumpServerClient>> {
@@ -166,12 +185,14 @@ pub fn get_or_create_client(base_url: &str) -> Arc<tokio::sync::Mutex<JumpServer
 
 impl JumpServerClient {
     pub fn new(base_url: &str) -> Self {
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .timeout(std::time::Duration::from_secs(30))
-            .cookie_store(true)
-            .build()
-            .unwrap_or_default();
+            .cookie_store(true);
+        if BYPASS_PROXY.load(std::sync::atomic::Ordering::Relaxed) {
+            builder = builder.no_proxy();
+        }
+        let http = builder.build().unwrap_or_default();
         Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -789,11 +810,7 @@ impl JumpServerClient {
     /// Health check.
     pub async fn test_connection(base_url: &str) -> Result<(), String> {
         let url = format!("{}/api/health/", base_url.trim_end_matches('/'));
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = build_http_client(10);
 
         let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
         if resp.status().is_success() {

@@ -436,3 +436,51 @@
 [data-theme="light"] .ssh-btn-primary:hover {
   background: rgba(var(--accent-rgb, 0, 102, 204), 0.18);
 }
+
+/* ── Advanced options (collapsible proxy section) ── */
+.ssh-proxy-section {
+  margin-top: 4px;
+  border: none;
+}
+.ssh-proxy-section > .ssh-proxy-summary {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  user-select: none;
+  padding: 6px 0 4px;
+}
+/* Divider lines flanking the summary text */
+.ssh-proxy-summary::before,
+.ssh-proxy-summary::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-color, rgba(255,255,255,0.1));
+}
+.ssh-proxy-summary::-webkit-details-marker {
+  display: none;
+}
+/* Chevron arrow */
+.ssh-proxy-summary > .ssh-proxy-arrow {
+  font-size: 9px;
+  transition: transform 0.2s ease;
+  display: inline-block;
+}
+.ssh-proxy-section[open] > .ssh-proxy-summary > .ssh-proxy-arrow {
+  transform: rotate(180deg);
+}
+/* Expand animation */
+.ssh-proxy-section > :not(summary) {
+  animation: ssh-proxy-expand 0.2s ease-out;
+  transform-origin: top center;
+}
+@keyframes ssh-proxy-expand {
+  from { opacity: 0; transform: scaleY(0.9) translateY(-6px); }
+  to   { opacity: 1; transform: scaleY(1) translateY(0); }
+}

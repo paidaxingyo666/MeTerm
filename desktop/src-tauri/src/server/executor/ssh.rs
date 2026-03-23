@@ -19,15 +19,6 @@ impl SshExecutor {
     }
 }
 
-impl SshExecutor {
-    /// Start and return both the terminal and SFTP client.
-    pub async fn start_with_sftp(&self) -> Result<(SshTerminal, Option<std::sync::Arc<russh_sftp::client::SftpSession>>), String> {
-        let term = SshTerminal::connect(&self.config, self.cols, self.rows).await?;
-        let sftp = term.sftp.clone();
-        Ok((term, sftp))
-    }
-}
-
 #[async_trait::async_trait]
 impl Executor for SshExecutor {
     async fn start(&self) -> Result<Box<dyn Terminal>, String> {

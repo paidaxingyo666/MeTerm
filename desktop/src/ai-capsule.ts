@@ -6,7 +6,7 @@ import { globalCompletionIndex } from './cmd-completion-data';
 import { loadSettings, saveSettings } from './themes';
 import { injectShellHook } from './ai-tools';
 import { createOverlayScrollbar } from './overlay-scrollbar';
-import { jumpServerConfigMap } from './app-state';
+import { jumpServerConfigMap, sshConfigMap, remoteInfoMap } from './app-state';
 import { AIAgent, AgentCallbacks } from './ai-agent';
 import { escapeHtml } from './status-bar';
 import { resolveActiveModel, resolveModel } from './ai-provider';
@@ -877,13 +877,13 @@ class AICapsuleManagerClass {
     });
 
     // Shell hook injection:
-    // - Local shells: Go sidecar pre-installs via ZDOTDIR/--rcfile (zero frontend involvement)
+    // - Local shells: backend pre-installs hooks natively (ZDOTDIR/--rcfile on Unix,
+    //   -NoExit -Command on Windows PowerShell, PROMPT env on cmd.exe) — skip here.
     // - SSH/remote: ONLY if user explicitly enabled in Settings > AI (default OFF)
-    //   Industry consensus (iTerm2, VS Code, Windows Terminal): don't auto-inject on SSH.
-    //   Agent still works without hook via OSC 7766 marker fallback.
     // - JumpServer: never inject (Koko proxy incompatible)
     const sid = instance.sessionId;
-    if (!jumpServerConfigMap.has(sid) && loadSettings().shellHookInjection) {
+    const isRemoteSession = sshConfigMap.has(sid) || remoteInfoMap.has(sid);
+    if (isRemoteSession && !jumpServerConfigMap.has(sid) && loadSettings().shellHookInjection) {
       // User opted in — inject after shell settles (2s of output silence)
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       const tryInject = () => {

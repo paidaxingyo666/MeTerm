@@ -90,11 +90,15 @@ impl SessionManager {
     }
 
     /// List all clients across all sessions.
+    /// List all remote clients across all sessions (excludes local IPC clients).
     pub fn list_all_clients(&self) -> Vec<ClientInfo> {
         let sessions = self.sessions.lock().unwrap();
         let mut all = Vec::new();
         for session in sessions.values() {
-            all.extend(session.list_clients());
+            all.extend(
+                session.list_clients().into_iter()
+                    .filter(|c| !c.remote_addr.starts_with("ipc://")),
+            );
         }
         all
     }
@@ -105,7 +109,7 @@ impl SessionManager {
         let mut by_ip: HashMap<String, Vec<ClientInfo>> = HashMap::new();
         for client in all_clients {
             let ip = client.remote_addr.clone();
-            if ip.is_empty() || ip == "127.0.0.1" || ip == "::1" {
+            if ip.is_empty() || ip == "127.0.0.1" || ip == "::1" || ip.starts_with("ipc://") {
                 continue;
             }
             by_ip.entry(ip).or_default().push(client);
@@ -131,18 +135,13 @@ impl SessionManager {
         total
     }
 
-    /// Disconnect all clients across all sessions.
+    /// Disconnect all remote (non-loopback) clients across all sessions.
+    /// Sends ERR_KICKED and promotes next master if the master was kicked.
     pub fn disconnect_all_clients(&self) -> usize {
         let sessions = self.sessions.lock().unwrap();
         let mut total = 0;
         for session in sessions.values() {
-            let clients = session.clients.lock().unwrap();
-            for client in clients.values() {
-                if client.is_connected() {
-                    client.disconnect();
-                    total += 1;
-                }
-            }
+            total += session.disconnect_remote_clients();
         }
         total
     }

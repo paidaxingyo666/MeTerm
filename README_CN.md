@@ -121,7 +121,6 @@
 
 | 依赖 | 版本 | 安装方式 |
 |------|------|----------|
-| **Go** | 1.24+ | [golang.org/dl](https://golang.org/dl/) 或 `brew install go` |
 | **Node.js** | 20+ | [nodejs.org](https://nodejs.org/) 或 `brew install node` |
 | **Rust** | latest stable | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | **Make** | — | macOS 自带；Linux: `sudo apt install build-essential` |
@@ -136,15 +135,14 @@ cd MeTerm
 # 安装桌面端前端依赖
 cd desktop && npm install && cd ..
 
-# 启动桌面应用开发模式（自动构建 Go sidecar）
+# 启动桌面应用开发模式
 make desktop-dev
 ```
 
 Windows 开发（从 WSL 执行）：
 
 ```bash
-make desktop-dev-win-rebuild      # 重建 Go sidecar + 启动开发
-make desktop-dev-win              # 启动开发（跳过 sidecar 重建）
+make desktop-dev-win              # 启动开发
 ```
 
 <details>
@@ -180,25 +178,52 @@ make desktop-build                # Tauri 生产构建（当前平台）
 
 ## 架构概览
 
+从 v0.2.0 起，MeTerm 已从 Go sidecar 架构迁移到**纯 Rust 进程内后端**，消除了外部进程管理和进程间通信的开销。
+
 ```text
 MeTerm/
-├── backend/           # Go 后端（HTTP/WebSocket 服务、PTY/SSH、SFTP）
-├── frontend/          # Web 前端（xterm.js + Vite）
-├── desktop/           # Tauri v2 桌面应用（Rust + TypeScript）
-│   ├── src/           #   前端 TypeScript 模块（90+ 文件）
-│   └── src-tauri/     #   Rust 后端（Tauri 命令、sidecar 管理）
-├── cloudflare-worker/ # CF Worker 自动更新服务
-└── scripts/           # 构建辅助脚本
+├── desktop/              # Tauri v2 桌面应用
+│   ├── src/              #   前端 TypeScript（90+ 模块）
+│   │   ├── ai-capsule*   #     AI 助手（浮动对话、工具、代理）
+│   │   ├── file-manager  #     SFTP 文件管理器
+│   │   ├── session       #     会话管理（Tauri IPC）
+│   │   ├── terminal-*    #     终端实例（本地/远程）
+│   │   ├── split-pane    #     分屏布局
+│   │   └── ...
+│   └── src-tauri/        #   Rust 后端
+│       └── src/
+│           ├── commands/  #     Tauri IPC 命令（会话、窗口、菜单、AI 等）
+│           └── server/    #     进程内 HTTP/WebSocket 服务
+│               ├── session/    # 会话状态机与管理器
+│               ├── terminal/   # 跨平台 PTY（Unix/Windows/WSL/SSH）
+│               ├── executor/   # 本地与 SSH 执行器
+│               ├── jumpserver/ # JumpServer 资产浏览
+│               ├── dispatch    # 二进制协议消息路由
+│               ├── file_handler# 文件传输（SFTP 自适应流水线）
+│               ├── auth        # Bearer token 认证
+│               ├── discover    # mDNS 服务发现
+│               └── ...
+├── frontend/             # 独立 Web 前端（xterm.js + Vite）
+├── cloudflare-worker/    # CF Worker 自动更新服务
+└── scripts/              # 构建辅助脚本
 ```
 
 ## 技术栈
 
 | 层级 | 技术 |
 |------|------|
-| **后端** | Go, gorilla/websocket, creack/pty, pkg/sftp, grandcat/zeroconf |
+| **后端** | Rust, Axum, Tokio, xpty（跨平台 PTY）, russh（SSH/SFTP）, mdns-sd |
 | **前端** | TypeScript, Vite, xterm.js 5.x, CodeMirror 6 |
-| **桌面** | Tauri v2 (Rust + TypeScript), tokio, reqwest, keyring |
+| **桌面** | Tauri v2 (Rust + TypeScript), reqwest, keyring, rusqlite |
 | **更新** | Tauri Updater + Cloudflare Worker |
+
+### 架构亮点
+
+- **单进程架构** — 后端服务通过 Tokio 在进程内运行，无需管理外部 sidecar 进程
+- **跨平台 PTY** — 统一抽象 Unix PTY、Windows ConPTY、WSL 和 SSH 终端
+- **会话状态机** — Created → Running → Draining（环形缓冲区保存输出）→ Closed，支持无缝重连
+- **二进制协议** — WebSocket 上的自定义二进制消息传输，高效终端 I/O
+- **SFTP 自适应流水线** — 基于 RTT 动态窗口调整（2→64），实现高吞吐文件传输
 
 ---
 

@@ -29,6 +29,17 @@ pub struct SshConfig {
     pub trusted_fingerprint: String,
     #[serde(default)]
     pub disable_hook: bool,
+    /// Proxy type: "socks5", "http", or empty for direct connection.
+    #[serde(default)]
+    pub proxy_type: String,
+    #[serde(default)]
+    pub proxy_host: String,
+    #[serde(default)]
+    pub proxy_port: u16,
+    #[serde(default)]
+    pub proxy_username: String,
+    #[serde(default)]
+    pub proxy_password: String,
 }
 
 pub struct SshHandler {
@@ -163,8 +174,8 @@ impl SshTerminal {
             server_key_type: server_key_type.clone(),
         };
 
-        let addr = format!("{}:{}", config.host, config.port);
-        let mut session = match client::connect(Arc::new(ssh_config), &addr, handler).await {
+        let stream = establish_connection(config).await?;
+        let mut session = match client::connect_stream(Arc::new(ssh_config), stream, handler).await {
             Ok(s) => s,
             Err(e) => {
                 // Check if we captured a fingerprint — return structured error for frontend
@@ -310,42 +321,47 @@ impl SshTerminal {
             let _ = channel.close().await;
         });
 
-        // Open a second channel for SFTP file operations
-        let sftp = match session.channel_open_session().await {
-            Ok(sftp_channel) => {
-                match sftp_channel.request_subsystem(true, "sftp").await {
-                    Ok(()) => {
-                        match russh_sftp::client::SftpSession::new(sftp_channel.into_stream()).await {
-                            Ok(s) => {
-                                eprintln!("[ssh] SFTP subsystem initialized");
-                                Some(Arc::new(s))
-                            }
-                            Err(e) => {
-                                eprintln!("[ssh] SFTP session failed: {}", e);
-                                None
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[ssh] SFTP subsystem request failed: {}", e);
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("[ssh] SFTP channel open failed: {}", e);
-                None
-            }
-        };
-
         Ok(Self {
             output_rx: Mutex::new(output_rx),
             input_tx,
             resize_tx,
             session_handle: Arc::new(Mutex::new(Some(session))),
             done_token,
-            sftp,
+            sftp: None,
         })
+    }
+
+    /// Initialize SFTP on a separate channel. Call after `connect()`.
+    /// Safe to call in background — does not block terminal I/O.
+    pub async fn init_sftp(
+        session_handle: &Arc<Mutex<Option<client::Handle<SshHandler>>>>,
+    ) -> Option<Arc<russh_sftp::client::SftpSession>> {
+        let mut guard = session_handle.lock().await;
+        let session = guard.as_mut()?;
+
+        let sftp_channel = match session.channel_open_session().await {
+            Ok(ch) => ch,
+            Err(e) => {
+                eprintln!("[ssh] SFTP channel open failed: {}", e);
+                return None;
+            }
+        };
+
+        if let Err(e) = sftp_channel.request_subsystem(true, "sftp").await {
+            eprintln!("[ssh] SFTP subsystem request failed: {}", e);
+            return None;
+        }
+
+        match russh_sftp::client::SftpSession::new(sftp_channel.into_stream()).await {
+            Ok(s) => {
+                eprintln!("[ssh] SFTP subsystem initialized");
+                Some(Arc::new(s))
+            }
+            Err(e) => {
+                eprintln!("[ssh] SFTP session failed: {}", e);
+                None
+            }
+        }
     }
 }
 
@@ -398,4 +414,95 @@ pub async fn test_connection(config: &SshConfig) -> Result<(), String> {
     let term = SshTerminal::connect(config, 80, 24).await?;
     term.close().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Proxy connection helpers
+// ---------------------------------------------------------------------------
+
+/// Establish a TCP connection to the SSH target, optionally through a proxy.
+async fn establish_connection(config: &SshConfig) -> Result<tokio::net::TcpStream, String> {
+    let target = format!("{}:{}", config.host, config.port);
+
+    match config.proxy_type.as_str() {
+        "socks5" => connect_via_socks5(config, &target).await,
+        "http" => connect_via_http_connect(config, &target).await,
+        _ => {
+            // Direct connection
+            tokio::net::TcpStream::connect(&target)
+                .await
+                .map_err(|e| format!("TCP connect {}: {}", target, e))
+        }
+    }
+}
+
+/// Connect through a SOCKS5 proxy.
+async fn connect_via_socks5(config: &SshConfig, target: &str) -> Result<tokio::net::TcpStream, String> {
+    let proxy_addr = format!(
+        "{}:{}",
+        if config.proxy_host.is_empty() { "127.0.0.1" } else { &config.proxy_host },
+        if config.proxy_port == 0 { 1080 } else { config.proxy_port },
+    );
+
+    let stream = if !config.proxy_username.is_empty() {
+        tokio_socks::tcp::Socks5Stream::connect_with_password(
+            proxy_addr.as_str(),
+            target,
+            &config.proxy_username,
+            &config.proxy_password,
+        )
+        .await
+        .map_err(|e| format!("SOCKS5 proxy {}: {}", proxy_addr, e))?
+    } else {
+        tokio_socks::tcp::Socks5Stream::connect(proxy_addr.as_str(), target)
+            .await
+            .map_err(|e| format!("SOCKS5 proxy {}: {}", proxy_addr, e))?
+    };
+
+    Ok(stream.into_inner())
+}
+
+/// Connect through an HTTP CONNECT proxy.
+async fn connect_via_http_connect(config: &SshConfig, target: &str) -> Result<tokio::net::TcpStream, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let proxy_addr = format!(
+        "{}:{}",
+        if config.proxy_host.is_empty() { "127.0.0.1" } else { &config.proxy_host },
+        if config.proxy_port == 0 { 8080 } else { config.proxy_port },
+    );
+
+    let mut stream = tokio::net::TcpStream::connect(&proxy_addr)
+        .await
+        .map_err(|e| format!("HTTP proxy connect {}: {}", proxy_addr, e))?;
+
+    // Build CONNECT request
+    let mut request = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n", target, target);
+    if !config.proxy_username.is_empty() {
+        use base64::Engine;
+        let credentials = format!("{}:{}", config.proxy_username, config.proxy_password);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
+        request.push_str(&format!("Proxy-Authorization: Basic {}\r\n", encoded));
+    }
+    request.push_str("\r\n");
+
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|e| format!("HTTP CONNECT send: {}", e))?;
+
+    // Read response (just need "HTTP/1.x 200")
+    let mut buf = [0u8; 1024];
+    let n = stream
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("HTTP CONNECT read: {}", e))?;
+
+    let response = String::from_utf8_lossy(&buf[..n]);
+    if !response.contains("200") {
+        let first_line = response.lines().next().unwrap_or(&response);
+        return Err(format!("HTTP CONNECT failed: {}", first_line));
+    }
+
+    Ok(stream)
 }

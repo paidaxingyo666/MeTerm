@@ -151,7 +151,7 @@ export function renderRecentActivity(query: string): void {
     };
     card.appendChild(delBtn);
 
-    card.onclick = () => handleConnectionClick(item);
+    card.onclick = () => handleConnectionClick(item, card);
     track.appendChild(card);
   }
   section.appendChild(track);
@@ -443,7 +443,7 @@ function createConnectionRow(item: ConnectionItem, currentGroup: string | null, 
   row.className = `home-dash-conn-row home-dash-conn-${item.type}`;
   row.innerHTML = `<span class="home-dash-conn-name">${escapeHtml(item.name)}</span><span class="home-dash-conn-detail">${escapeHtml(item.detail)}</span>`;
 
-  row.onclick = () => handleConnectionClick(item);
+  row.onclick = () => handleConnectionClick(item, row);
   row.oncontextmenu = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -455,20 +455,32 @@ function createConnectionRow(item: ConnectionItem, currentGroup: string | null, 
 
 // ─── Connection click handler ───
 
-export function handleConnectionClick(item: ConnectionItem): void {
+export function handleConnectionClick(item: ConnectionItem, anchor?: HTMLElement): void {
   if (item.type === 'ssh') {
     const handler = getSSHConnectHandler();
-    if (handler) handler(item.raw as SSHConnectionConfig);
+    if (handler) {
+      try {
+        // handler is async (returns Promise<void>) — catch rejections
+        Promise.resolve(handler(item.raw as SSHConnectionConfig))
+          .catch((err) => console.error('[SSH connect error]', err));
+      } catch (err) {
+        console.error('[SSH connect error]', err);
+      }
+    }
   } else if (item.type === 'remote') {
     const info = item.raw as RemoteServerInfo;
-    showRemoteCardSessionPopup(document.body, info);
+    showRemoteCardSessionPopup(anchor || document.body, info);
   } else if (item.type === 'jumpserver') {
     const config = item.raw as JumpServerConfig;
     (async () => {
-      const secrets = await loadJSSecrets(config.name);
-      const fullConfig: JumpServerConfig = { ...config, password: secrets.password, apiToken: secrets.apiToken };
-      const { handleJumpServerConnect } = await import('./jumpserver-handler');
-      handleJumpServerConnect(fullConfig);
+      try {
+        const secrets = await loadJSSecrets(config.name);
+        const fullConfig: JumpServerConfig = { ...config, password: secrets.password, apiToken: secrets.apiToken };
+        const { handleJumpServerConnect } = await import('./jumpserver-handler');
+        handleJumpServerConnect(fullConfig);
+      } catch (err) {
+        console.error('[JumpServer connect error]', err);
+      }
     })();
   }
 }

@@ -163,12 +163,14 @@ jobs:
         with:
           name: meterm-macos-arm64-dmg
           path: desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          retention-days: 1
 
       - name: Upload App Bundle (arm64)
         uses: actions/upload-artifact@v4
         with:
           name: meterm-macos-arm64-app
           path: desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+          retention-days: 1
 
       - name: Publish release assets (tag only)
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -312,12 +314,14 @@ jobs:
         with:
           name: meterm-macos-x86_64-dmg
           path: desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          retention-days: 1
 
       - name: Upload App Bundle (x86_64)
         uses: actions/upload-artifact@v4
         with:
           name: meterm-macos-x86_64-app
           path: desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+          retention-days: 1
 
       - name: Publish release assets (tag only)
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}

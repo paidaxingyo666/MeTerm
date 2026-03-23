@@ -1,7 +1,7 @@
+use std::sync::Arc;
 use tauri::State;
 
-use crate::sidecar::MeTermProcess;
-use super::auth_client;
+use crate::server::ServerState;
 
 // ─── Secure credential storage via OS keychain ───
 
@@ -123,143 +123,72 @@ fn read_sqlite_localstorage(path: &std::path::Path) -> Result<Vec<(String, Strin
 // ─── IP ban management ───
 
 #[tauri::command]
-pub async fn list_banned_ips(state: State<'_, MeTermProcess>) -> Result<String, String> {
-    let port = state.port();
-    let url = format!("http://127.0.0.1:{}/api/banned-ips", port);
-    let client = auth_client(&state)?;
-
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    resp.text().await.map_err(|e| e.to_string())
+pub async fn list_banned_ips(state: State<'_, Arc<ServerState>>) -> Result<String, String> {
+    let bans = state.ban_manager.list();
+    Ok(serde_json::json!({ "banned_ips": bans }).to_string())
 }
 
 #[tauri::command]
 pub async fn ban_ip(
-    state: State<'_, MeTermProcess>,
+    state: State<'_, Arc<ServerState>>,
     ip: String,
     reason: Option<String>,
 ) -> Result<String, String> {
     super::validate_ip(&ip)?;
-    let port = state.port();
-    let url = format!("http://127.0.0.1:{}/api/banned-ips", port);
-    let client = auth_client(&state)?;
-
-    let body = serde_json::json!({
-        "ip": ip,
-        "reason": reason.unwrap_or_default(),
-    });
-
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    resp.text().await.map_err(|e| e.to_string())
+    state
+        .ban_manager
+        .ban(&ip, &reason.unwrap_or_default())
+        .map_err(|e| e)?;
+    state.session_manager.kick_by_ip(&ip);
+    Ok(serde_json::json!({ "ok": true }).to_string())
 }
 
 #[tauri::command]
 pub async fn unban_ip(
-    state: State<'_, MeTermProcess>,
+    state: State<'_, Arc<ServerState>>,
     ip: String,
 ) -> Result<String, String> {
     super::validate_ip(&ip)?;
-    let port = state.port();
-    let url = format!("http://127.0.0.1:{}/api/banned-ips/{}", port, ip);
-    let client = auth_client(&state)?;
-
-    let resp = client
-        .delete(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    resp.text().await.map_err(|e| e.to_string())
+    let found = state.ban_manager.unban(&ip);
+    Ok(serde_json::json!({ "ok": true, "found": found }).to_string())
 }
 
 // ─── Token management ───
 
 #[tauri::command]
-pub async fn refresh_token(state: State<'_, MeTermProcess>) -> Result<String, String> {
-    let port = state.port();
-    let url = format!("http://127.0.0.1:{}/api/token/refresh", port);
-    let client = auth_client(&state)?;
-
-    let resp = client
-        .post(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let text = resp.text().await.map_err(|e| e.to_string())?;
-
-    // Update the local token store so subsequent requests use the new token
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-        if let Some(new_token) = parsed.get("token").and_then(|v| v.as_str()) {
-            state.update_token(new_token.to_string());
-        }
-    }
-
-    Ok(text)
+pub async fn refresh_token(state: State<'_, Arc<ServerState>>) -> Result<String, String> {
+    let new_token = crate::server::generate_token();
+    state.authenticator.set_token(new_token.clone());
+    Ok(serde_json::json!({ "ok": true, "token": new_token }).to_string())
 }
 
 #[tauri::command]
 pub async fn set_custom_token(
-    state: State<'_, MeTermProcess>,
+    state: State<'_, Arc<ServerState>>,
     token: String,
 ) -> Result<String, String> {
-    let port = state.port();
-    let url = format!("http://127.0.0.1:{}/api/token", port);
-    let client = auth_client(&state)?;
-
-    let body = serde_json::json!({ "token": token });
-
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let status = resp.status();
-    let text = resp.text().await.map_err(|e| e.to_string())?;
-
-    if !status.is_success() {
-        return Err(text);
+    if token.len() < 8 {
+        return Err("token must be at least 8 characters".to_string());
     }
-
-    // Backend returns {"ok": true} without echoing the token (security).
-    // Use the token from our parameter directly.
-    state.update_token(token);
-
-    Ok(text)
+    state.authenticator.set_token(token);
+    Ok(serde_json::json!({ "ok": true }).to_string())
 }
 
 #[tauri::command]
-pub async fn revoke_all_clients(state: State<'_, MeTermProcess>) -> Result<String, String> {
-    let port = state.port();
-    let url = format!("http://127.0.0.1:{}/api/token/revoke-all", port);
-    let client = auth_client(&state)?;
+pub async fn revoke_all_clients(state: State<'_, Arc<ServerState>>) -> Result<String, String> {
+    let new_token = crate::server::generate_token();
+    state.authenticator.set_token(new_token.clone());
+    let disconnected = state.session_manager.disconnect_all_clients();
+    Ok(serde_json::json!({ "ok": true, "new_token": new_token, "disconnected": disconnected }).to_string())
+}
 
-    let resp = client
-        .post(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+// ─── Proxy settings ───
 
-    let text = resp.text().await.map_err(|e| e.to_string())?;
-
-    // Update local token store with the auto-refreshed token
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-        if let Some(new_token) = parsed.get("new_token").and_then(|v| v.as_str()) {
-            state.update_token(new_token.to_string());
-        }
-    }
-
-    Ok(text)
+#[tauri::command]
+pub fn set_proxy_mode(mode: String) {
+    let bypass = mode != "system";
+    crate::server::jumpserver::BYPASS_PROXY.store(bypass, std::sync::atomic::Ordering::Relaxed);
+    // Clear cached JumpServer clients so they pick up the new proxy setting
+    crate::server::jumpserver::clear_client_pool();
+    eprintln!("[settings] proxy mode: {} (bypass={})", mode, bypass);
 }

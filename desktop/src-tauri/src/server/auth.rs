@@ -78,9 +78,15 @@ impl Authenticator {
 
 /// Extract the real client IP from a request.
 ///
-/// Checks X-Forwarded-For first, falls back to the connection remote address.
+/// Uses axum ConnectInfo (set via into_make_service_with_connect_info).
+/// Falls back to X-Forwarded-For header.
 pub fn client_ip(req: &Request) -> String {
-    // Check X-Forwarded-For header
+    // ConnectInfo from axum — the actual TCP peer address
+    if let Some(connect_info) = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>() {
+        return connect_info.0.ip().to_string();
+    }
+
+    // Fallback: X-Forwarded-For header
     if let Some(xff) = req.headers().get("x-forwarded-for") {
         if let Ok(xff_str) = xff.to_str() {
             if let Some(first) = xff_str.split(',').next() {
@@ -92,8 +98,6 @@ pub fn client_ip(req: &Request) -> String {
         }
     }
 
-    // Fall back to connection info (will be set by axum ConnectInfo)
-    // For now return empty — will be populated when axum integration is complete
     String::new()
 }
 

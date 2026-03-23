@@ -40,7 +40,7 @@ import { initEditorWindowShell } from './file-editor-init';
 import { initPip } from './pip';
 import { initLanguage, setLanguage } from './i18n';
 import { setSSHConnectHandler, migrateSSHCredentials } from './ssh';
-import { setRemoteConnectHandler, migrateRemoteCredentials } from './remote';
+import { setRemoteConnectHandler, migrateRemoteCredentials, pruneUnreachableRecentRemotes } from './remote';
 import { setupTabTransferListener, type TabTransferSessionInfo } from './tab-drag';
 import { escapeHtml } from './status-bar';
 import { StatusBar } from './status-bar';
@@ -68,7 +68,7 @@ import {
   setToolbarCallbacks,
   renderToolbarActions, setupToolbarDrag,
 } from './toolbar';
-import { showTabContextMenu, showShellContextMenu } from './context-menu';
+import { showTabContextMenu, showShellContextMenu, preloadShells } from './context-menu';
 import { handleSSHConnect } from './ssh-handler';
 import { handleRemoteConnect } from './remote-handler';
 import { setupKeyboardShortcuts } from './keyboard-shortcuts';
@@ -127,6 +127,7 @@ async function init(): Promise<void> {
 
   initLanguage();
   setSettings(loadSettings());
+  if (settings.deviceName) void invoke('set_device_name', { name: settings.deviceName });
   setLanguage(settings.language);
   setCloseAllSessionsHandler(closeAllSessions);
   setOverlayCallbacks({ activateTab, renderTabs, showHomeView, terminalPanelEl });
@@ -134,6 +135,7 @@ async function init(): Promise<void> {
   setSessionActionsCallbacks({ renderTabs, renderToolbarActions });
   setTabRendererCallbacks({ showTabContextMenu });
   setToolbarCallbacks({ showShellContextMenu });
+  preloadShells(); // fire-and-forget: cache shell list so context menu opens instantly
   const currentWindow = getCurrentWindow();
   const currentWindowLabel = currentWindow.label;
   // Fire-and-forget: tray language sync must NOT block init,
@@ -202,6 +204,8 @@ async function init(): Promise<void> {
     async (sessionId) => {
       // Skip placeholder session IDs (tab still connecting)
       if (sessionId.startsWith('pending-')) return 0;
+      // Skip ended sessions to avoid 404 polling
+      if (!TerminalRegistry.isSessionActive(sessionId)) return 0;
       try {
         // For remote sessions, query the remote server; for local, query localhost
         const remoteInfo = remoteInfoMap.get(sessionId);
@@ -238,6 +242,17 @@ async function init(): Promise<void> {
   renderToolbarActions();
 
   await ensureMeTermReady();
+
+  // Prune unreachable remote connections from recent list (async, non-blocking)
+  pruneUnreachableRecentRemotes()
+    .then(async () => {
+      // Refresh home view if still showing, so pruned items disappear
+      if (document.getElementById('home-view')) {
+        const { updateSSHHomeView } = await import('./ssh');
+        updateSSHHomeView();
+      }
+    })
+    .catch(() => {});
 
   // Initialize tldr help data + completion index (async, non-blocking)
   if (settings.tldrEnabled) {

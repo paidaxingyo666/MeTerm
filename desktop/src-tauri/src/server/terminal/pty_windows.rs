@@ -1,23 +1,26 @@
 //! Windows ConPTY terminal — xpty integration + PowerShell/cmd hook injection.
 //!
-//! Mirrors Go `terminal/pty_windows.go` + `internal/conpty/conpty.go`.
+//! Uses a dedicated reader thread that sends output via a channel,
+//! making `read()` cancel-safe for use in `tokio::select!`.
 //! xpty handles ConPTY creation and DLL loading (sideload conpty.dll → kernel32.dll).
 
 use std::io;
 use std::sync::Mutex;
 
-use tokio::task;
 use tokio_util::sync::CancellationToken;
 use xpty::{CommandBuilder, PtySize, PtySystem};
 
 use super::Terminal;
 
 /// Windows ConPTY terminal backed by xpty.
+///
+/// Uses a dedicated reader thread that sends output via a channel,
+/// making `read()` cancel-safe for use in `tokio::select!`.
 pub struct ConPtyTerminal {
-    reader: Mutex<Option<Box<dyn io::Read + Send>>>,
+    /// Receiver for PTY output (from the dedicated reader thread).
+    output_rx: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>>>,
     writer: Mutex<Option<Box<dyn io::Write + Send>>>,
     master: Mutex<Box<dyn xpty::MasterPty + Send>>,
-    child: Mutex<Option<Box<dyn xpty::Child + Send + Sync>>>,
     done_token: CancellationToken,
 }
 
@@ -37,10 +40,10 @@ impl ConPtyTerminal {
             })
             .map_err(|e| format!("ConPTY openpty: {}", e))?;
 
-        // Resolve shell: prefer explicit shell, then COMSPEC env, then cmd.exe.
-        // Avoids new_default_prog() which can fail on Windows with PATH issues.
+        // Resolve shell: prefer explicit shell, then PowerShell, then COMSPEC.
+        // Matches the default in list_available_shells() so UI and behavior agree.
         let resolved = if shell.is_empty() {
-            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+            default_windows_shell()
         } else {
             shell.to_string()
         };
@@ -84,7 +87,7 @@ impl ConPtyTerminal {
         }
         cmd.env("TERM", "xterm-256color");
 
-        let reader = pair
+        let mut reader = pair
             .master
             .try_clone_reader()
             .map_err(|e| format!("clone reader: {}", e))?;
@@ -93,26 +96,45 @@ impl ConPtyTerminal {
             .take_writer()
             .map_err(|e| format!("take writer: {}", e))?;
 
-        let child = pair
+        let mut child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("spawn: {}", e))?;
 
         let done_token = CancellationToken::new();
-        let done_clone = done_token.clone();
 
-        // Background thread to wait for child exit
-        let mut child_for_wait = child;
+        // Spawn dedicated reader thread that sends output via channel.
+        // This makes read() cancel-safe for tokio::select!.
+        let (output_tx, output_rx) = tokio::sync::mpsc::channel::<io::Result<Vec<u8>>>(64);
+        let done_clone = done_token.clone();
         std::thread::spawn(move || {
-            let _ = child_for_wait.wait();
+            let mut buf = vec![0u8; 32768];
+            loop {
+                use std::io::Read;
+                match reader.read(&mut buf) {
+                    Ok(0) => {
+                        let _ = output_tx.blocking_send(Ok(Vec::new()));
+                        break;
+                    }
+                    Ok(n) => {
+                        if output_tx.blocking_send(Ok(buf[..n].to_vec())).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = output_tx.blocking_send(Err(e));
+                        break;
+                    }
+                }
+            }
+            let _ = child.wait();
             done_clone.cancel();
         });
 
         Ok(Self {
-            reader: Mutex::new(Some(reader)),
+            output_rx: tokio::sync::Mutex::new(output_rx),
             writer: Mutex::new(Some(writer)),
             master: Mutex::new(pair.master),
-            child: Mutex::new(None),
             done_token,
         })
     }
@@ -121,31 +143,18 @@ impl ConPtyTerminal {
 #[async_trait::async_trait]
 impl Terminal for ConPtyTerminal {
     async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let reader = {
-            let mut guard = self.reader.lock().unwrap();
-            guard.take().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "reader already consumed")
-            })?
-        };
-
-        let buf_len = buf.len();
-        let result = task::spawn_blocking(move || {
-            let mut local_buf = vec![0u8; buf_len];
-            let mut reader = reader;
-            use std::io::Read;
-            let n = reader.read(&mut local_buf)?;
-            Ok::<(Box<dyn io::Read + Send>, Vec<u8>, usize), io::Error>((reader, local_buf, n))
-        })
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        match result {
-            Ok((reader_back, data, n)) => {
+        let mut rx = self.output_rx.lock().await;
+        match rx.recv().await {
+            Some(Ok(data)) => {
+                if data.is_empty() {
+                    return Ok(0);
+                }
+                let n = data.len().min(buf.len());
                 buf[..n].copy_from_slice(&data[..n]);
-                *self.reader.lock().unwrap() = Some(reader_back);
                 Ok(n)
             }
-            Err(e) => Err(e),
+            Some(Err(e)) => Err(e),
+            None => Ok(0),
         }
     }
 
@@ -178,10 +187,28 @@ impl Terminal for ConPtyTerminal {
 
     async fn close(&self) -> io::Result<()> {
         *self.writer.lock().unwrap() = None;
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.kill();
-        }
         self.done_token.cancel();
         Ok(())
     }
+}
+
+/// Default shell for Windows: pwsh.exe > powershell.exe > COMSPEC > cmd.exe.
+/// Uses fast PATH lookup (no subprocess spawning) to keep session creation instant.
+fn default_windows_shell() -> String {
+    if find_in_path("pwsh.exe") {
+        return "pwsh.exe".to_string();
+    }
+    // powershell.exe is always available on modern Windows (System32)
+    if find_in_path("powershell.exe") {
+        return "powershell.exe".to_string();
+    }
+    std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+}
+
+/// Check if an executable exists in any PATH directory (no subprocess).
+fn find_in_path(exe: &str) -> bool {
+    let Ok(path_var) = std::env::var("PATH") else { return false };
+    path_var.split(';').any(|dir| {
+        !dir.is_empty() && std::path::Path::new(dir).join(exe).is_file()
+    })
 }

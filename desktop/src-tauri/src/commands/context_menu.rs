@@ -117,7 +117,7 @@ fn unregister_macos_quick_action() -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn register_windows_context_menu() -> Result<(), String> {
     use winreg::RegKey;
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
+    use winreg::enums::HKEY_CURRENT_USER;
 
     let exe_path = std::env::current_exe()
         .map_err(|e| e.to_string())?

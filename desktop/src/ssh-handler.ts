@@ -19,12 +19,18 @@ import { activateTab, showHomeView, setViewMode, hideHomeView, hideGalleryView }
 import { ensureMeTermReady } from './session-actions';
 import { renderTabs } from './tab-renderer';
 import { createSSHSession, addConnection, addRecentConnection, showAuthFailedDialog, updateSavedPassword, type SSHConnectionConfig } from './ssh';
+import { loadSettings } from './themes';
 import {
   port, authToken,
   sshConfigMap,
 } from './app-state';
 
 export async function handleSSHConnect(config: SSHConnectionConfig): Promise<void> {
+  // If skipShellHook not explicitly set (e.g. JumpServer), use settings toggle.
+  // Default OFF on Windows due to ConPTY/WebView2 freeze issue.
+  if (config.skipShellHook === undefined) {
+    config = { ...config, skipShellHook: !loadSettings().shellHookInjection };
+  }
   const terminalPanelEl = document.getElementById('terminal-panel') as HTMLDivElement;
   const ready = await ensureMeTermReady();
   if (!ready) return;

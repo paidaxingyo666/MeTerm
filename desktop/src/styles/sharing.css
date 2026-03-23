@@ -401,3 +401,20 @@
   color: #d97706;
 }
 
+.sharing-edit-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s;
+  display: inline-flex;
+  align-items: center;
+}
+.sharing-edit-btn:hover {
+  opacity: 1;
+  color: var(--accent-color, #4a9eff);
+}
+

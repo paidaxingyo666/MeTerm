@@ -175,18 +175,22 @@ pub async fn create_ssh_session(
     let session = state.session_manager.create();
     *session.executor_type.lock().unwrap() = "ssh".to_string();
 
-    // Start SSH terminal + SFTP
-    let executor = super::executor::ssh::SshExecutor::new(config, 80, 24);
-    match executor.start_with_sftp().await {
-        Ok((terminal, sftp)) => {
-            // Store SFTP client on session for file operations
-            if let Some(sftp_client) = sftp {
-                *session.sftp.lock().unwrap() = Some(sftp_client);
-            }
-            // Store SSH session handle for exec (ServerInfo, process list)
+    // Start SSH terminal — connect first, SFTP initializes in background
+    match super::terminal::ssh::SshTerminal::connect(&config, 80, 24).await {
+        Ok(terminal) => {
             let ssh_handle = terminal.session_handle.clone();
-            *session.ssh_exec_handle.lock().await = Some(Box::new(ssh_handle));
+            *session.ssh_exec_handle.lock().await = Some(Box::new(ssh_handle.clone()));
+
+            // Start terminal I/O immediately (fast path — no SFTP blocking)
             super::session::Session::start_terminal(session.clone(), Box::new(terminal)).await;
+
+            // Initialize SFTP in background — does not block terminal usability
+            let session_bg = session.clone();
+            tokio::spawn(async move {
+                if let Some(sftp_client) = super::terminal::ssh::SshTerminal::init_sftp(&ssh_handle).await {
+                    *session_bg.sftp.lock().unwrap() = Some(sftp_client);
+                }
+            });
         }
         Err(e) => {
             // Check for host key errors (JSON-encoded in the error string)
@@ -250,6 +254,11 @@ fn parse_ssh_config(body: &serde_json::Value) -> Result<super::terminal::ssh::Ss
         passphrase: body.get("passphrase").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         trusted_fingerprint: body.get("trusted_fingerprint").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         disable_hook: body.get("skip_shell_hook").and_then(|v| v.as_bool()).unwrap_or(false),
+        proxy_type: body.get("proxy_type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        proxy_host: body.get("proxy_host").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        proxy_port: body.get("proxy_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
+        proxy_username: body.get("proxy_username").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        proxy_password: body.get("proxy_password").and_then(|v| v.as_str()).unwrap_or("").to_string(),
     })
 }
 
@@ -405,11 +414,15 @@ pub async fn unban_ip(
 
 pub async fn create_pair(
     Extension(state): Extension<Arc<ServerState>>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let device_name = body.get("device_name").and_then(|v| v.as_str()).unwrap_or("unknown");
-    let remote_addr = body.get("remote_addr").and_then(|v| v.as_str()).unwrap_or("");
-    match state.pairing_manager.create_request(device_name, remote_addr) {
+    let remote_addr = addr.ip().to_string();
+    let device_name = body.get("device_info")
+        .or_else(|| body.get("device_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    match state.pairing_manager.create_request(device_name, &remote_addr) {
         Ok((pair_id, secret)) => (
             StatusCode::OK,
             Json(serde_json::json!({ "pair_id": pair_id, "secret": secret })),
@@ -462,7 +475,8 @@ pub async fn toggle_discoverable(
     let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
     let port = body.get("port").and_then(|v| v.as_u64()).map(|p| p as u16);
     if let Some(ref dm) = state.discovery_manager {
-        if let Err(e) = dm.set_discoverable(enabled, port) {
+        let name = state.display_name();
+        if let Err(e) = dm.set_discoverable(enabled, port, Some(&name)) {
             return Json(serde_json::json!({ "ok": false, "error": e }));
         }
         return Json(serde_json::json!({ "ok": true, "discoverable": dm.is_discoverable() }));

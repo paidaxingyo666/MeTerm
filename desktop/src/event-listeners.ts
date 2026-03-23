@@ -28,8 +28,6 @@ import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
 import { performCopy, performPaste, performSelectAll } from './clipboard-actions';
 import { notifyUser } from './notify';
 import { showPairApprovalDialog } from './pairing';
-import { waitForMeTerm } from './connection';
-import { startPairPoller } from './pairing';
 import {
   activateTab,
   showHomeView, hideHomeView, showGalleryView, hideGalleryView,
@@ -462,7 +460,7 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
         await closeAllSessions();
         // Close auxiliary windows when the last main window is closing
         if (mainWindowCount <= 1) {
-          for (const label of ['jumpserver-browser', 'about']) {
+          for (const label of ['jumpserver-browser', 'about', 'editor']) {
             const w = await WebviewWindow.getByLabel(label);
             if (w) void w.close();
           }
@@ -473,7 +471,7 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
     } else {
       // Close auxiliary windows when the last main window is closing
       if (mainWindowCount <= 1) {
-        for (const label of ['jumpserver-browser', 'about']) {
+        for (const label of ['jumpserver-browser', 'about', 'editor']) {
           const w = await WebviewWindow.getByLabel(label);
           if (w) void w.close();
         }
@@ -686,32 +684,7 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
     void checkUpdateNow();
   });
 
-  void listen('meterm-exited', async () => {
-    setMetermReady(false);
-    setAuthToken('');
-    setPort(0);
-    StatusBar.setConnection('connecting', 'Restarting...');
 
-    // Try to auto-restart the backend before giving up and quitting.
-    try {
-      await invoke('restart_meterm');
-      const info = await waitForMeTerm(20, 300); // up to 6 s
-      setPort(info.port);
-      setAuthToken(info.token);
-      setMetermReady(true);
-      StatusBar.setConnection('connected', 'Local');
-      startPairPoller(port, authToken);
-      TerminalRegistry.reconnectAll(port, authToken);
-      console.log('[meterm] backend restarted successfully');
-      return;
-    } catch (restartErr) {
-      console.error('[meterm] backend restart failed:', restartErr);
-    }
-
-    // Restart failed — quit the app gracefully.
-    StatusBar.setError('Backend failed to restart');
-    await invoke('request_app_quit');
-  });
 
   // Listen for settings changes from the settings window
   void listen('settings-changed', () => {

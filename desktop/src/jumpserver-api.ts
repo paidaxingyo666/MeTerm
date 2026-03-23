@@ -20,6 +20,14 @@ export interface JumpServerConfig {
   password?: string;
   apiToken?: string;      // Private Token / Bearer Token
   orgId?: string;
+  /** Bypass system proxy for JumpServer HTTP API requests (default true) */
+  bypassProxy?: boolean;
+  // SSH proxy settings for Koko SSH connections
+  proxyType?: string;      // 'socks5' | 'http' | '' (direct)
+  proxyHost?: string;
+  proxyPort?: number;
+  proxyUsername?: string;
+  proxyPassword?: string;
 }
 
 export interface JumpServerAsset {
@@ -115,6 +123,10 @@ export function saveJumpServerConfigs(configs: JumpServerConfig[]): void {
     username: c.username,
     authMethod: c.authMethod,
     orgId: c.orgId,
+    bypassProxy: c.bypassProxy,
+    proxyType: c.proxyType,
+    proxyHost: c.proxyHost,
+    proxyPort: c.proxyPort,
   }));
   localStorage.setItem(JS_CONNECTIONS_KEY, JSON.stringify(stripped));
 }

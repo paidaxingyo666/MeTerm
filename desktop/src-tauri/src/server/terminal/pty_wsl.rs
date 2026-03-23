@@ -91,8 +91,9 @@ pub struct WslPtyTerminal {
 impl WslPtyTerminal {
     /// Create a new WSL PTY terminal.
     ///
-    /// `distro` is the WSL distribution name (e.g., "Ubuntu").
-    /// If empty, uses the default distribution.
+    /// `distro` can be a bare distribution name (e.g., "Ubuntu"),
+    /// a full command string (e.g., "wsl.exe -d Ubuntu"), or empty
+    /// (uses the default distribution).
     pub async fn new(
         distro: &str,
         shell: &str,
@@ -102,8 +103,19 @@ impl WslPtyTerminal {
     ) -> Result<Self, String> {
         let mut cmd = Command::new("wsl.exe");
 
-        if !distro.is_empty() {
-            cmd.arg("-d").arg(distro);
+        // Extract distro name from formats like "wsl.exe -d Ubuntu" or "wsl -d Ubuntu"
+        let distro_name = extract_wsl_distro(distro);
+        if !distro_name.is_empty() {
+            cmd.arg("-d").arg(&distro_name);
+        }
+
+        // Set starting directory: use --cd to set WSL-side working directory.
+        // Without this, WSL inherits the Windows parent process cwd (often C:\Windows\System32).
+        if !cwd.is_empty() {
+            let wsl_cwd = windows_to_wsl_path(cwd);
+            cmd.arg("--cd").arg(&wsl_cwd);
+        } else {
+            cmd.arg("--cd").arg("~");
         }
 
         cmd.arg("-e")
@@ -115,11 +127,6 @@ impl WslPtyTerminal {
         cmd.env("COLS", cols.to_string());
         if !shell.is_empty() {
             cmd.env("SHELL", shell);
-        }
-        if !cwd.is_empty() {
-            // Convert Windows path to WSL path if needed
-            let wsl_cwd = windows_to_wsl_path(cwd);
-            cmd.current_dir(&wsl_cwd);
         }
 
         cmd.stdin(Stdio::piped())
@@ -141,7 +148,7 @@ impl WslPtyTerminal {
         let _done_clone = done_token.clone();
 
         // Monitor child exit
-        let child_id = child.id();
+        let _child_id = child.id();
         tokio::spawn(async move {
             // Wait a bit then start polling
             loop {
@@ -155,7 +162,7 @@ impl WslPtyTerminal {
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
-                    let _ = child_id;
+                    let _ = _child_id;
                     break;
                 }
             }
@@ -233,6 +240,38 @@ fn windows_to_wsl_path(path: &str) -> String {
     }
 }
 
+/// Extract the WSL distro name from a shell string.
+///
+/// Handles formats:
+/// - `"wsl.exe -d Ubuntu"` → `"Ubuntu"`
+/// - `"wsl -d Ubuntu-22.04"` → `"Ubuntu-22.04"`
+/// - `"Ubuntu"` (bare name) → `"Ubuntu"`
+/// - `"wsl.exe"` or `"wsl"` (no -d) → `""` (use default distro)
+/// - `""` → `""`
+fn extract_wsl_distro(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // Look for "-d <distro>" pattern
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    for i in 0..parts.len().saturating_sub(1) {
+        if parts[i] == "-d" || parts[i] == "--distribution" {
+            return parts[i + 1].to_string();
+        }
+    }
+
+    // If it starts with "wsl" (no -d flag), use default distro
+    let lower = trimmed.to_lowercase();
+    if lower == "wsl" || lower == "wsl.exe" || lower.starts_with("wsl ") || lower.starts_with("wsl.exe ") {
+        return String::new();
+    }
+
+    // Bare distro name
+    trimmed.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +281,15 @@ mod tests {
         assert_eq!(windows_to_wsl_path("C:\\Users\\test"), "/mnt/c/Users/test");
         assert_eq!(windows_to_wsl_path("D:\\foo\\bar"), "/mnt/d/foo/bar");
         assert_eq!(windows_to_wsl_path("/home/user"), "/home/user");
+    }
+
+    #[test]
+    fn test_extract_wsl_distro() {
+        assert_eq!(extract_wsl_distro("wsl.exe -d Ubuntu"), "Ubuntu");
+        assert_eq!(extract_wsl_distro("wsl -d Ubuntu-22.04"), "Ubuntu-22.04");
+        assert_eq!(extract_wsl_distro("wsl.exe"), "");
+        assert_eq!(extract_wsl_distro("wsl"), "");
+        assert_eq!(extract_wsl_distro("Ubuntu"), "Ubuntu");
+        assert_eq!(extract_wsl_distro(""), "");
     }
 }

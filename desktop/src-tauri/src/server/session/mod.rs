@@ -475,6 +475,20 @@ impl Session {
         }
     }
 
+    /// Blocking send to a specific client (for bulk transfers like file download).
+    /// Waits for channel capacity instead of disconnecting on full.
+    pub async fn send_to_client_async(&self, client_id: &str, data: Vec<u8>) -> bool {
+        let client = {
+            let clients = self.clients.lock().unwrap();
+            clients.get(client_id).cloned()
+        };
+        if let Some(client) = client {
+            client.send_async(data).await
+        } else {
+            false
+        }
+    }
+
     /// Flush the ring buffer history to a client (for replay on connect).
     /// Sends in 4096-byte chunks to avoid overwhelming the WebSocket buffer.
     /// Prepends RIS (Reset Initial State) `\x1bc` to avoid TUI corruption.
@@ -649,6 +663,34 @@ impl Session {
         } else {
             (String::new(), false)
         }
+    }
+
+    /// Disconnect all remote (non-loopback, non-IPC) clients.
+    /// Sends ERR_KICKED and promotes next master if needed.
+    pub fn disconnect_remote_clients(&self) -> usize {
+        let master_id = self.master_id.lock().unwrap().clone();
+        let mut kicked_master = false;
+        let clients = self.clients.lock().unwrap();
+        let mut count = 0;
+        for client in clients.values() {
+            if client.is_connected()
+                && !client.remote_addr.is_empty()
+                && !is_loopback(&client.remote_addr)
+                && !client.remote_addr.starts_with("ipc://")
+            {
+                client.send(protocol::encode_error(protocol::ERR_KICKED, "kicked"));
+                client.disconnect();
+                if client.id == master_id {
+                    kicked_master = true;
+                }
+                count += 1;
+            }
+        }
+        drop(clients);
+        if kicked_master {
+            self.try_promote_next_master();
+        }
+        count
     }
 
     /// Kick all clients from a specific IP. Returns count of kicked.

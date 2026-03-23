@@ -42,13 +42,6 @@
     "opener:allow-reveal-item-in-dir",
     "opener:allow-open-url",
     "opener:allow-default-urls",
-    "core:webview:allow-create-webview-window",
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        { "name": "binaries/meterm-server", "sidecar": true, "args": true },
-        { "name": "wsl", "sidecar": false, "args": true }
-      ]
-    }
+    "core:webview:allow-create-webview-window"
   ]
 }

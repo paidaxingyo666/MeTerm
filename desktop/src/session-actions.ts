@@ -13,6 +13,7 @@ import { waitForMeTerm } from './connection';
 import { TabManager } from './tabs';
 import { TerminalRegistry } from './terminal';
 import { DrawerManager } from './drawer';
+import { getDefaultShellPath } from './context-menu';
 import { AICapsuleManager } from './ai-capsule';
 import { SplitPaneManager, getAllLeaves, findLeafById } from './split-pane';
 import { StatusBar } from './status-bar';
@@ -74,8 +75,9 @@ export async function createNewSession(shell?: string, cwd?: string): Promise<vo
   if (!ready) {
     return;
   }
-  // Use configured default shell when no specific shell is requested
-  const effectiveShell = shell || settings.defaultShell || undefined;
+  // Use configured default shell when no specific shell is requested.
+  // Resolve from cached shell list so the tab title matches the actual shell.
+  const effectiveShell = shell || settings.defaultShell || getDefaultShellPath() || undefined;
   await TabManager.addTab(port, authToken, effectiveShell, cwd);
   if (TabManager.activeTabId) {
     await activateTab(TabManager.activeTabId);
@@ -87,7 +89,8 @@ export async function createNewSession(shell?: string, cwd?: string): Promise<vo
 export async function createNewPrivateSession(): Promise<void> {
   const ready = await ensureMeTermReady();
   if (!ready) return;
-  await TabManager.addTab(port, authToken);
+  const effectiveShell = settings.defaultShell || getDefaultShellPath() || undefined;
+  await TabManager.addTab(port, authToken, effectiveShell);
   if (TabManager.activeTabId) {
     const sessionId = TabManager.getActiveSessionId();
     if (sessionId) {

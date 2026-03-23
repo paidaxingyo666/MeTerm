@@ -1,13 +1,13 @@
-//! TCP proxy + PROXY Protocol v1 — mirrors sidecar.rs LAN proxy logic.
+//! TCP proxy — forwards LAN connections to the local server.
 //!
 //! When LAN sharing is enabled, a TCP proxy listens on 0.0.0.0:{lan_port}
-//! and forwards connections to 127.0.0.1:{server_port}, injecting a
-//! PROXY Protocol v1 header so the server knows the real client IP.
+//! and forwards connections to 127.0.0.1:{server_port}.
 //!
-//! Format: `PROXY TCP4 <src_ip> <dst_ip> <src_port> <dst_port>\r\n`
+//! Note: PROXY Protocol v1 was removed because axum doesn't parse it,
+//! causing all HTTP/WS requests through the proxy to fail with 400.
+//! Client IP is logged at the proxy level instead.
 
 use std::net::TcpListener;
-use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener as AsyncTcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -18,8 +18,7 @@ pub fn allocate_lan_port() -> Result<u16, String> {
     listener.local_addr().map(|a| a.port()).map_err(|e| e.to_string())
 }
 
-/// Run the TCP proxy. Forwards connections from `listen_addr` to `forward_addr`,
-/// injecting a PROXY Protocol v1 header.
+/// Run the TCP proxy. Forwards connections from `listen_addr` to `forward_addr`.
 ///
 /// Returns when the cancellation token is triggered.
 pub async fn run_tcp_proxy(listen_addr: String, forward_addr: String, cancel: CancellationToken) {
@@ -41,11 +40,18 @@ pub async fn run_tcp_proxy(listen_addr: String, forward_addr: String, cancel: Ca
             }
             result = listener.accept() => {
                 match result {
-                    Ok((client_stream, client_addr)) => {
+                    Ok((mut client_stream, client_addr)) => {
                         let forward = forward_addr.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = proxy_connection(client_stream, client_addr, &forward).await {
-                                eprintln!("[meterm-proxy] connection error: {}", e);
+                            match tokio::net::TcpStream::connect(&forward).await {
+                                Ok(mut upstream) => {
+                                    if let Err(e) = tokio::io::copy_bidirectional(&mut client_stream, &mut upstream).await {
+                                        eprintln!("[meterm-proxy] connection error from {}: {}", client_addr, e);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[meterm-proxy] upstream connect failed: {}", e);
+                                }
                             }
                         });
                     }
@@ -56,29 +62,4 @@ pub async fn run_tcp_proxy(listen_addr: String, forward_addr: String, cancel: Ca
             }
         }
     }
-}
-
-async fn proxy_connection(
-    mut client: tokio::net::TcpStream,
-    client_addr: std::net::SocketAddr,
-    forward_addr: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut upstream = tokio::net::TcpStream::connect(forward_addr).await?;
-    let forward_parsed: std::net::SocketAddr = forward_addr.parse()?;
-
-    // Inject PROXY Protocol v1 header
-    let proto = if client_addr.is_ipv4() { "TCP4" } else { "TCP6" };
-    let proxy_header = format!(
-        "PROXY {} {} {} {} {}\r\n",
-        proto,
-        client_addr.ip(),
-        forward_parsed.ip(),
-        client_addr.port(),
-        forward_parsed.port(),
-    );
-    upstream.write_all(proxy_header.as_bytes()).await?;
-
-    // Bidirectional copy
-    tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
-    Ok(())
 }
