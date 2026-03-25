@@ -10,6 +10,8 @@ import { applyVibrancy } from './appearance';
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
+const isMacPlatform = ua.includes('macintosh') || ua.includes('mac os');
+const needsCustomControls = isWindowsPlatform || (!isMacPlatform && !isWindowsPlatform);
 
 function resolveThemeAttr(colorScheme: string): string {
   if (colorScheme === 'light') return 'light';
@@ -93,7 +95,7 @@ function createCustomTitleBar(title: string, onClose?: () => void): HTMLElement 
 
   const dragRegion = document.createElement('div');
   dragRegion.className = 'settings-titlebar-drag';
-  dragRegion.addEventListener('pointerdown', (e) => {
+  dragRegion.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
     void getCurrentWindow().startDragging();
@@ -122,6 +124,7 @@ export function initUpdaterWindow(): void {
   document.documentElement.dataset.theme = resolveThemeAttr(settings.colorScheme);
   void applyVibrancy(settings.enableVibrancy);
   document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);
+  document.documentElement.classList.toggle('platform-linux', needsCustomControls && !isWindowsPlatform);
 
   // Hide main app UI
   const app = document.getElementById('app');
@@ -129,23 +132,28 @@ export function initUpdaterWindow(): void {
 
   document.body.classList.add('updater-window-mode');
 
-  // Render the updater panel first so we get safeClose back,
-  // then wire it into the custom title bar (Windows only).
-  // safeClose sets isClosing=true before closing the window, ensuring any
-  // in-flight async work (check / downloadAndInstall) won't touch the DOM.
+  // Linux CSD: wrap all content for rounded corners
+  const isLinux = needsCustomControls && !isWindowsPlatform;
+  const wrapper = isLinux ? document.createElement('div') : null;
+  if (wrapper) {
+    wrapper.className = 'linux-csd-content';
+    document.body.appendChild(wrapper);
+  }
+  const appendTarget = wrapper || document.body;
+
   const container = document.createElement('div');
   container.id = 'updater-window-container';
-  document.body.appendChild(container);
+  appendTarget.appendChild(container);
 
   const safeClose = renderUpdaterWindow(container);
 
-  if (isWindowsPlatform) {
-    document.body.insertBefore(createCustomTitleBar(t('checkUpdates'), safeClose), container);
+  if (needsCustomControls) {
+    appendTarget.insertBefore(createCustomTitleBar(t('checkUpdates'), safeClose), container);
   } else {
     const dragRegion = document.createElement('div');
     dragRegion.className = 'overlay-drag-region';
     dragRegion.setAttribute('data-tauri-drag-region', '');
-    document.body.insertBefore(dragRegion, container);
+    appendTarget.insertBefore(dragRegion, container);
   }
 
   void revealAfterPaint(getCurrentWindow().label);

@@ -650,14 +650,31 @@ class StatusBarClass {
       popup.innerHTML = `<div class="viewer-popup-header">${escapeHtml(t('connectedDevices'))}</div>${rows}`;
     }
 
-    // Position above the capsule
+    // Position below the capsule (status bar is near the top)
     const rect = this.viewersCapsule.getBoundingClientRect();
     popup.style.position = 'fixed';
-    popup.style.bottom = `${window.innerHeight - rect.top + 4}px`;
-    popup.style.right = `${window.innerWidth - rect.right}px`;
-
+    popup.style.visibility = 'hidden';
     document.body.appendChild(popup);
     this.viewerPopup = popup;
+
+    const popupRect = popup.getBoundingClientRect();
+    const gap = 4;
+
+    // Vertical: prefer below, fallback above if overflow
+    const spaceBelow = window.innerHeight - rect.bottom - gap;
+    if (spaceBelow >= popupRect.height) {
+      popup.style.top = `${rect.bottom + gap}px`;
+    } else {
+      popup.style.bottom = `${window.innerHeight - rect.top + gap}px`;
+    }
+
+    // Horizontal: align right edge with capsule, clamp to viewport
+    let right = window.innerWidth - rect.right;
+    if (right + popupRect.width > window.innerWidth) {
+      right = Math.max(4, window.innerWidth - popupRect.width - 4);
+    }
+    popup.style.right = `${Math.max(4, right)}px`;
+    popup.style.visibility = '';
 
     // Kick button handlers
     popup.querySelectorAll('.viewer-popup-kick').forEach(btn => {

@@ -351,11 +351,12 @@
   background: rgba(var(--bg-primary), var(--app-window-opacity, 1));
 }
 
-html:not(.platform-windows) .js-browser-container {
+html.platform-macos .js-browser-container {
   padding-top: 28px;
 }
 
-html.platform-windows .js-browser-container {
+html.platform-windows .js-browser-container,
+html.platform-linux .js-browser-container {
   padding-top: 33px;
 }
 

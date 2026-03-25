@@ -12,14 +12,12 @@ on:
           - amd64
           - arm64
           - both
-  # push auto-build disabled — use workflow_dispatch for manual builds
-  # push:
-  #   branches: [main, release/*]
-  #   paths:
-  #     - 'backend/**'
-  #     - 'desktop/**'
-  #     - 'frontend/**'
-  #     - '.github/workflows/build-linux.yml'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
 
 env:
   NODE_VERSION: '20'
@@ -105,6 +103,19 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
+      - name: Publish release assets (tag only)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+            desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.tar.gz
+            desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.tar.gz.sig
+            desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
   build-linux-arm64:
     if: ${{ github.event_name == 'push' || inputs.arch == 'arm64' || inputs.arch == 'both' }}
     runs-on: ubuntu-22.04-arm
@@ -183,3 +194,16 @@ jobs:
           path: desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/rpm/*.rpm
           if-no-files-found: ignore
           retention-days: 1
+
+      - name: Publish release assets (tag only)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
+            desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.tar.gz
+            desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.tar.gz.sig
+            desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/rpm/*.rpm
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -23,10 +23,13 @@ import { showHomeView, showGalleryView, openSettings } from './view-manager';
 import { createNewSession, createNewPrivateSession, closeAllSessions, createNewWindowNearCurrent } from './session-actions';
 import { renderTabs } from './tab-renderer';
 import { pendingUpdateVersion, openUpdaterWindow } from './updater';
-import { settings, isHomeView, isGalleryView, isWindowsPlatform, activeJumpServers } from './app-state';
+import { settings, isHomeView, isGalleryView, isWindowsPlatform, isLinuxPlatform, activeJumpServers } from './app-state';
 import { toggleJumpServerPanel, isJumpServerPanelOpen } from './jumpserver-panel';
 import { isPipActive, togglePip } from './pip';
 import appIconUrl from '../src-tauri/icons/icon.svg';
+
+/** Platforms that need custom window controls (no native overlay titlebar). */
+const needsCustomControls = isWindowsPlatform || isLinuxPlatform;
 
 // ── Always-on-top state ──
 
@@ -258,9 +261,9 @@ export function renderToolbarActions(): void {
   toolbarLeftEl.innerHTML = '';
   toolbarRightEl.innerHTML = '';
 
-  // On Windows: show app icon as the leftmost element in the toolbar.
+  // On Windows/Linux: show app icon as the leftmost element in the toolbar.
   // Clicking it opens the app menu (same as the ≡ button).
-  if (isWindowsPlatform) {
+  if (needsCustomControls) {
     const appIconBtn = document.createElement('button');
     appIconBtn.className = 'toolbar-app-icon-btn';
     appIconBtn.type = 'button';
@@ -390,7 +393,7 @@ export function renderToolbarActions(): void {
   settingsBtn.onclick = () => openSettings();
   toolbarRightEl.appendChild(settingsBtn);
 
-  if (isWindowsPlatform) {
+  if (needsCustomControls) {
     // Visual separator between app buttons and OS window controls
     const sep = document.createElement('div');
     sep.className = 'win-controls-separator';
@@ -498,7 +501,12 @@ function showJumpServerDropdown(anchor: HTMLElement): void {
 export function setupToolbarDrag(): void {
   const dragLayer = document.getElementById('window-toolbar-drag-layer');
   if (!dragLayer) return;
-  dragLayer.addEventListener('pointerdown', (event) => {
+  // On Linux CSD, remove data-tauri-drag-region to avoid conflict with
+  // the manual startDragging() handler (double drag attempt causes issues).
+  if (isLinuxPlatform) {
+    dragLayer.removeAttribute('data-tauri-drag-region');
+  }
+  dragLayer.addEventListener('mousedown', (event) => {
     if (event.button !== 0) return;
     event.preventDefault();
     void getCurrentWindow().startDragging();

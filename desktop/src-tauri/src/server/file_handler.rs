@@ -264,6 +264,17 @@ fn encode_file_op_error(msg: &str) -> Vec<u8> {
     protocol::encode_message(protocol::MSG_FILE_OPERATION_RESP, &data)
 }
 
+fn encode_file_op_error_with_op(msg: &str, operation: &str) -> Vec<u8> {
+    let resp = FileOperationResponse {
+        success: false,
+        error: Some(msg.to_string()),
+        operation: Some(operation.to_string()),
+        stat: None,
+    };
+    let data = serde_json::to_vec(&resp).unwrap_or_default();
+    protocol::encode_message(protocol::MSG_FILE_OPERATION_RESP, &data)
+}
+
 #[cfg(unix)]
 fn format_mode(meta: &std::fs::Metadata) -> String {
     use std::os::unix::fs::PermissionsExt;
@@ -400,6 +411,24 @@ pub async fn handle_sftp_file_list_with_progress(
     session.send_to_client(client_id, protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data));
 }
 
+/// Recursively remove a file or directory via SFTP.
+async fn sftp_remove_recursive(sftp: &SftpSession, path: &str) -> Result<Option<FileInfo>, String> {
+    // Try remove_file first (works for files and symlinks)
+    if sftp.remove_file(path.to_string()).await.is_ok() {
+        return Ok(None);
+    }
+    // If it's a directory, recurse into children
+    let entries = sftp.read_dir(path.to_string()).await.map_err(|e| format!("read_dir {}: {}", path, e))?;
+    for entry in entries {
+        let name = entry.file_name();
+        if name == "." || name == ".." { continue; }
+        let child = if path.ends_with('/') { format!("{}{}", path, name) } else { format!("{}/{}", path, name) };
+        // Box::pin to allow recursive async
+        Box::pin(sftp_remove_recursive(sftp, &child)).await?;
+    }
+    sftp.remove_dir(path.to_string()).await.map(|_| None).map_err(|e| format!("rmdir {}: {}", path, e))
+}
+
 /// Handle MsgFileOperation via SFTP.
 pub async fn handle_sftp_file_operation(payload: &[u8], sftp: &SftpSession) -> Vec<u8> {
     let req: FileOperationRequest = match serde_json::from_slice(payload) {
@@ -412,10 +441,7 @@ pub async fn handle_sftp_file_operation(payload: &[u8], sftp: &SftpSession) -> V
             sftp.create_dir(req.path.clone()).await.map(|_| None).map_err(|e| format!("{}", e))
         }
         "delete" => {
-            match sftp.remove_file(req.path.clone()).await {
-                Ok(()) => Ok(None),
-                Err(_) => sftp.remove_dir(req.path.clone()).await.map(|_| None).map_err(|e| format!("{}", e)),
-            }
+            sftp_remove_recursive(sftp, &req.path).await
         }
         "rename" => {
             sftp.rename(req.path.clone(), req.new_path.clone()).await.map(|_| None).map_err(|e| format!("{}", e))
@@ -439,11 +465,11 @@ pub async fn handle_sftp_file_operation(payload: &[u8], sftp: &SftpSession) -> V
 
     match result {
         Ok(stat) => {
-            let resp = FileOperationResponse { success: true, error: None, operation: None, stat };
+            let resp = FileOperationResponse { success: true, error: None, operation: Some(req.operation), stat };
             let data = serde_json::to_vec(&resp).unwrap_or_default();
             protocol::encode_message(protocol::MSG_FILE_OPERATION_RESP, &data)
         }
-        Err(e) => encode_file_op_error(&e),
+        Err(e) => encode_file_op_error_with_op(&e, &req.operation),
     }
 }
 

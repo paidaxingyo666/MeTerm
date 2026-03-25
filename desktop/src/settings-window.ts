@@ -9,6 +9,8 @@ import { applyVibrancy } from './appearance';
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
+const isMacPlatform = ua.includes('macintosh') || ua.includes('mac os');
+const needsCustomControls = isWindowsPlatform || (!isMacPlatform && !isWindowsPlatform);
 
 function resolveThemeAttr(colorScheme: string): string {
   if (colorScheme === 'darker') return 'darker';
@@ -29,7 +31,7 @@ function createCustomTitleBar(): HTMLElement {
   // Drag region
   const dragRegion = document.createElement('div');
   dragRegion.className = 'settings-titlebar-drag';
-  dragRegion.addEventListener('pointerdown', (e) => {
+  dragRegion.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
     void getCurrentWindow().startDragging();
@@ -64,6 +66,7 @@ export function initSettingsWindow(): void {
 
   // Platform class for CSS
   document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);
+  document.documentElement.classList.toggle('platform-linux', needsCustomControls && !isWindowsPlatform);
 
   // Hide main app UI
   const app = document.getElementById('app');
@@ -72,20 +75,29 @@ export function initSettingsWindow(): void {
   // Create settings container
   document.body.classList.add('settings-window-mode');
 
-  // On Windows: add custom title bar (no native decorations)
+  // Linux CSD: wrap all content in a div with border-radius for rounded corners
+  const isLinux = needsCustomControls && !isWindowsPlatform;
+  const wrapper = isLinux ? document.createElement('div') : null;
+  if (wrapper) {
+    wrapper.className = 'linux-csd-content';
+    document.body.appendChild(wrapper);
+  }
+  const appendTarget = wrapper || document.body;
+
+  // On Windows/Linux: add custom title bar (no native decorations)
   // On macOS: add drag region for overlay title bar
-  if (isWindowsPlatform) {
-    document.body.appendChild(createCustomTitleBar());
+  if (needsCustomControls) {
+    appendTarget.appendChild(createCustomTitleBar());
   } else {
     const dragRegion = document.createElement('div');
     dragRegion.className = 'overlay-drag-region';
     dragRegion.setAttribute('data-tauri-drag-region', '');
-    document.body.appendChild(dragRegion);
+    appendTarget.appendChild(dragRegion);
   }
 
   const container = document.createElement('div');
   container.id = 'settings-window-container';
-  document.body.appendChild(container);
+  appendTarget.appendChild(container);
 
   const urlTab = new URLSearchParams(window.location.search).get('tab') || undefined;
 

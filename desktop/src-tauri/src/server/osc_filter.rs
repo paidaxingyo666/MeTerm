@@ -11,9 +11,11 @@ use serde::Serialize;
 
 /// Maximum OSC body length before we consider it corrupted and flush.
 const MAX_OSC_BODY: usize = 4096;
+/// Larger limit for OSC 52 clipboard data (1 MiB of base64 ≈ 768 KiB text).
+const MAX_OSC_BODY_CLIPBOARD: usize = 1_048_576;
 
 /// OSC numbers that MeTerm intercepts (not forwarded to frontend).
-const INTERCEPTED_OSC: &[u32] = &[7, 9, 777, 7766, 7768];
+const INTERCEPTED_OSC: &[u32] = &[7, 9, 52, 133, 777, 7766, 7768];
 
 /// Structured event extracted from an OSC sequence.
 #[derive(Debug, Clone, Serialize)]
@@ -42,6 +44,14 @@ pub enum OscEvent {
     /// OSC 9 (non-progress) / OSC 777: Notification
     #[serde(rename = "notify")]
     Notify { title: String, body: String },
+
+    /// OSC 52: Clipboard set — `selection;base64data`
+    #[serde(rename = "clip_set")]
+    ClipboardSet { sel: String, data: String },
+
+    /// OSC 52: Clipboard query — `selection;?`
+    #[serde(rename = "clip_get")]
+    ClipboardGet { sel: String },
 }
 
 /// State machine states for OSC parsing.
@@ -147,8 +157,15 @@ impl OscFilter {
                         self.state = State::OscBodyEsc;
                     } else {
                         self.osc_buf.push(b);
-                        // Safety: flush if body is too long
-                        if self.osc_buf.len() > MAX_OSC_BODY {
+                        // Safety: flush if body is too long.
+                        // Large limit for OSC 52 (clipboard) and non-intercepted OSC
+                        // (e.g. 1337 iTerm2 images) that are passed through to xterm.js.
+                        let limit = if self.osc_num == 52 || !INTERCEPTED_OSC.contains(&self.osc_num) {
+                            MAX_OSC_BODY_CLIPBOARD
+                        } else {
+                            MAX_OSC_BODY
+                        };
+                        if self.osc_buf.len() > limit {
                             self.flush_corrupted(&mut clean);
                             self.state = State::Normal;
                         }
@@ -255,6 +272,25 @@ impl OscFilter {
                         body: body.to_string(),
                     })
                 }
+            }
+            52 => {
+                // OSC 52: clipboard — `selection;base64data` or `selection;?`
+                let mut parts = body.splitn(2, ';');
+                let sel = parts.next().unwrap_or("c").to_string();
+                match parts.next() {
+                    Some("?") => Some(OscEvent::ClipboardGet { sel }),
+                    Some(data) if !data.is_empty() => {
+                        Some(OscEvent::ClipboardSet { sel, data: data.to_string() })
+                    }
+                    _ => None,
+                }
+            }
+            133 => {
+                // OSC 133: FinalTerm shell integration markers (A/B/C/D).
+                // MeTerm uses its own OSC 7766/7768 shell integration.
+                // Silently drop to prevent garbled output when SSH'ing to remote
+                // machines that have FinalTerm integration configured.
+                None
             }
             777 => {
                 // OSC 777: notify;title;body
@@ -396,6 +432,60 @@ mod tests {
             }
             _ => panic!("expected Progress"),
         }
+    }
+
+    #[test]
+    fn osc52_clipboard_set() {
+        let mut f = OscFilter::new();
+        // "hello" in base64 = "aGVsbG8="
+        let input = b"\x1b]52;c;aGVsbG8=\x07";
+        let (clean, events) = f.feed(input);
+        assert!(clean.is_empty());
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            OscEvent::ClipboardSet { sel, data } => {
+                assert_eq!(sel, "c");
+                assert_eq!(data, "aGVsbG8=");
+            }
+            _ => panic!("expected ClipboardSet"),
+        }
+    }
+
+    #[test]
+    fn osc52_clipboard_query() {
+        let mut f = OscFilter::new();
+        let input = b"\x1b]52;c;?\x07";
+        let (clean, events) = f.feed(input);
+        assert!(clean.is_empty());
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            OscEvent::ClipboardGet { sel } => assert_eq!(sel, "c"),
+            _ => panic!("expected ClipboardGet"),
+        }
+    }
+
+    #[test]
+    fn osc52_primary_selection() {
+        let mut f = OscFilter::new();
+        let input = b"\x1b]52;p;dGVzdA==\x07";
+        let (_, events) = f.feed(input);
+        match &events[0] {
+            OscEvent::ClipboardSet { sel, data } => {
+                assert_eq!(sel, "p");
+                assert_eq!(data, "dGVzdA==");
+            }
+            _ => panic!("expected ClipboardSet with primary selection"),
+        }
+    }
+
+    #[test]
+    fn osc133_silently_dropped() {
+        let mut f = OscFilter::new();
+        // OSC 133 FinalTerm markers should be intercepted and silently dropped
+        let input = b"before\x1b]133;A\x07middle\x1b]133;D;0\x07after";
+        let (clean, events) = f.feed(input);
+        assert_eq!(clean, b"beforemiddleafter");
+        assert!(events.is_empty());
     }
 
     #[test]

@@ -151,6 +151,25 @@ export function registerOscColorHandlers(
     sendToTerminal(mt, encodeMessage(MsgInput, new TextEncoder().encode(response)));
     return true;
   });
+
+  // OSC 12: cursor color query
+  terminal.parser.registerOscHandler(12, (data: string) => {
+    if (data !== '?') return true; // Intercept color SET — protect theme integrity
+    const settings = getSettings();
+    const theme = settings ? getTheme(settings.theme) : null;
+    if (!theme) return true;
+    const canSend = (mt.transport && mt.transport.connected) || (mt.ws && mt.ws.readyState === WebSocket.OPEN);
+    if (!canSend) return true;
+    const response = `\x1b]12;${hexToOscRgb(theme.cursor)}\x07`;
+    sendToTerminal(mt, encodeMessage(MsgInput, new TextEncoder().encode(response)));
+    return true;
+  });
+
+  // Intercept color reset sequences — protect theme integrity
+  terminal.parser.registerOscHandler(104, () => true); // Reset palette colors
+  terminal.parser.registerOscHandler(110, () => true); // Reset foreground
+  terminal.parser.registerOscHandler(111, () => true); // Reset background
+  terminal.parser.registerOscHandler(112, () => true); // Reset cursor color
 }
 
 /**

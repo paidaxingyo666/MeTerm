@@ -8,6 +8,7 @@
 
 [![Build macOS](https://img.shields.io/github/actions/workflow/status/paidaxingyo666/MeTerm/build-macos.yml?style=flat-square&logo=apple&label=macOS)](https://github.com/paidaxingyo666/MeTerm/actions/workflows/build-macos.yml)
 [![Build Windows](https://img.shields.io/github/actions/workflow/status/paidaxingyo666/MeTerm/build-windows.yml?style=flat-square&logo=windows&label=Windows)](https://github.com/paidaxingyo666/MeTerm/actions/workflows/build-windows.yml)
+[![Build Linux](https://img.shields.io/github/actions/workflow/status/paidaxingyo666/MeTerm/build-linux.yml?style=flat-square&logo=linux&label=Linux)](https://github.com/paidaxingyo666/MeTerm/actions/workflows/build-linux.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/paidaxingyo666/MeTerm?style=flat-square&color=brightgreen)](https://github.com/paidaxingyo666/MeTerm/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/paidaxingyo666/MeTerm/total?style=flat-square&color=orange)](https://github.com/paidaxingyo666/MeTerm/releases)
@@ -88,7 +89,8 @@
 | macOS | Apple Silicon (arm64) | ✅ 已支持 |
 | macOS | Intel (x86_64) | ✅ 已支持 |
 | Windows | x64 | ✅ 已支持 |
-| Linux | x64 | 🚧 计划中 |
+| Linux | x64 (amd64) | ✅ 已支持（仅测试 Ubuntu 24.04） |
+| Linux | arm64 | ✅ 已支持（仅测试 Ubuntu 24.04） |
 
 ---
 
@@ -98,6 +100,8 @@
   <a href="https://github.com/paidaxingyo666/MeTerm/releases/latest"><img src="https://img.shields.io/badge/macOS-下载-000000?style=for-the-badge&logo=apple&logoColor=white" alt="macOS 下载"></a>
   &nbsp;&nbsp;
   <a href="https://github.com/paidaxingyo666/MeTerm/releases/latest"><img src="https://img.shields.io/badge/Windows-下载-0078D4?style=for-the-badge&logo=windows&logoColor=white" alt="Windows 下载"></a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/paidaxingyo666/MeTerm/releases/latest"><img src="https://img.shields.io/badge/Linux-下载-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux 下载"></a>
 </p>
 
 | 平台 | 安装包 |
@@ -105,6 +109,11 @@
 | macOS (Apple Silicon) | `MeTerm_x.x.x_aarch64.dmg` |
 | macOS (Intel) | `MeTerm_x.x.x_x64.dmg` |
 | Windows (x64) | `MeTerm_x.x.x_x64-setup.exe` |
+| Linux (amd64) | `.deb` / `.AppImage` / `.rpm` |
+| Linux (arm64) | `.deb` / `.AppImage` / `.rpm` |
+
+> [!NOTE]
+> **Linux**：目前仅在 **Ubuntu 24.04** 上测试通过，其他发行版暂未测试，欢迎反馈问题。
 
 > [!WARNING]
 > **macOS**：应用未经 Apple 签名，首次打开可能提示"已损坏"或"无法验证开发者"。请在终端执行以下命令后重新打开：

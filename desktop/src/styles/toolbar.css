@@ -54,7 +54,8 @@
   pointer-events: none; /* let empty space pass through to drag layer */
 }
 
-html.platform-windows .editor-tabs-area {
+html.platform-windows .editor-tabs-area,
+html.platform-linux .editor-tabs-area {
   padding-left: 8px;
 }
 
@@ -91,19 +92,25 @@ html.platform-windows .editor-tabs-area {
   margin-left: 84px;
 }
 
-/* Windows: no leading offset needed (macOS uses 84px for traffic lights) */
-html.platform-windows #window-toolbar-left {
+/* Windows/Linux: no leading offset needed (macOS uses 84px for traffic lights) */
+html.platform-windows #window-toolbar-left,
+html.platform-linux #window-toolbar-left {
   margin-left: 0;
 }
 
-/* Windows: remove right padding so window controls sit flush at the edge */
-html.platform-windows #window-toolbar {
+/* Windows/Linux: remove right padding so window controls sit flush at the edge */
+html.platform-windows #window-toolbar,
+html.platform-linux #window-toolbar {
   padding-right: 0;
 }
 
-/* Windows: window controls must fill the full toolbar height.
+
+
+
+/* Windows/Linux: window controls must fill the full toolbar height.
    The win-control-btn elements have height: 32px and are center-aligned. */
-html.platform-windows #window-toolbar-right {
+html.platform-windows #window-toolbar-right,
+html.platform-linux #window-toolbar-right {
   align-self: stretch;
   align-items: center;
 }

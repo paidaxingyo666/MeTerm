@@ -22,6 +22,8 @@ import {
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
+const isMacPlatform = ua.includes('macintosh') || ua.includes('mac os');
+const needsCustomControls = isWindowsPlatform || (!isMacPlatform && !isWindowsPlatform);
 
 // ── API helpers (use port/token from localStorage) ──
 
@@ -171,7 +173,7 @@ function createCustomTitleBar(titleText: string): HTMLElement {
 
   const dragRegion = document.createElement('div');
   dragRegion.className = 'settings-titlebar-drag';
-  dragRegion.addEventListener('pointerdown', (e) => {
+  dragRegion.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
     void getCurrentWindow().startDragging();
@@ -212,6 +214,7 @@ export function initJumpServerBrowserWindow(): void {
     if (el.textContent && /^body\s*\{background:/.test(el.textContent)) el.remove();
   });
   document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);
+  document.documentElement.classList.toggle('platform-linux', needsCustomControls && !isWindowsPlatform);
 
   // Hide main app UI
   const app = document.getElementById('app');
@@ -219,14 +222,23 @@ export function initJumpServerBrowserWindow(): void {
 
   document.body.classList.add('js-browser-window-mode');
 
+  // Linux CSD: wrap all content for rounded corners
+  const isLinux = needsCustomControls && !isWindowsPlatform;
+  const wrapper = isLinux ? document.createElement('div') : null;
+  if (wrapper) {
+    wrapper.className = 'linux-csd-content';
+    document.body.appendChild(wrapper);
+  }
+  const appendTarget = wrapper || document.body;
+
   // Title bar
-  if (isWindowsPlatform) {
-    document.body.appendChild(createCustomTitleBar('JumpServer'));
+  if (needsCustomControls) {
+    appendTarget.appendChild(createCustomTitleBar('JumpServer'));
   } else {
     const dragRegion = document.createElement('div');
     dragRegion.className = 'overlay-drag-region';
     dragRegion.setAttribute('data-tauri-drag-region', '');
-    document.body.appendChild(dragRegion);
+    appendTarget.appendChild(dragRegion);
   }
 
   // Read config from localStorage

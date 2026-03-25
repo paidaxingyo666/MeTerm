@@ -1,8 +1,9 @@
-import { encodeMessage, MsgFileList } from './protocol';
+import { encodeMessage, MsgFileList, MsgInput } from './protocol';
 import { sanitizeNotificationText } from './terminal-patches';
 import { prefetchDirCache } from './terminal-file-link';
 import { DrawerManager } from './drawer';
 import { sendToTerminal } from './terminal-transport';
+import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import type { ManagedTerminal } from './terminal-types';
 
 export interface OscHandlerCallbacks {
@@ -105,6 +106,34 @@ export function handleOscEvents(
         }));
         break;
       }
+      case 'clip_set': {
+        // OSC 52 set: decode base64 (UTF-8 bytes) and write to system clipboard
+        try {
+          const binary = atob(ev.data);
+          const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+          const text = new TextDecoder().decode(bytes);
+          void clipboardWriteText(text);
+        } catch { /* invalid base64 — ignore */ }
+        break;
+      }
+      case 'clip_get': {
+        // OSC 52 query: read system clipboard and send back as OSC 52 response
+        void clipboardReadText().then((text) => {
+          if (!text) return;
+          const bytes = new TextEncoder().encode(text);
+          // 分块转换避免 String.fromCharCode(...) 超过调用栈参数限制
+          const CHUNK = 8192;
+          let binary = '';
+          for (let i = 0; i < bytes.length; i += CHUNK) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+          }
+          const b64 = btoa(binary);
+          const sel = ev.sel || 'c';
+          const response = `\x1b]52;${sel};${b64}\x07`;
+          sendToTerminal(mt, encodeMessage(MsgInput, new TextEncoder().encode(response)));
+        }).catch(() => { /* clipboard read failed — ignore */ });
+        break;
+      }
     }
   }
 }
@@ -136,4 +165,6 @@ interface OscMarker { t: 'marker'; id: string; data: string }
 interface OscShellState { t: 'shell'; exit: number; cwd: string; cmd: string }
 interface OscProgress { t: 'progress'; state: number; percent: number }
 interface OscNotify { t: 'notify'; title: string; body: string }
-type OscEventPayload = OscCwd | OscMarker | OscShellState | OscProgress | OscNotify;
+interface OscClipboardSet { t: 'clip_set'; sel: string; data: string }
+interface OscClipboardGet { t: 'clip_get'; sel: string }
+type OscEventPayload = OscCwd | OscMarker | OscShellState | OscProgress | OscNotify | OscClipboardSet | OscClipboardGet;

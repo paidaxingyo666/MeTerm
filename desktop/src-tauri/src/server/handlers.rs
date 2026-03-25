@@ -14,6 +14,37 @@ use serde::{Deserialize, Serialize};
 use super::executor::Executor;
 use super::ServerState;
 
+/// Format SystemTime as ISO 8601 string (e.g. "2026-03-23T15:04:05Z").
+fn format_system_time(t: &std::time::SystemTime) -> String {
+    match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => {
+            let secs = d.as_secs();
+            let (days, rem) = (secs / 86400, secs % 86400);
+            let (hours, rem) = (rem / 3600, rem % 3600);
+            let (mins, s) = (rem / 60, rem % 60);
+
+            // Days since epoch → year/month/day (simplified Gregorian)
+            let mut y = 1970i64;
+            let mut remaining_days = days as i64;
+            loop {
+                let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+                if remaining_days < days_in_year { break; }
+                remaining_days -= days_in_year;
+                y += 1;
+            }
+            let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+            let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+            let mut m = 0usize;
+            while m < 12 && remaining_days >= month_days[m] {
+                remaining_days -= month_days[m];
+                m += 1;
+            }
+            format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m + 1, remaining_days + 1, hours, mins, s)
+        }
+        Err(_) => "1970-01-01T00:00:00Z".to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helper types
 // ---------------------------------------------------------------------------
@@ -98,7 +129,7 @@ pub async fn create_session(
         StatusCode::CREATED,
         Json(serde_json::json!({
             "id": session.id,
-            "created_at": format!("{:?}", session.created_at),
+            "created_at": format_system_time(&session.created_at_system),
             "state": session.state_string(),
         })),
     )
@@ -117,7 +148,8 @@ pub async fn list_sessions(
                 "clients": s.connected_client_count(),
                 "connected_clients": s.connected_client_count(),
                 "master": s.master(),
-                "created_at": format!("{:?}", s.created_at),
+                "executor_type": s.executor_type.lock().unwrap().clone(),
+                "created_at": format_system_time(&s.created_at_system),
             })
         })
         .collect();
@@ -139,7 +171,8 @@ pub async fn get_session(
                 "master": s.master(),
                 "owner": s.owner(),
                 "private": *s.private.lock().unwrap(),
-                "created_at": format!("{:?}", s.created_at),
+                "executor_type": s.executor_type.lock().unwrap().clone(),
+                "created_at": format_system_time(&s.created_at_system),
             })),
         ),
         None => (
@@ -210,7 +243,7 @@ pub async fn create_ssh_session(
         StatusCode::CREATED,
         Json(serde_json::json!({
             "id": session.id,
-            "created_at": format!("{:?}", session.created_at),
+            "created_at": format_system_time(&session.created_at_system),
             "state": session.state_string(),
             "executor_type": "ssh",
         })),

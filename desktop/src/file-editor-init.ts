@@ -14,6 +14,8 @@ import appIconUrl from '../src-tauri/icons/icon.svg';
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
+const isMacPlatform = ua.includes('macintosh') || ua.includes('mac os');
+const needsCustomControls = isWindowsPlatform || (!isMacPlatform && !isWindowsPlatform);
 
 function resolveThemeAttr(colorScheme: string): string {
   if (colorScheme === 'darker') return 'darker';
@@ -35,12 +37,22 @@ export function initEditorWindowShell(): void {
   document.documentElement.dataset.theme = resolveThemeAttr(settings.colorScheme);
   void applyVibrancy(settings.enableVibrancy);
   document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);
+  document.documentElement.classList.toggle('platform-linux', needsCustomControls && !isWindowsPlatform);
 
   // Hide main app UI
   const app = document.getElementById('app');
   if (app) app.style.display = 'none';
 
   document.body.classList.add('editor-window-mode');
+
+  // Linux CSD: wrap all content for rounded corners
+  const isLinux = needsCustomControls && !isWindowsPlatform;
+  const wrapper = isLinux ? document.createElement('div') : null;
+  if (wrapper) {
+    wrapper.className = 'linux-csd-content';
+    document.body.appendChild(wrapper);
+  }
+  const editorAppendTarget = wrapper || document.body;
 
   // Tab bar — same pattern as #window-toolbar in index.html
   const tabBar = document.createElement('div');
@@ -53,17 +65,17 @@ export function initEditorWindowShell(): void {
   dragLayer.setAttribute('data-tauri-drag-region', '');
   tabBar.appendChild(dragLayer);
 
-  // Windows: also add pointerdown → startDragging() on drag layer
-  if (isWindowsPlatform) {
-    dragLayer.addEventListener('pointerdown', (e) => {
+  // Windows/Linux: also add pointerdown → startDragging() on drag layer
+  if (needsCustomControls) {
+    dragLayer.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
       void getCurrentWindow().startDragging();
     });
   }
 
-  // Windows: app icon (left side, before tabs)
-  if (isWindowsPlatform) {
+  // Windows/Linux: app icon (left side, before tabs)
+  if (needsCustomControls) {
     const appIconBtn = document.createElement('button');
     appIconBtn.className = 'toolbar-app-icon-btn';
     appIconBtn.type = 'button';
@@ -77,8 +89,8 @@ export function initEditorWindowShell(): void {
   tabsArea.className = 'editor-tabs-area';
   tabBar.appendChild(tabsArea);
 
-  // Windows: add window control buttons (minimize, maximize, close)
-  if (isWindowsPlatform) {
+  // Windows/Linux: add window control buttons (minimize, maximize, close)
+  if (needsCustomControls) {
     const controlsArea = document.createElement('div');
     controlsArea.className = 'editor-win-controls';
 
@@ -110,7 +122,7 @@ export function initEditorWindowShell(): void {
     tabBar.appendChild(controlsArea);
   }
 
-  document.body.appendChild(tabBar);
+  editorAppendTarget.appendChild(tabBar);
 
   // macOS native menu accelerators (Cmd+C/V/X/A) — copied from settings-window.ts
   const win = getCurrentWindow();

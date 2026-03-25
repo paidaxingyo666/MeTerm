@@ -1,0 +1,11 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "MeTerm",
+        "backgroundColor": [0, 0, 0, 0]
+      }
+    ]
+  }
+}

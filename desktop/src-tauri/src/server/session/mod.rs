@@ -142,6 +142,8 @@ pub struct Session {
     restart_count: std::sync::atomic::AtomicU32,
 
     pub created_at: Instant,
+    /// Wall-clock creation time for API responses (Instant is not serializable).
+    pub created_at_system: std::time::SystemTime,
     pub last_cols: Mutex<u16>,
     pub last_rows: Mutex<u16>,
 
@@ -189,6 +191,7 @@ impl Session {
             resize_tx: Arc::new(tokio::sync::Mutex::new(None)),
             restart_count: std::sync::atomic::AtomicU32::new(0),
             created_at: Instant::now(),
+            created_at_system: std::time::SystemTime::now(),
             last_cols: Mutex::new(80),
             last_rows: Mutex::new(24),
             drain_start: Mutex::new(None),

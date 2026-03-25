@@ -923,6 +923,7 @@ class DrawerManagerClass {
 
   private showModal(options: {
     title: string;
+    description?: string;
     input?: { placeholder?: string; value?: string };
     confirmText?: string;
     cancelText?: string;
@@ -940,6 +941,7 @@ class DrawerManagerClass {
       overlay.innerHTML = `
         <div class="drawer-modal">
           <div class="drawer-modal-title">${options.title}</div>
+          ${options.description ? `<div class="drawer-modal-desc" style="font-size:12px;color:#999;margin:4px 0 8px;line-height:1.5;white-space:pre-wrap;">${options.description}</div>` : ''}
           ${hasInput ? `<input class="drawer-modal-input" type="text" value="${(options.input!.value || '').replace(/"/g, '&quot;')}" placeholder="${options.input!.placeholder || ''}" spellcheck="false" />` : ''}
           <div class="drawer-modal-buttons">
             <button class="drawer-modal-btn cancel">${options.cancelText || '取消'}</button>
@@ -976,8 +978,22 @@ class DrawerManagerClass {
   private async showDeleteConfirm(instance: DrawerInstance, fileName: string, isDir: boolean): Promise<void> {
     const type = isDir ? '文件夹' : '文件';
     const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
+
+    // 检查是否大文件（>100MB）或文件夹，给出提示
+    let description: string | undefined;
+    if (instance.fileManager) {
+      const fileInfo = instance.fileManager.getFileInfo(fileName);
+      const isLargeFile = fileInfo && !isDir && fileInfo.size > 100 * 1024 * 1024;
+      if (isDir || isLargeFile) {
+        description = isDir
+          ? '删除文件夹可能耗时较长，如超时请在终端中使用 rm -rf 命令删除。'
+          : `文件较大 (${this.formatSize(fileInfo!.size)})，删除可能耗时较长。`;
+      }
+    }
+
     const result = await this.showModal({
       title: `确定要删除${type} "${fileName}" 吗？`,
+      description,
       confirmText: '删除',
       danger: true,
       container,
@@ -985,6 +1001,13 @@ class DrawerManagerClass {
     if (result !== null && instance.fileManager) {
       await instance.fileManager.deleteFile(fileName);
     }
+  }
+
+  private formatSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 
   private async showRenameDialog(instance: DrawerInstance, oldName: string): Promise<void> {

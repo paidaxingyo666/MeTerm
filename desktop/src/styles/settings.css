@@ -509,7 +509,7 @@ button.settings-select:hover {
   box-sizing: border-box;
   background: rgba(var(--bg-primary), var(--app-window-opacity, 1));
 }
-html:not(.platform-windows) .settings-window-mode {
+html.platform-macos .settings-window-mode {
   padding-top: 28px;
 }
 .overlay-drag-region {
@@ -541,7 +541,8 @@ html:not(.platform-windows) .settings-window-mode {
   z-index: auto;
 }
 
-.platform-windows .settings-panel-window {
+.platform-windows .settings-panel-window,
+.platform-linux .settings-panel-window {
   height: calc(100vh - 32px);
 }
 
@@ -610,10 +611,12 @@ html:not(.platform-windows) .settings-window-mode {
 .settings-titlebar-close svg {
   pointer-events: none;
 }
-html.platform-windows .settings-window-mode {
+html.platform-windows .settings-window-mode,
+html.platform-linux .settings-window-mode {
   overflow-y: hidden;
 }
-html.platform-windows #settings-window-container {
+html.platform-windows #settings-window-container,
+html.platform-linux #settings-window-container {
   min-height: calc(100vh - 33px);
   overflow-y: auto;
 }
@@ -627,7 +630,7 @@ html.platform-windows #settings-window-container {
   box-sizing: border-box;
   background: rgba(var(--bg-primary), var(--app-window-opacity, 1));
 }
-html:not(.platform-windows) .updater-window-mode {
+html.platform-macos .updater-window-mode {
   padding-top: 28px;
 }
 
@@ -879,7 +882,8 @@ html:not(.platform-windows) .updater-window-mode {
   gap: 12px;
   padding: 20px 24px;
 }
-.platform-windows .tray-dialog-container {
+.platform-windows .tray-dialog-container,
+.platform-linux .tray-dialog-container {
   padding-top: 16px;
 }
 .tray-dialog-title {

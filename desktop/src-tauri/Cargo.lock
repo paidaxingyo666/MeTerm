@@ -3147,7 +3147,7 @@ dependencies = [
 
 [[package]]
 name = "meterm"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -3157,6 +3157,8 @@ dependencies = [
  "dirs",
  "encoding_rs",
  "filetime",
+ "gdk",
+ "gtk",
  "hostname",
  "keyring",
  "libc",

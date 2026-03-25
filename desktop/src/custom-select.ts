@@ -6,6 +6,7 @@
  */
 
 const isWindows = document.documentElement.classList.contains('platform-windows');
+const isLinux = document.documentElement.classList.contains('platform-linux');
 
 export interface SelectOption {
   value: string;
@@ -55,7 +56,7 @@ function ensureGlobalListener(): void {
  * On other platforms → native <select>.
  */
 export function createSettingsSelect(options: SelectOption[]): SettingsSelect {
-  if (!isWindows) {
+  if (!isWindows && !isLinux) {
     return createNativeSelect(options);
   }
   return createCustomSelect(options);

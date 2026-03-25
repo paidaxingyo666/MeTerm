@@ -752,6 +752,11 @@ export class FileManager {
     return names;
   }
 
+  /** Get file info by name (for delete confirmation etc.) */
+  getFileInfo(name: string): FileInfo | undefined {
+    return this.files.find(f => f.name === name);
+  }
+
   // ===================== 路径自动补全（委托到 PathAutocomplete） =====================
 
   private dirCachePut(path: string, files: FileInfo[]): void {
@@ -856,12 +861,19 @@ export class FileManager {
     if (!this.loadingOverlay) return;
     const loadingText = this.loadingOverlay.querySelector('.loading-text');
     if (loadingText) loadingText.textContent = label;
-    // Hide progress bar (indeterminate)
-    if (this.loadingProgressBar) this.loadingProgressBar.style.display = 'none';
+    // Show indeterminate progress animation
+    if (this.loadingProgressBar) {
+      this.loadingProgressBar.style.display = '';
+      this.loadingProgressBar.style.width = '100%';
+      this.loadingProgressBar.style.animation = 'indeterminate-progress 1.5s ease-in-out infinite';
+    }
     this.loadingOverlay.style.display = 'flex';
-    // Safety timeout: auto-hide after 60s if no response
+    // Safety timeout: auto-hide after 10 minutes if no response
     if (this.fileOpTimeout) clearTimeout(this.fileOpTimeout);
-    this.fileOpTimeout = setTimeout(() => this.hideFileOpLoading(), 60000);
+    this.fileOpTimeout = setTimeout(() => {
+      this.hideFileOpLoading();
+      this.loadDirectory(this.currentPath);
+    }, 600000);
   }
 
   /** Hide the file-operation loading overlay */
@@ -872,7 +884,10 @@ export class FileManager {
       this.fileOpTimeout = null;
     }
     if (this.loadingOverlay) this.loadingOverlay.style.display = 'none';
-    if (this.loadingProgressBar) this.loadingProgressBar.style.display = '';
+    if (this.loadingProgressBar) {
+      this.loadingProgressBar.style.display = '';
+      this.loadingProgressBar.style.animation = '';
+    }
   }
 
   private validateFileName(name: string): boolean {
@@ -1198,6 +1213,8 @@ export class FileManager {
           // 普通文件操作失败
           if (this.pendingFileOp) this.hideFileOpLoading();
           alert(`操作失败: ${errorMsg}`);
+          // 刷新目录以同步真实状态
+          this.loadDirectory(this.currentPath);
         }
       }
     } catch (err) {

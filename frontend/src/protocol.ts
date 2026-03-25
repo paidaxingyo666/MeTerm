@@ -12,6 +12,7 @@ export const MsgMasterRequest = 0x19;       // Viewer requests to become master
 export const MsgMasterRequestNotify = 0x1a; // Notify current master of a master request
 export const MsgMasterApproval = 0x1b;      // Master approves/denies a master request
 export const MsgMasterReclaim = 0x1c;       // Master reclaims control
+export const MsgOscEvent = 0x40;             // OSC events (JSON payload)
 
 // Error codes - must match backend/protocol.go
 export const ErrNotMaster = 0x01;         // Non-master tried to send input

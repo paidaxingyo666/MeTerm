@@ -1,6 +1,58 @@
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+/// Apply GTK CSD with an empty titlebar + RGBA visual.
+/// Keeps WM-provided shadows; CSS border-radius on #app handles rounded corners.
+#[cfg(target_os = "linux")]
+pub fn apply_gtk_csd(window: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+    use std::sync::Once;
+    static CSS_INIT: Once = Once::new();
+
+    if let Ok(gtk_win) = window.gtk_window() {
+        CSS_INIT.call_once(|| {
+            let provider = gtk::CssProvider::new();
+            provider.load_from_data(
+                b"headerbar.titlebar, .titlebar {
+                    min-height: 0;
+                    padding: 0;
+                    margin: 0;
+                    border: none;
+                    box-shadow: none;
+                    background: transparent;
+                }
+                decoration {
+                    border-radius: 12px;
+                }
+                window.background, window.background.csd {
+                    padding: 0;
+                    margin: 0;
+                    border: none;
+                }"
+            ).ok();
+            if let Some(screen) = gdk::Screen::default() {
+                gtk::StyleContext::add_provider_for_screen(
+                    &screen,
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+                );
+            }
+        });
+
+        if let Some(screen) = gtk::prelude::WidgetExt::screen(&gtk_win) {
+            if let Some(visual) = screen.rgba_visual() {
+                gtk_win.set_visual(Some(&visual));
+            }
+        }
+        gtk_win.set_app_paintable(true);
+
+        // Use GtkFixed (same as Firefox) — a truly zero-size empty widget.
+        // GtkBox still allocates minimum space; GtkFixed does not.
+        let empty = gtk::Fixed::new();
+        gtk_win.set_titlebar(Some(&empty));
+    }
+}
+
 #[derive(Serialize)]
 pub struct WindowGeometry {
     pub label: String,
@@ -33,6 +85,13 @@ pub fn create_window_at_position(app: AppHandle, x: f64, y: f64) -> Result<Strin
 
     let url = WebviewUrl::default();
 
+    // Linux: alpha=0 so tao's Cairo draw handler paints transparent,
+    // allowing CSS border-radius on #app to create visible rounded corners.
+    #[cfg(target_os = "linux")]
+    let bg_alpha = 0;
+    #[cfg(not(target_os = "linux"))]
+    let bg_alpha = 255;
+
     #[allow(unused_mut)]
     let mut builder = WebviewWindowBuilder::new(&app, &window_label, url)
         .title("MeTerm")
@@ -42,7 +101,7 @@ pub fn create_window_at_position(app: AppHandle, x: f64, y: f64) -> Result<Strin
         .decorations(true)
         .transparent(true)
         .visible(false)
-        .background_color(tauri::window::Color(45, 45, 45, 255));
+        .background_color(tauri::window::Color(45, 45, 45, bg_alpha));
 
     #[cfg(target_os = "macos")]
     {
@@ -60,6 +119,9 @@ pub fn create_window_at_position(app: AppHandle, x: f64, y: f64) -> Result<Strin
     }
     #[allow(unused)]
     let win = builder.build().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    apply_gtk_csd(&win);
 
     // macOS: alpha=0 + orderBack: adds window to compositor behind all others,
     // so WKWebView renders in background without any visible flash.
@@ -181,6 +243,11 @@ pub fn create_transparent_window(
         WebviewUrl::App(url.into())
     };
 
+    #[cfg(target_os = "linux")]
+    let bg_alpha = 0;
+    #[cfg(not(target_os = "linux"))]
+    let bg_alpha = 255;
+
     #[allow(unused_mut)]
     let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, webview_url)
         .title(&title)
@@ -189,7 +256,7 @@ pub fn create_transparent_window(
         .center()
         .visible(false)
         .transparent(true)
-        .background_color(tauri::window::Color(45, 45, 45, 255));
+        .background_color(tauri::window::Color(45, 45, 45, bg_alpha));
 
     #[cfg(target_os = "macos")]
     {
@@ -208,6 +275,9 @@ pub fn create_transparent_window(
 
     #[allow(unused)]
     let win = builder.build().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    apply_gtk_csd(&win);
 
     // macOS: set alpha=0, then show() to add window to compositor invisibly.
     // This avoids the orderFront: recomposite flash — the window is in the

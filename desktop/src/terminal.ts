@@ -1,8 +1,11 @@
 import { Terminal } from '@xterm/xterm';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { FitAddon } from '@xterm/addon-fit';
+import { ImageAddon } from '@xterm/addon-image';
 import { LigaturesAddon } from '@xterm/addon-ligatures';
 import { SerializeAddon } from '@xterm/addon-serialize';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import {
   encodeMessage,
@@ -27,13 +30,14 @@ import {
   registerOscColorHandlers,
 } from './terminal-settings';
 import { scheduleResize as _scheduleResize, sendResize } from './terminal-resize';
-import { setupKeyHandler, setupPasteListener } from './terminal-ime';
+import { setupKeyHandler, setupPasteListener, applyWKWebViewIMEFix } from './terminal-ime';
 import { handleOscEvents, type OscHandlerCallbacks } from './terminal-osc';
 import { setShellType } from './ai-tools';
 import { connectTerminal, connectWebSocket, scheduleReconnect as _scheduleReconnect } from './terminal-websocket';
 import { sendToTerminal } from './terminal-transport';
 import { InlineCompletion } from './cmd-completion';
 import { globalCompletionIndex } from './cmd-completion-data';
+import { setupClickToMoveCursor } from './terminal-click-move';
 
 class TerminalRegistryClass {
   private terminals = new Map<string, ManagedTerminal>();
@@ -307,7 +311,17 @@ class TerminalRegistryClass {
         ligaturesAddon = null;
       }
     }
+    // Unicode 11 wide character support — improves CJK character alignment
+    try {
+      const unicode11 = new Unicode11Addon();
+      terminal.loadAddon(unicode11);
+      terminal.unicode.activeVersion = '11';
+    } catch { /* ignore */ }
     terminal.open(container);
+    // OSC 8 hyperlink support — makes URLs in terminal output clickable
+    try { terminal.loadAddon(new WebLinksAddon()); } catch { /* ignore */ }
+    // Sixel / iTerm2 inline image support
+    try { terminal.loadAddon(new ImageAddon()); } catch { /* ignore */ }
     if (hasBackgroundImage) {
       container.style.backgroundColor = 'transparent';
     }
@@ -365,6 +379,11 @@ class TerminalRegistryClass {
     // through the main terminal in WKWebView where opacity:0 is unreliable.
     thumbnailTerminal.parser.registerOscHandler(10, (data: string) => data !== '?');
     thumbnailTerminal.parser.registerOscHandler(11, (data: string) => data !== '?');
+    thumbnailTerminal.parser.registerOscHandler(12, (data: string) => data !== '?');
+    thumbnailTerminal.parser.registerOscHandler(104, () => true);
+    thumbnailTerminal.parser.registerOscHandler(110, () => true);
+    thumbnailTerminal.parser.registerOscHandler(111, () => true);
+    thumbnailTerminal.parser.registerOscHandler(112, () => true);
 
     const mt: ManagedTerminal = {
       id: sessionId,
@@ -471,9 +490,14 @@ class TerminalRegistryClass {
       }
     }
 
-    // 快捷键 + paste 事件处理（IME composition 完全由 xterm.js 原生处理）
+    // 快捷键 + paste 事件处理
     setupKeyHandler(mt, terminal);
     setupPasteListener(terminal);
+
+    // macOS WKWebView IME 修复：Shift+符号键需按两次的问题
+    if (!isWindowsPlatform) {
+      applyWKWebViewIMEFix(terminal);
+    }
 
     // Inline ghost text completion
     if (this.settings?.cmdCompletionEnabled && globalCompletionIndex.ready) {
@@ -482,12 +506,24 @@ class TerminalRegistryClass {
       (mt as any)._inlineCompletion = ic;
     }
 
+    // Click-to-move-cursor: 点击提示符区域移动光标
+    setupClickToMoveCursor(mt);
+
+    // WKWebView IME 去重状态（配合 applyWKWebViewIMEFix 的 input 事件补偿）
+    let _dedupData = '';
+    let _dedupTime = 0;
+
     terminal.onData((data) => {
       // Filter out terminal auto-responses that xterm.js generates in reply to
       // queries from shell/programs.  If sent back to PTY they appear as garbage
       // text (e.g. "1;2c" from DA response \x1b[?1;2c) on the prompt.
       // Matches: DA responses (\x1b[?...c), DSR responses (\x1b[...R / \x1b[...n)
       if (/^\x1b\[\?[0-9;]*c$/.test(data)) return;
+      // WKWebView IME 去重：10ms 内的相同数据只发送一次
+      const now = performance.now();
+      if (data === _dedupData && now - _dedupTime < 10) return;
+      _dedupData = data;
+      _dedupTime = now;
       mt._hasUserInput = true;
       mt.shellState.lastUserInputAt = Date.now();
       if (mt.shellState.phase === 'agent_executing') {
@@ -884,11 +920,16 @@ class TerminalRegistryClass {
     const ic = (mt as any)._inlineCompletion as InlineCompletion | undefined;
     if (ic) ic.detach();
     this.inputListeners.delete(sessionId);
-    // Close WebSocket
+    this.outputListeners.delete(sessionId);
+    this.shellStateListeners.delete(sessionId);
+    // Close transport (IPC) and WebSocket
+    if (mt.transport) mt.transport.close();
     if (mt.ws) mt.ws.close();
     // Dispose xterm instances
     if (mt.ligaturesAddon) mt.ligaturesAddon.dispose();
     if (mt.canvasAddon) mt.canvasAddon.dispose();
+    if (mt.webglAddon) mt.webglAddon.dispose();
+    mt._oscMarkerResolvers.clear();
     mt.thumbnailTerminal.dispose();
     mt.terminal.dispose();
     mt.thumbnailContainer.remove();
@@ -955,8 +996,14 @@ class TerminalRegistryClass {
       }
     }
 
+    // Unicode 11 wide character support — can load before open()
+    try {
+      const unicode11 = new Unicode11Addon();
+      terminal.loadAddon(unicode11);
+      terminal.unicode.activeVersion = '11';
+    } catch { /* ignore */ }
     // DO NOT call terminal.open() here — container is detached from DOM.
-    // WebGL/Ligatures addons are loaded in openAndConnect() after open().
+    // WebGL/Ligatures/WebLinks/Image addons are loaded in openAndConnect() after open().
 
     const thumbnailTerminal = new Terminal({
       cursorBlink: false,
@@ -1005,6 +1052,11 @@ class TerminalRegistryClass {
     // through the main terminal in WKWebView where opacity:0 is unreliable.
     thumbnailTerminal.parser.registerOscHandler(10, (data: string) => data !== '?');
     thumbnailTerminal.parser.registerOscHandler(11, (data: string) => data !== '?');
+    thumbnailTerminal.parser.registerOscHandler(12, (data: string) => data !== '?');
+    thumbnailTerminal.parser.registerOscHandler(104, () => true);
+    thumbnailTerminal.parser.registerOscHandler(110, () => true);
+    thumbnailTerminal.parser.registerOscHandler(111, () => true);
+    thumbnailTerminal.parser.registerOscHandler(112, () => true);
 
     const mt: ManagedTerminal = {
       id: sessionId,
@@ -1047,9 +1099,18 @@ class TerminalRegistryClass {
     // 快捷键处理（register before open — works before open()）
     setupKeyHandler(mt, terminal);
 
+    // WKWebView IME 去重状态
+    let _dedupData = '';
+    let _dedupTime = 0;
+
     terminal.onData((data) => {
       // Filter out terminal auto-responses (DA response \x1b[?...c) — see local onData above.
       if (/^\x1b\[\?[0-9;]*c$/.test(data)) return;
+      // WKWebView IME 去重：10ms 内的相同数据只发送一次
+      const now = performance.now();
+      if (data === _dedupData && now - _dedupTime < 10) return;
+      _dedupData = data;
+      _dedupTime = now;
       mt._hasUserInput = true;
       mt.shellState.lastUserInputAt = Date.now();
       if (mt.shellState.phase === 'agent_executing') {
@@ -1102,6 +1163,11 @@ class TerminalRegistryClass {
     // paste 事件监听（textarea available after open）
     setupPasteListener(mt.terminal);
 
+    // macOS WKWebView IME 修复（textarea available after open）
+    if (!isWindowsPlatform) {
+      applyWKWebViewIMEFix(mt.terminal);
+    }
+
     // Apply opacity to explicit TUI backgrounds (iTerm2-like transparency)
     const opacityVal = this.settings ? Math.max(20, Math.min(100, this.settings.opacity)) / 100 : 1;
     patchCanvasBgOpacity(mt.container, opacityVal);
@@ -1128,6 +1194,10 @@ class TerminalRegistryClass {
         // Ligatures not supported
       }
     }
+    // OSC 8 hyperlink support
+    try { mt.terminal.loadAddon(new WebLinksAddon()); } catch { /* ignore */ }
+    // Sixel / iTerm2 inline image support
+    try { mt.terminal.loadAddon(new ImageAddon()); } catch { /* ignore */ }
 
     // Fit terminal to container dimensions and focus
     mt.fitAddon.fit();
@@ -1197,6 +1267,8 @@ class TerminalRegistryClass {
     }
     mt.ended = true;
     this.inputListeners.delete(sessionId);
+    this.outputListeners.delete(sessionId);
+    this.shellStateListeners.delete(sessionId);
     if (mt.reconnectTimer) {
       clearTimeout(mt.reconnectTimer);
     }
@@ -1214,12 +1286,16 @@ class TerminalRegistryClass {
     if (mt.canvasAddon) {
       mt.canvasAddon.dispose();
     }
+    if (mt.webglAddon) {
+      mt.webglAddon.dispose();
+    }
     if (mt.transport) {
       mt.transport.close();
     }
     if (mt.ws) {
       mt.ws.close();
     }
+    mt._oscMarkerResolvers.clear();
     mt.thumbnailTerminal.dispose();
     mt.terminal.dispose();
     mt.thumbnailContainer.remove();

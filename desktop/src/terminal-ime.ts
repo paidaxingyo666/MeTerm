@@ -13,6 +13,13 @@ import type { InlineCompletion } from './cmd-completion';
 export function setupKeyHandler(mt: ManagedTerminal, terminal: Terminal): void {
   terminal.attachCustomKeyEventHandler((event) => {
 
+    // Click-to-move selection key handler (registered by terminal-click-move.ts)
+    const selHandler = (mt as any)._selectionKeyHandler as ((ev: KeyboardEvent) => boolean) | undefined;
+    if (selHandler) {
+      const result = selHandler(event);
+      if (result === false) return false;
+    }
+
     // Inline ghost text completion key interception
     if (event.type === 'keydown' && !event.isComposing) {
       const completion = (mt as any)._inlineCompletion as InlineCompletion | undefined;
@@ -76,5 +83,48 @@ export function setupPasteListener(terminal: Terminal): void {
   // Windows WebView2: 拦截原生 paste 事件，防止文本残留在 textarea 中
   terminal.textarea.addEventListener('paste', (e) => {
     e.preventDefault();
+  });
+}
+
+/**
+ * WKWebView IME 修复：解决中文输入法下非 composing 字符（标点符号等）第一次按键无效的问题。
+ *
+ * 根因：WKWebView 的中文 IME 在 keydown 之前就把字符写入 textarea，
+ * 导致 xterm.js 内部多个路径的时序假设失效，字符可能丢失或重复。
+ *
+ * 策略（外部补偿，不 patch xterm.js 内部）：
+ * 1. 在 textarea 上监听 input 事件，当检测到 IME 模式下的非 composing 字符插入时，
+ *    通过 triggerDataEvent 主动发送。
+ * 2. 配合 terminal.ts 中 onData 出口的时间窗口去重，确保无论 xterm.js 内部
+ *    走了多少条路径，最终只发送一次。
+ *
+ * 仅在 macOS（WKWebView）上调用。Windows WebView2 是 Chromium 引擎，不需要此修复。
+ */
+export function applyWKWebViewIMEFix(terminal: Terminal): void {
+  const textarea = terminal.textarea;
+  if (!textarea) return;
+
+  const core = (terminal as any)._core;
+  const coreService = core?.coreService || core?._coreService;
+  if (!coreService) return;
+
+  // 追踪是否处于 IME keydown (keyCode 229) 周期
+  let inIMEKeydown = false;
+
+  textarea.addEventListener('keydown', (ev) => {
+    if (ev.keyCode === 229) inIMEKeydown = true;
+  }, true);
+
+  textarea.addEventListener('keyup', () => {
+    inIMEKeydown = false;
+  }, true);
+
+  // 监听 input 事件：IME 模式下的非 composing 字符插入（中文标点等）
+  // input 事件的 data 属性是可靠的数据源，不依赖 textarea 值对比
+  textarea.addEventListener('input', (ev: Event) => {
+    const e = ev as InputEvent;
+    if (inIMEKeydown && e.inputType === 'insertText' && !e.isComposing && e.data) {
+      coreService.triggerDataEvent(e.data, true);
+    }
   });
 }

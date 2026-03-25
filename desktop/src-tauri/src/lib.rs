@@ -366,6 +366,11 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
 							.as_millis()
 					);
 
+					#[cfg(target_os = "linux")]
+					let bg_alpha = 0_u8;
+					#[cfg(not(target_os = "linux"))]
+					let bg_alpha = 255_u8;
+
 					#[allow(unused_mut)]
 					let mut builder = WebviewWindowBuilder::new(app, &new_window_label, WebviewUrl::default())
 						.title("MeTerm")
@@ -374,7 +379,7 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
 						.decorations(true)
 						.transparent(true)
 						.visible(false)
-						.background_color(tauri::window::Color(45, 45, 45, 255));
+						.background_color(tauri::window::Color(45, 45, 45, bg_alpha));
 
 					#[cfg(target_os = "macos")]
 					{
@@ -385,12 +390,13 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
 							.title_bar_style(TitleBarStyle::Overlay)
 							.traffic_light_position(LogicalPosition::new(14.0, 18.0));
 					}
-
 					match builder.build() {
 						Ok(new_window) => {
 							debug_log!("[DEBUG] Successfully created new window: {}", new_window_label);
 							let lifecycle = app.state::<AppLifecycleState>();
 							lifecycle.track_window_created(&new_window_label);
+							#[cfg(target_os = "linux")]
+							commands::window::apply_gtk_csd(&new_window);
 							// macOS: alpha=0 + orderBack: to compositor invisibly
 							#[cfg(target_os = "macos")]
 							{
@@ -786,6 +792,14 @@ pub fn run() {
                             startup_log(&format!("Setup: vibrancy anti-flash failed: {}", e));
                         }
                     }
+                }
+            }
+
+            // Linux: apply CSD (empty headerbar) to main window for WM shadows + rounded corners
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(main_win) = app.get_webview_window("main") {
+                    commands::window::apply_gtk_csd(&main_win);
                 }
             }
 

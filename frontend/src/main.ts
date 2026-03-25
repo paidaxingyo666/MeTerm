@@ -21,6 +21,7 @@ import {
   MsgPong,
   MsgMasterRequest,
   MsgMasterRequestNotify,
+  MsgOscEvent,
   ErrSessionNotFound,
   ErrNotMaster,
 } from './protocol';
@@ -195,7 +196,6 @@ function renderSessions(sessions: SessionItem[]) {
         <span class="session-card-state ${escapeHtml(s.state)}">${escapeHtml(s.state)}</span>
       </div>
       <div class="session-card-bottom">
-        <span>${escapeHtml(s.executor_type)}</span>
         <span>${s.clients} client${s.clients !== 1 ? 's' : ''}</span>
         <span>${escapeHtml(created)}</span>
       </div>
@@ -383,6 +383,26 @@ function handleMessage(event: MessageEvent) {
     case MsgMasterRequestNotify:
       // Web viewer shouldn't receive this (only desktop master gets it)
       break;
+
+    case MsgOscEvent: {
+      // Handle OSC events — currently only clipboard set (OSC 52)
+      try {
+        const events = JSON.parse(new TextDecoder().decode(payload));
+        const list = Array.isArray(events) ? events : [events];
+        for (const ev of list) {
+          if (ev.t === 'clip_set' && ev.data) {
+            try {
+              const binary = atob(ev.data);
+              const bytes = Uint8Array.from(binary, (c: string) => c.charCodeAt(0));
+              const text = new TextDecoder().decode(bytes);
+              void navigator.clipboard.writeText(text);
+            } catch { /* invalid base64 — ignore */ }
+          }
+          // clip_get not supported in web frontend (requires user gesture for clipboard.readText)
+        }
+      } catch { /* ignore malformed OSC event */ }
+      break;
+    }
   }
 }
 

@@ -1,0 +1,565 @@
+/**
+ * Click-to-move-cursor + drag-select-to-edit in command area.
+ *
+ * Click: moves cursor to clicked position (Meta-digit + arrow key).
+ * Drag in command area: creates editable selection with cursor-style highlight.
+ *   - Cursor moves to drag-end, custom highlight overlay shown
+ *   - Backspace/Delete: deletes selected text
+ *   - Typing: replaces selected text
+ *   - Cmd+X: cut
+ *   - Other keys: clear selection, let through
+ *
+ * Drag outside command area: normal copy-only selection (xterm.js default).
+ */
+
+import { encodeMessage, MsgInput } from './protocol';
+import { sendToTerminal } from './terminal-transport';
+import type { ManagedTerminal } from './terminal-types';
+import type { Terminal, IBufferLine } from '@xterm/xterm';
+import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
+
+// ---------------------------------------------------------------------------
+// Editable selection state
+// ---------------------------------------------------------------------------
+
+interface EditableSelection {
+  active: boolean;
+  /** true = cursor at selection end (drag left→right), delete backward */
+  forward: boolean;
+  /** readline character count of the selection */
+  charCount: number;
+  /** selected text content (for copy/cut) */
+  text: string;
+  /** highlight overlay elements */
+  overlays: HTMLElement[];
+}
+
+// ---------------------------------------------------------------------------
+// Main setup
+// ---------------------------------------------------------------------------
+
+export function setupClickToMoveCursor(mt: ManagedTerminal): void {
+  const terminal = mt.terminal;
+  const screenEl = mt.container.querySelector('.xterm-screen') as HTMLElement | null;
+  if (!screenEl) return;
+
+  let downX = 0;
+  let downY = 0;
+  let lastClickTime = 0;
+  const DEBOUNCE_MS = 150;
+
+  const sel: EditableSelection = {
+    active: false, forward: true, charCount: 0, text: '', overlays: [],
+  };
+
+  // ── Selection key handler: stored on mt, called by terminal-ime.ts ──
+  (mt as any)._selectionKeyHandler = (ev: KeyboardEvent): boolean => {
+    if (!sel.active) return true;
+    if (ev.type !== 'keydown') return true;
+    return handleSelectionKey(mt, terminal, sel, ev);
+  };
+
+  // ── Focus/blur: switch between solid inversion and hollow outline ──
+  const onFocusChange = () => updateHighlightMode(sel, document.hasFocus());
+  window.addEventListener('focus', onFocusChange);
+  window.addEventListener('blur', onFocusChange);
+
+  // ── Mouse handlers ──
+  screenEl.addEventListener('mousedown', (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    downX = e.clientX;
+    downY = e.clientY;
+    // Clear editable selection on any mousedown (new interaction starting)
+    if (sel.active) clearSel(terminal, sel);
+  }, { capture: false });
+
+  screenEl.addEventListener('mouseup', (e: MouseEvent) => {
+    if (e.button !== 0) return;
+
+    const isDrag = Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4;
+
+    if (isDrag) {
+      handleDragSelect(mt, terminal, sel, screenEl, e, downX, downY);
+      return;
+    }
+
+    // ── Click (not drag) ──
+    if (terminal.hasSelection()) return; // native xterm selection from prior drag
+    if (mt.shellState.phase !== 'ready') return;
+    if (terminal.buffer.active.type !== 'normal') return;
+    if (isMouseTrackingActive(terminal)) return;
+
+    const now = Date.now();
+    if (now - lastClickTime < DEBOUNCE_MS) return;
+    lastClickTime = now;
+
+    const { clickAbsRow, snappedClickCol, cursorAbsRow, cursorCol } =
+      resolveClickPositions(terminal, screenEl, e);
+    if (clickAbsRow < 0) return;
+    if (Math.abs(clickAbsRow - cursorAbsRow) > 50) return;
+    if (clickAbsRow === cursorAbsRow && snappedClickCol === cursorCol) return;
+
+    const charCount = computeCharDistance(
+      terminal.buffer.active, clickAbsRow, snappedClickCol, cursorAbsRow, cursorCol,
+    );
+    if (charCount === 0) return;
+
+    const forward = clickAbsRow > cursorAbsRow
+      || (clickAbsRow === cursorAbsRow && snappedClickCol > cursorCol);
+    sendInput(mt, buildReadlineMove(charCount, forward));
+  }, { capture: false });
+}
+
+// ---------------------------------------------------------------------------
+// Drag-select → editable selection in command area
+// ---------------------------------------------------------------------------
+
+function handleDragSelect(
+  mt: ManagedTerminal,
+  terminal: Terminal,
+  sel: EditableSelection,
+  screenEl: HTMLElement,
+  upEvent: MouseEvent,
+  mouseDownX: number, mouseDownY: number,
+): void {
+  if (mt.shellState.phase !== 'ready') return;
+  if (terminal.buffer.active.type !== 'normal') return;
+  if (isMouseTrackingActive(terminal)) return;
+  if (!terminal.hasSelection()) return;
+
+  const buf = terminal.buffer.active;
+  const rect = screenEl.getBoundingClientRect();
+  const cellW = rect.width / terminal.cols;
+  const cellH = rect.height / terminal.rows;
+  const viewportY = getViewportY(terminal, buf.baseY);
+  const cursorAbsRow = buf.baseY + buf.cursorY;
+  const cursorCol = buf.cursorX;
+
+  // Convert mousedown/mouseup to cell coordinates
+  const downCol = clamp(Math.floor((mouseDownX - rect.left) / cellW), 0, terminal.cols - 1);
+  const downRow = clamp(Math.floor((mouseDownY - rect.top) / cellH), 0, terminal.rows - 1);
+  const downAbsRow = viewportY + downRow;
+
+  const upCol = clamp(Math.floor((upEvent.clientX - rect.left) / cellW), 0, terminal.cols - 1);
+  const upRow = clamp(Math.floor((upEvent.clientY - rect.top) / cellH), 0, terminal.rows - 1);
+  const upAbsRow = viewportY + upRow;
+
+  // Only editable if both ends are near cursor (command area)
+  if (Math.abs(downAbsRow - cursorAbsRow) > 50) return;
+  if (Math.abs(upAbsRow - cursorAbsRow) > 50) return;
+
+  // Snap to character boundaries
+  const downLine = buf.getLine(downAbsRow);
+  const upLine = buf.getLine(upAbsRow);
+  if (!downLine || !upLine) return;
+  const snappedDownCol = snapClickCol(downLine, downCol);
+  const snappedUpCol = snapClickCol(upLine, upCol);
+
+  const selCharCount = computeCharDistance(buf, downAbsRow, snappedDownCol, upAbsRow, snappedUpCol);
+  if (selCharCount === 0) return;
+
+  const isForward = upAbsRow > downAbsRow
+    || (upAbsRow === downAbsRow && snappedUpCol > snappedDownCol);
+
+  // Save selected text before clearing xterm selection
+  const selectedText = terminal.getSelection() || '';
+
+  // Clear xterm.js native selection — we'll show our own highlight
+  terminal.clearSelection();
+
+  // Move cursor to the drag-end position
+  const moveCount = computeCharDistance(buf, cursorAbsRow, cursorCol, upAbsRow, snappedUpCol);
+  if (moveCount > 0) {
+    const moveForward = upAbsRow > cursorAbsRow
+      || (upAbsRow === cursorAbsRow && snappedUpCol > cursorCol);
+    sendInput(mt, buildReadlineMove(moveCount, moveForward));
+  }
+
+  // Record editable selection
+  sel.active = true;
+  sel.forward = isForward;
+  sel.charCount = selCharCount;
+  sel.text = selectedText;
+
+  // Show custom cursor-style highlight
+  const startAbsRow = isForward ? downAbsRow : upAbsRow;
+  const startCol = isForward ? snappedDownCol : snappedUpCol;
+  const endAbsRow = isForward ? upAbsRow : downAbsRow;
+  const endCol = isForward ? snappedUpCol : snappedDownCol;
+  showHighlight(terminal, sel, screenEl, viewportY, cellW, cellH,
+    startAbsRow, startCol, endAbsRow, endCol);
+}
+
+// ---------------------------------------------------------------------------
+// Custom cursor-style highlight overlay (matches cursor color + blink)
+// ---------------------------------------------------------------------------
+
+let _styleInjected = false;
+function ensureSelectionStyle(): void {
+  if (_styleInjected) return;
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes cmd-sel-blink {
+      0%, 50% { visibility: visible; }
+      50.01%, 100% { visibility: hidden; }
+    }
+    .cmd-sel-highlight {
+      position: absolute;
+      pointer-events: none;
+      z-index: 5;
+      box-sizing: border-box;
+    }
+    .cmd-sel-highlight.focused {
+      opacity: 0.45;
+      animation: cmd-sel-blink 1.2s step-end infinite;
+    }
+    .cmd-sel-highlight.blurred {
+      background-color: transparent !important;
+      opacity: 1;
+      animation: none;
+    }
+  `;
+  document.head.appendChild(style);
+  _styleInjected = true;
+}
+
+/** Switch all overlays between focused (solid inversion) and blurred (outline). */
+function updateHighlightMode(sel: EditableSelection, isFocused: boolean): void {
+  for (const el of sel.overlays) {
+    if (isFocused) {
+      el.classList.add('focused');
+      el.classList.remove('blurred');
+      el.style.border = '';
+    } else {
+      el.classList.remove('focused');
+      el.classList.add('blurred');
+      el.style.border = `1px solid ${el.dataset.cursorColor || '#fff'}`;
+    }
+  }
+}
+
+function showHighlight(
+  terminal: Terminal,
+  sel: EditableSelection,
+  screenEl: HTMLElement,
+  viewportY: number,
+  cellW: number, cellH: number,
+  startAbsRow: number, startCol: number,
+  endAbsRow: number, endCol: number,
+): void {
+  ensureSelectionStyle();
+  const cursorColor = terminal.options.theme?.cursor || '#ffffff';
+  const isFocused = document.hasFocus();
+
+  for (let absRow = startAbsRow; absRow <= endAbsRow; absRow++) {
+    const viewportRow = absRow - viewportY;
+    if (viewportRow < 0 || viewportRow >= terminal.rows) continue;
+
+    const rowStartCol = (absRow === startAbsRow) ? startCol : 0;
+    const rowEndCol = (absRow === endAbsRow) ? endCol : terminal.cols;
+    if (rowEndCol <= rowStartCol) continue;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'cmd-sel-highlight';
+    overlay.dataset.cursorColor = cursorColor;
+    overlay.style.top = `${viewportRow * cellH}px`;
+    overlay.style.left = `${rowStartCol * cellW}px`;
+    overlay.style.width = `${(rowEndCol - rowStartCol) * cellW}px`;
+    overlay.style.height = `${cellH}px`;
+    overlay.style.backgroundColor = cursorColor;
+
+    if (isFocused) {
+      overlay.classList.add('focused');
+    } else {
+      overlay.classList.add('blurred');
+      overlay.style.backgroundColor = 'transparent';
+      overlay.style.border = `1px solid ${cursorColor}`;
+    }
+
+    screenEl.appendChild(overlay);
+    sel.overlays.push(overlay);
+  }
+}
+
+function removeHighlight(sel: EditableSelection): void {
+  for (const el of sel.overlays) el.remove();
+  sel.overlays = [];
+}
+
+function clearSel(terminal: Terminal, sel: EditableSelection): void {
+  sel.active = false;
+  sel.charCount = 0;
+  sel.text = '';
+  removeHighlight(sel);
+  terminal.clearSelection();
+}
+
+// ---------------------------------------------------------------------------
+// Key handler for active selection
+// ---------------------------------------------------------------------------
+
+function handleSelectionKey(
+  mt: ManagedTerminal,
+  terminal: Terminal,
+  sel: EditableSelection,
+  ev: KeyboardEvent,
+): boolean {
+  const { key, ctrlKey, metaKey, altKey } = ev;
+
+  // Ignore modifier-only keys (Meta, Control, Shift, Alt pressed alone).
+  // These precede the actual key combo (e.g. Meta fires before Meta+X).
+  if (key === 'Meta' || key === 'Control' || key === 'Shift' || key === 'Alt') {
+    return true; // let through without clearing selection
+  }
+
+  // Cmd+C / Ctrl+C → copy
+  if ((ctrlKey || metaKey) && key === 'c') {
+    if (sel.text) void clipboardWriteText(sel.text);
+    clearSel(terminal, sel);
+    ev.preventDefault();
+    return false;
+  }
+
+  // Cmd+V / Ctrl+V → paste replaces selection
+  if ((ctrlKey || metaKey) && key === 'v') {
+    ev.preventDefault();
+    void clipboardReadText().then((text) => {
+      if (!text) { clearSel(terminal, sel); return; }
+      sendInput(mt, buildSelectionDelete(sel) + text);
+      clearSel(terminal, sel);
+    });
+    return false;
+  }
+
+  // Cmd+X / Ctrl+X → cut
+  if ((ctrlKey || metaKey) && key === 'x') {
+    if (sel.text) void clipboardWriteText(sel.text);
+    ev.preventDefault();
+    sendInput(mt, buildSelectionDelete(sel));
+    clearSel(terminal, sel);
+    return false;
+  }
+
+  // Any other modifier combo → clear and let through
+  if (ctrlKey || metaKey || altKey) {
+    clearSel(terminal, sel);
+    return true;
+  }
+
+  // Backspace / Delete → delete selection
+  if (key === 'Backspace' || key === 'Delete') {
+    ev.preventDefault();
+    sendInput(mt, buildSelectionDelete(sel));
+    clearSel(terminal, sel);
+    return false;
+  }
+
+  // Printable character → replace selection
+  if (key.length === 1) {
+    ev.preventDefault();
+    sendInput(mt, buildSelectionDelete(sel) + key);
+    clearSel(terminal, sel);
+    return false;
+  }
+
+  // Arrow keys, Home, End → clear selection, let key through
+  if (key.startsWith('Arrow') || key === 'Home' || key === 'End') {
+    clearSel(terminal, sel);
+    return true;
+  }
+
+  // Escape → clear selection
+  if (key === 'Escape') {
+    ev.preventDefault();
+    clearSel(terminal, sel);
+    return false;
+  }
+
+  // Anything else → clear selection, let through
+  clearSel(terminal, sel);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Selection delete
+// ---------------------------------------------------------------------------
+
+function buildSelectionDelete(sel: EditableSelection): string {
+  if (sel.charCount === 0) return '';
+  const deleteKey = sel.forward ? '\x7f' : '\x1b[3~';
+  if (sel.charCount === 1) return deleteKey;
+  return buildMetaDigitPrefix(sel.charCount) + deleteKey;
+}
+
+// ---------------------------------------------------------------------------
+// Position resolution
+// ---------------------------------------------------------------------------
+
+function resolveClickPositions(terminal: Terminal, screenEl: HTMLElement, e: MouseEvent) {
+  const rect = screenEl.getBoundingClientRect();
+  const cellW = rect.width / terminal.cols;
+  const cellH = rect.height / terminal.rows;
+  const clickCol = clamp(Math.floor((e.clientX - rect.left) / cellW), 0, terminal.cols - 1);
+  const clickRow = clamp(Math.floor((e.clientY - rect.top) / cellH), 0, terminal.rows - 1);
+
+  const buf = terminal.buffer.active;
+  const viewportY = getViewportY(terminal, buf.baseY);
+  const clickAbsRow = viewportY + clickRow;
+  const cursorAbsRow = buf.baseY + buf.cursorY;
+  const cursorCol = buf.cursorX;
+
+  const clickLine = buf.getLine(clickAbsRow);
+  if (!clickLine) return { clickAbsRow: -1, snappedClickCol: 0, cursorAbsRow, cursorCol };
+  const snappedClickCol = snapClickCol(clickLine, clickCol);
+
+  return { clickAbsRow, snappedClickCol, cursorAbsRow, cursorCol };
+}
+
+// ---------------------------------------------------------------------------
+// Readline sequence builders
+// ---------------------------------------------------------------------------
+
+function buildReadlineMove(charCount: number, forward: boolean): string {
+  const arrow = forward ? '\x1b[C' : '\x1b[D';
+  if (charCount === 1) return arrow;
+  return buildMetaDigitPrefix(charCount) + arrow;
+}
+
+function buildMetaDigitPrefix(n: number): string {
+  const digits = n.toString();
+  let prefix = '';
+  for (let i = 0; i < digits.length; i++) {
+    prefix += '\x1b' + digits[i];
+  }
+  return prefix;
+}
+
+function sendInput(mt: ManagedTerminal, data: string): void {
+  mt._hasUserInput = true;
+  mt.shellState.lastUserInputAt = Date.now();
+  sendToTerminal(mt, encodeMessage(MsgInput, new TextEncoder().encode(data)));
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return v < min ? min : v > max ? max : v;
+}
+
+// ---------------------------------------------------------------------------
+// Viewport offset
+// ---------------------------------------------------------------------------
+
+function getViewportY(terminal: Terminal, fallback: number): number {
+  try {
+    const core = (terminal as any)._core;
+    const ydisp = core?.buffer?.ydisp
+      ?? core?._bufferService?.buffer?.ydisp
+      ?? core?._bufferService?.buffers?.active?.ydisp;
+    if (typeof ydisp === 'number') return ydisp;
+  } catch { /* ignore */ }
+  return fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Character distance between two buffer positions
+// ---------------------------------------------------------------------------
+
+function computeCharDistance(
+  buf: Terminal['buffer']['active'],
+  row1: number, col1: number,
+  row2: number, col2: number,
+): number {
+  let fromRow: number, fromCol: number, toRow: number, toCol: number;
+  if (row1 < row2 || (row1 === row2 && col1 <= col2)) {
+    fromRow = row1; fromCol = col1; toRow = row2; toCol = col2;
+  } else {
+    fromRow = row2; fromCol = col2; toRow = row1; toCol = col1;
+  }
+
+  if (fromRow === toRow) {
+    const line = buf.getLine(fromRow);
+    return line ? countCharsInRange(line, fromCol, toCol) : 0;
+  }
+
+  let total = 0;
+  const fromLine = buf.getLine(fromRow);
+  if (fromLine) total += countCharsInRange(fromLine, fromCol, fromLine.length);
+
+  for (let r = fromRow + 1; r <= toRow; r++) {
+    const line = buf.getLine(r);
+    if (!line) break;
+    if (!line.isWrapped) total += 1;
+    if (r < toRow) {
+      total += countAllCharsOnLine(line);
+    } else {
+      total += countCharsInRange(line, 0, toCol);
+    }
+  }
+
+  return total;
+}
+
+// ---------------------------------------------------------------------------
+// Character counting
+// ---------------------------------------------------------------------------
+
+function countAllCharsOnLine(line: IBufferLine): number {
+  return countCharsInRange(line, 0, line.length);
+}
+
+function countCharsInRange(line: IBufferLine, fromCol: number, toCol: number): number {
+  let chars = 0;
+  for (let col = fromCol; col < toCol;) {
+    const cell = line.getCell(col);
+    if (!cell) break;
+    const ch = cell.getChars();
+    const w = cell.getWidth();
+    if (ch === '' || w === 0) {
+      col++;
+    } else if (w >= 2) {
+      chars++;
+      col += w;
+    } else {
+      chars++;
+      col++;
+    }
+  }
+  return chars;
+}
+
+// ---------------------------------------------------------------------------
+// Click position snapping
+// ---------------------------------------------------------------------------
+
+function snapClickCol(line: IBufferLine, col: number): number {
+  const cell = line.getCell(col);
+  if (!cell) return findContentEnd(line);
+  if (cell.getChars() !== '') return col;
+  if (cell.getWidth() === 0 && col > 0) return col - 1;
+  return findContentEnd(line);
+}
+
+function findContentEnd(line: IBufferLine): number {
+  for (let col = line.length - 1; col >= 0; col--) {
+    const cell = line.getCell(col);
+    if (cell && cell.getChars() !== '') {
+      const w = cell.getWidth();
+      return col + (w >= 2 ? w : 1);
+    }
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// xterm.js internal state
+// ---------------------------------------------------------------------------
+
+function isMouseTrackingActive(terminal: Terminal): boolean {
+  try {
+    const core = (terminal as any)._core;
+    const modes = core?.coreService?.decPrivateModes;
+    if (modes) return !!modes.mouseTrackingMode;
+    return !!core?.coreMouseService?.areMouseEventsActive;
+  } catch {
+    return false;
+  }
+}

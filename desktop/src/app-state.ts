@@ -65,6 +65,7 @@ export function setIsPipMode(v: boolean): void { isPipMode = v; }
 export const ua = navigator.userAgent.toLowerCase();
 export const isWindowsPlatform = ua.includes('windows');
 export const isMacPlatform = ua.includes('macintosh') || ua.includes('mac os');
+export const isLinuxPlatform = !isWindowsPlatform && !isMacPlatform;
 document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);
 document.documentElement.classList.toggle('platform-macos', isMacPlatform);
-document.documentElement.classList.toggle('platform-linux', !isWindowsPlatform && !isMacPlatform);
+document.documentElement.classList.toggle('platform-linux', isLinuxPlatform);

@@ -62,7 +62,7 @@ import {
   settings, setSettings,
   isHomeView, isGalleryView, isPipMode,
   sshConfigMap, remoteInfoMap, sessionProgressMap,
-  isWindowsPlatform,
+  isWindowsPlatform, isLinuxPlatform,
   setLastFocusedMainWindowLabel,
 } from './app-state';
 import { togglePip } from './pip';
@@ -233,8 +233,8 @@ export function setupDomEventListeners(): void {
     }
   });
 
-  // On Windows: keep the maximize/restore button icon in sync with actual window state.
-  if (isWindowsPlatform) {
+  // On Windows/Linux: keep the maximize/restore button icon in sync with actual window state.
+  if (isWindowsPlatform || isLinuxPlatform) {
     const toolbarRightEl = getToolbarRightEl();
     window.addEventListener('resize', () => {
       void getCurrentWindow().isMaximized().then((isMax) => {

@@ -230,11 +230,11 @@ function buildTransferPayload(tabId: string, targetLabel: string): TabTransferPa
     const isSSH = DrawerManager.has(leaf.sessionId);
     const sshInfo = isSSH ? DrawerManager.getServerInfo(leaf.sessionId) : undefined;
     const jsInfo = jumpServerConfigMap.get(leaf.sessionId);
-    return {
+    const info: TabTransferSessionInfo = {
       sessionId: leaf.sessionId,
       clientId: mt?.clientId || null,
       title: mt?.shellTitle || mt?.title || 'Terminal',
-      status: mt?.ended ? 'ended' : mt?.ws ? 'connected' : 'disconnected',
+      status: mt?.ended ? 'ended' : (mt?.ws || mt?.transport?.connected) ? 'connected' : 'disconnected',
       isSSH,
       sshInfo: sshInfo || undefined,
       bufferContent: TerminalRegistry.serializeBuffer(leaf.sessionId) || undefined,
@@ -244,6 +244,21 @@ function buildTransferPayload(tabId: string, targetLabel: string): TabTransferPa
       isJumpServer: !!jsInfo,
       jumpServerInfo: jsInfo || undefined,
     };
+    // Close source connection immediately after capturing data to prevent
+    // overlap with the target window's new connection (which would cause
+    // the server to count 2 connected clients and show the viewer capsule).
+    if (mt) {
+      mt.ended = true;
+      if (mt.transport) {
+        mt.transport.close();
+        mt.transport = null;
+      }
+      if (mt.ws) {
+        mt.ws.close();
+        mt.ws = null;
+      }
+    }
+    return info;
   });
 
   // Primary session = focused pane's session (for legacy compat)

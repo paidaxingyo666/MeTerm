@@ -2,7 +2,7 @@ use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     AppHandle, Manager,
 };
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 use tauri::menu::Submenu;
 use tauri::State;
 
@@ -51,7 +51,7 @@ pub fn build_check_updates_label(language: &str, pending_version: Option<&str>) 
 }
 
 /// Same as build_check_updates_label but for the native app menu bar.
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn build_check_updates_app_label(language: &str, pending_version: Option<&str>) -> String {
     let base = app_label(language, "check_updates");
     match pending_version {
@@ -60,7 +60,7 @@ fn build_check_updates_app_label(language: &str, pending_version: Option<&str>) 
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 pub fn app_label(language: &str, key: &str) -> &'static str {
     match (language, key) {
         ("zh", "app") => "应用",
@@ -113,19 +113,19 @@ pub fn app_label(language: &str, key: &str) -> &'static str {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub fn set_app_menu_language(app: &AppHandle, _language: &str) -> Result<(), String> {
-    // Windows uses custom in-app menu in the toolbar.
+    // Windows/Linux use custom in-app menu in the toolbar.
     // Remove native menu so no system menubar/accelerators are shown.
     // This operation should be idempotent; if the menu is already removed,
     // we keep going instead of treating it as a hard failure.
     if let Err(e) = app.remove_menu() {
-        eprintln!("[DEBUG] remove_menu ignored on Windows: {}", e);
+        eprintln!("[DEBUG] remove_menu ignored: {}", e);
     }
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 pub fn set_app_menu_language(app: &AppHandle, language: &str) -> Result<(), String> {
     let pending_version = app
         .try_state::<crate::AppLifecycleState>()

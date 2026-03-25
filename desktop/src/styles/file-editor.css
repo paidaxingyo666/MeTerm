@@ -57,7 +57,8 @@
   position: relative;
 }
 
-html.platform-windows .editor-tabs-area {
+html.platform-windows .editor-tabs-area,
+html.platform-linux .editor-tabs-area {
   padding-left: 8px;
 }
 

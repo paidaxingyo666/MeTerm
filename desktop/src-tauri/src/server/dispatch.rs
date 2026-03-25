@@ -344,7 +344,15 @@ async fn handle_upload_chunk(session: &Arc<Session>, client_id: &str, payload: &
     let mut guard = session.active_upload.lock().await;
     if let Some(ref mut state) = *guard {
         if offset != state.received || total_size != state.total_size {
+            eprintln!("Upload offset mismatch: expected offset={} size={}, got offset={} size={}", state.received, state.total_size, offset, total_size);
             *guard = None;
+            drop(guard);
+            let resp = serde_json::json!({"success": false, "message": "Upload offset mismatch, upload aborted"});
+            session.send_to_client(client_id, protocol::encode_message(
+                protocol::MSG_FILE_OPERATION_RESP,
+                serde_json::to_vec(&resp).unwrap_or_default().as_slice(),
+            ));
+            return;
         } else {
             // Drain completed pending writes
             let mut write_err = false;

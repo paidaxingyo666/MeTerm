@@ -281,8 +281,32 @@ body,
    from <html>. We need a CSS fallback so the theme background is always visible
    instead of the white WebView2 default.  Use rgba with --app-window-opacity so
    the user's opacity setting is honoured. */
-html.platform-windows {
+html.platform-windows,
+html.platform-linux {
   background-color: rgba(var(--bg-primary, 30, 30, 30), var(--app-window-opacity, 1));
+}
+
+/* Linux CSD: window is RGBA-transparent so the WM decoration's rounded corners
+   show through. html/body are transparent; content containers draw the opaque
+   background with matching border-radius so corners reveal the desktop behind. */
+html.platform-linux {
+  background: transparent !important;
+}
+html.platform-linux body {
+  background: transparent;
+}
+/* Main window and sub-windows: content wrapper draws opaque background
+   with border-radius. body/html remain transparent so WM decoration
+   rounded corners and shadows show through at the edges. */
+/* decorations=false + transparent window + RGBA visual:
+   #app draws opaque content with border-radius, transparent
+   corners reveal the desktop behind. No WM decoration gap. */
+html.platform-linux #app,
+html.platform-linux .linux-csd-content {
+  background-color: rgba(var(--bg-primary, 30, 30, 30), var(--app-window-opacity, 1));
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 100vh;
 }
 
 /* ============================================================================
