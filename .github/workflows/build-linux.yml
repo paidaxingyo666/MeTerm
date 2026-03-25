@@ -80,6 +80,22 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+      - name: Create updater artifact (amd64)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          APPIMAGE=$(find desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage -name "*.AppImage" -maxdepth 1 | head -1)
+          if [ -n "$APPIMAGE" ]; then
+            echo "Creating updater artifact from $APPIMAGE ..."
+            tar czf "${APPIMAGE}.tar.gz" -C "$(dirname "$APPIMAGE")" "$(basename "$APPIMAGE")"
+            if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+              npx --yes @tauri-apps/cli signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
+                ${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:+-p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"} \
+                "${APPIMAGE}.tar.gz"
+            fi
+          fi
+
       - name: Upload deb package (amd64)
         uses: actions/upload-artifact@v4
         with:
@@ -171,6 +187,22 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Create updater artifact (arm64)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          APPIMAGE=$(find desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage -name "*.AppImage" -maxdepth 1 | head -1)
+          if [ -n "$APPIMAGE" ]; then
+            echo "Creating updater artifact from $APPIMAGE ..."
+            tar czf "${APPIMAGE}.tar.gz" -C "$(dirname "$APPIMAGE")" "$(basename "$APPIMAGE")"
+            if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+              npx --yes @tauri-apps/cli signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
+                ${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:+-p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"} \
+                "${APPIMAGE}.tar.gz"
+            fi
+          fi
 
       - name: Upload deb package (arm64)
         uses: actions/upload-artifact@v4
