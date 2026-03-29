@@ -4,6 +4,7 @@ import { thinkingIcon } from './ai-icons';
 import { renderMarkdown } from './ai-capsule-markdown';
 import { fuzzyMatch, formatRelativeTime } from './ai-capsule-history';
 import { buildToolCard } from './ai-capsule-tool-ui';
+import { createOverlayScrollbar, getPopupScrollViewport } from './overlay-scrollbar';
 import type { AICapsuleInstance, ConvEntry, ChatConversation } from './ai-capsule-types';
 
 const CHAT_DIR = 'chat-history';
@@ -152,10 +153,14 @@ export function renderChatHistoryListFromCache(
   },
   filter?: string,
 ): void {
-  const panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
+  const panel = instance.chatHistoryPanel
+    || instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
   if (!panel) return;
 
-  panel.innerHTML = '';
+  // For AI Bar popups, use scroll viewport; for side panel inline view, render directly
+  const isSideInline = panel.classList.contains('ai-side-chat-history-view');
+  const target = isSideInline ? panel : getPopupScrollViewport(panel);
+  target.innerHTML = '';
   deps.ensurePopupResizeHandle(panel, instance.element);
 
   const filtered = filter
@@ -167,7 +172,7 @@ export function renderChatHistoryListFromCache(
     const empty = document.createElement('div');
     empty.className = 'ai-chat-hist-empty';
     empty.textContent = t('aiChatHistoryEmpty');
-    panel.appendChild(empty);
+    target.appendChild(empty);
     return;
   }
 
@@ -177,10 +182,10 @@ export function renderChatHistoryListFromCache(
   for (const conv of filtered) {
     const row = document.createElement('div');
     row.className = 'ai-chat-hist-row';
+    row.addEventListener('click', () => deps.restoreConversation(instance, conv));
 
     const info = document.createElement('div');
     info.className = 'ai-chat-hist-info';
-    info.addEventListener('click', () => deps.restoreConversation(instance, conv));
 
     const rowTitle = document.createElement('div');
     rowTitle.className = 'ai-chat-hist-row-title';
@@ -207,7 +212,7 @@ export function renderChatHistoryListFromCache(
     list.appendChild(row);
   }
 
-  panel.appendChild(list);
+  target.appendChild(list);
 }
 
 export function renderChatHistoryDetail(
@@ -220,9 +225,13 @@ export function renderChatHistoryDetail(
     bindCommandButtons: (inst: AICapsuleInstance, container: Element) => void;
   },
 ): void {
-  const panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
+  const panel = instance.chatHistoryPanel
+    || instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
   if (!panel) return;
-  panel.innerHTML = '';
+
+  const isSideInline = panel.classList.contains('ai-side-chat-history-view');
+  const target = isSideInline ? panel : getPopupScrollViewport(panel);
+  target.innerHTML = '';
   deps.ensurePopupResizeHandle(panel, instance.element);
 
   const header = document.createElement('div');
@@ -240,10 +249,11 @@ export function renderChatHistoryDetail(
 
   header.appendChild(backBtn);
   header.appendChild(title);
-  panel.appendChild(header);
+  target.appendChild(header);
 
   const msgContainer = document.createElement('div');
   msgContainer.className = 'ai-chat-hist-messages';
+  createOverlayScrollbar({ viewport: msgContainer, container: msgContainer });
 
   for (const msg of conv.messages) {
     const msgEl = document.createElement('div');
@@ -295,7 +305,7 @@ export function renderChatHistoryDetail(
     msgContainer.appendChild(msgEl);
   }
 
-  panel.appendChild(msgContainer);
+  target.appendChild(msgContainer);
 
   // Bind command buttons in rendered markdown
   deps.bindCommandButtons(instance, msgContainer);

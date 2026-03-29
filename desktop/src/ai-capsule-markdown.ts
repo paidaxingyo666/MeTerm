@@ -50,20 +50,95 @@ export function renderMarkdown(text: string, sessionId: string, addHistoryFn: (c
 }
 
 export function renderInlineMarkdown(text: string): string {
-  // Escape HTML first
-  let html = escapeHtml(text);
+  // Process block-level elements first, then inline
+  const blocks = text.split('\n\n');
+  const rendered: string[] = [];
 
-  // Bold: **text**
+  for (const block of blocks) {
+    const trimmed = block.trim();
+    if (!trimmed) continue;
+
+    // Check if this block is a table (lines starting with |)
+    const lines = trimmed.split('\n');
+    if (lines.length >= 2 && lines[0].includes('|') && lines[1].includes('---')) {
+      rendered.push(renderTable(lines));
+      continue;
+    }
+
+    // Process line by line for headings, hr, lists
+    const lineResults: string[] = [];
+    let inList = false;
+    for (const line of lines) {
+      const lt = line.trim();
+      // Horizontal rule
+      if (/^---+$/.test(lt)) {
+        if (inList) { lineResults.push('</ul>'); inList = false; }
+        lineResults.push('<hr class="ai-md-hr">');
+      }
+      // Headings
+      else if (lt.startsWith('### ')) {
+        if (inList) { lineResults.push('</ul>'); inList = false; }
+        lineResults.push(`<h4 class="ai-md-h3">${renderInline(escapeHtml(lt.slice(4)))}</h4>`);
+      } else if (lt.startsWith('## ')) {
+        if (inList) { lineResults.push('</ul>'); inList = false; }
+        lineResults.push(`<h3 class="ai-md-h2">${renderInline(escapeHtml(lt.slice(3)))}</h3>`);
+      } else if (lt.startsWith('# ')) {
+        if (inList) { lineResults.push('</ul>'); inList = false; }
+        lineResults.push(`<h2 class="ai-md-h1">${renderInline(escapeHtml(lt.slice(2)))}</h2>`);
+      }
+      // Unordered list
+      else if (/^[-*] /.test(lt)) {
+        if (!inList) { lineResults.push('<ul class="ai-md-list">'); inList = true; }
+        lineResults.push(`<li>${renderInline(escapeHtml(lt.slice(2)))}</li>`);
+      }
+      // Regular text
+      else {
+        if (inList) { lineResults.push('</ul>'); inList = false; }
+        lineResults.push(renderInline(escapeHtml(lt)));
+      }
+    }
+    if (inList) lineResults.push('</ul>');
+
+    // Wrap non-block content in <p>
+    const joined = lineResults.join('\n');
+    if (!joined.startsWith('<h') && !joined.startsWith('<ul') && !joined.startsWith('<hr') && !joined.startsWith('<table')) {
+      rendered.push(`<p>${joined.replace(/\n/g, '<br>')}</p>`);
+    } else {
+      rendered.push(joined);
+    }
+  }
+
+  return rendered.join('');
+}
+
+/** Render a markdown table from lines */
+function renderTable(lines: string[]): string {
+  const parseRow = (line: string): string[] =>
+    line.split('|').map(c => c.trim()).filter((_, i, arr) => i > 0 && i < arr.length);
+
+  const headers = parseRow(lines[0]);
+  // Skip separator line (lines[1])
+  const rows = lines.slice(2).filter(l => l.includes('|')).map(parseRow);
+
+  let html = '<table class="ai-md-table"><thead><tr>';
+  for (const h of headers) {
+    html += `<th>${renderInline(escapeHtml(h))}</th>`;
+  }
+  html += '</tr></thead><tbody>';
+  for (const row of rows) {
+    html += '<tr>';
+    for (let i = 0; i < headers.length; i++) {
+      html += `<td>${renderInline(escapeHtml(row[i] ?? ''))}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+/** Render inline markdown (bold, code, links) */
+function renderInline(html: string): string {
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
-  // Inline code: `text`
   html = html.replace(/`([^`]+)`/g, '<code class="ai-inline-code">$1</code>');
-
-  // Paragraphs: double newline
-  html = html.split('\n\n').map((p) => `<p>${p.trim()}</p>`).join('');
-
-  // Single newlines within paragraphs -> <br>
-  html = html.replace(/\n/g, '<br>');
-
   return html;
 }

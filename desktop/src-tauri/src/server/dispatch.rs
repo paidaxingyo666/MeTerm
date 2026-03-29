@@ -81,8 +81,15 @@ pub async fn dispatch_message(
                     super::file_handler::handle_sftp_file_list_with_progress(&payload, &sftp, &session, &client_id).await;
                 });
             } else {
-                let resp = super::file_handler::handle_file_list(payload);
-                session.send_to_client(client_id, resp);
+                let is_ssh = *session.executor_type.lock().unwrap() == "ssh";
+                if is_ssh {
+                    // SSH 会话 SFTP 未就绪，返回错误而非回退到本地文件系统
+                    let err = serde_json::json!({"code": "SFTP_NOT_AVAILABLE", "message": "SFTP subsystem not ready yet, please retry"});
+                    session.send_to_client(client_id, super::protocol::encode_message(super::protocol::MSG_ERROR, serde_json::to_vec(&err).unwrap_or_default().as_slice()));
+                } else {
+                    let resp = super::file_handler::handle_file_list(payload);
+                    session.send_to_client(client_id, resp);
+                }
             }
         }
         protocol::MSG_FILE_OPERATION => {
@@ -577,6 +584,13 @@ pub async fn handle_local_file_download(
     let mut buf = vec![0u8; CHUNK_SIZE];
     let mut offset: u64 = start_offset;
 
+    if total_size == 0 {
+        // Empty file: send a single chunk with totalSize=0, offset=0, no data
+        let chunk_payload = vec![0u8; 16]; // 8B total_size=0 + 8B offset=0
+        session.send_to_client(client_id, protocol::encode_message(protocol::MSG_FILE_DOWNLOAD_CHUNK, &chunk_payload));
+        return;
+    }
+
     while offset < total_size {
         if wait_download_ctrl(&mut ctrl).await { return; }
 
@@ -629,6 +643,13 @@ pub async fn handle_sftp_file_download(
             return;
         }
     };
+
+    if total_size == 0 {
+        // Empty file: send a single chunk with totalSize=0, offset=0, no data
+        let chunk_payload = vec![0u8; 16]; // 8B total_size=0 + 8B offset=0
+        session.send_to_client(client_id, protocol::encode_message(protocol::MSG_FILE_DOWNLOAD_CHUNK, &chunk_payload));
+        return;
+    }
 
     let mut offset: u64 = 0;
     let mut pipeline = super::session::AdaptivePipeline::new();

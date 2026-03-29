@@ -249,8 +249,10 @@ export interface AppSettings {
   fontFamily: string;
   enableNerdFont: boolean;
   enableLigatures: boolean;
-  enableBoldFont: boolean;
+  fontWeight: number;  // 300 | 400 | 500 | 700
+  fontSharpness: boolean;
   encoding: string;
+  enableThumbnail: boolean;
   previewRefreshRate: number;
   language: 'en' | 'zh';
   rememberWindowSize: boolean;
@@ -294,6 +296,8 @@ export interface AppSettings {
   autoNewSession: boolean;
   /** Custom device name for LAN sharing/pairing (empty = OS hostname) */
   deviceName: string;
+  /** Enter key sends to Agent by default (instead of terminal) */
+  aiEnterSendsToAgent: boolean;
 }
 
 const SETTINGS_KEY = 'meterm-settings';
@@ -306,8 +310,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   fontFamily: 'jetbrains-mono',
   enableNerdFont: false,
   enableLigatures: false,
-  enableBoldFont: false,
+  fontWeight: 400,
+  fontSharpness: false,
   encoding: 'utf-8',
+  enableThumbnail: true,
   previewRefreshRate: 1000,
   language: 'en',
   rememberWindowSize: true,
@@ -346,6 +352,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   pipScaleByScreen: false,
   autoNewSession: false,
   deviceName: '',
+  aiEnterSendsToAgent: false,
 };
 
 export function loadSettings(): AppSettings {
@@ -377,6 +384,13 @@ export function loadSettings(): AppSettings {
         delete (settings as Record<string, unknown>).aiApiKey;
         delete (settings as Record<string, unknown>).aiBaseUrl;
         delete (settings as Record<string, unknown>).aiModel;
+        saveSettings(settings);
+      }
+
+      // Migration: old enableBoldFont boolean → new fontWeight number
+      if ('enableBoldFont' in parsed && !('fontWeight' in parsed)) {
+        settings.fontWeight = parsed.enableBoldFont ? 700 : 400;
+        delete (settings as Record<string, unknown>).enableBoldFont;
         saveSettings(settings);
       }
 

@@ -2,16 +2,27 @@
 
 import { escapeHtml } from './status-bar';
 
-/** 显示上传冲突对话框：覆盖 / 重命名 / 跳过 */
+export type UploadConflictResult = { action: 'overwrite' | 'rename' | 'skip'; newName?: string; applyToAll?: boolean };
+export type DirConflictResult = { action: 'merge' | 'rename' | 'skip'; newName?: string; applyToAll?: boolean };
+
+/** 显示上传冲突对话框：覆盖 / 重命名 / 跳过，支持"全部"操作 */
 export function showUploadConflictDialog(
   filename: string,
-  container: HTMLElement
-): Promise<{ action: 'overwrite' | 'rename' | 'skip'; newName?: string }> {
+  container: HTMLElement,
+  showBatchButtons = false
+): Promise<UploadConflictResult> {
   return new Promise((resolve) => {
     container.querySelector('.drawer-modal-overlay')?.remove();
 
     const overlay = document.createElement('div');
     overlay.className = 'drawer-modal-overlay';
+
+    const batchBtns = showBatchButtons ? `
+          <div style="border-top:1px solid var(--border-subtle);margin-top:4px;padding-top:6px;display:flex;flex-direction:column;gap:6px;">
+            <button class="drawer-modal-btn confirm" data-action="overwrite-all" style="width:100%">全部覆盖</button>
+            <button class="drawer-modal-btn cancel" data-action="skip-all" style="width:100%">全部跳过</button>
+          </div>` : '';
+
     overlay.innerHTML = `
       <div class="drawer-modal">
         <div class="drawer-modal-title">文件 "${escapeHtml(filename)}" 已存在</div>
@@ -20,13 +31,14 @@ export function showUploadConflictDialog(
           <button class="drawer-modal-btn confirm" data-action="overwrite" style="width:100%">覆盖</button>
           <button class="drawer-modal-btn" data-action="rename" style="width:100%">重命名</button>
           <button class="drawer-modal-btn cancel" data-action="skip" style="width:100%">跳过</button>
+          ${batchBtns}
         </div>
       </div>
     `;
 
     container.appendChild(overlay);
 
-    const close = (result: { action: 'overwrite' | 'rename' | 'skip'; newName?: string }) => {
+    const close = (result: UploadConflictResult) => {
       overlay.remove();
       resolve(result);
     };
@@ -36,8 +48,12 @@ export function showUploadConflictDialog(
       const action = target.dataset.action;
       if (action === 'overwrite') {
         close({ action: 'overwrite' });
+      } else if (action === 'overwrite-all') {
+        close({ action: 'overwrite', applyToAll: true });
       } else if (action === 'skip') {
         close({ action: 'skip' });
+      } else if (action === 'skip-all') {
+        close({ action: 'skip', applyToAll: true });
       } else if (action === 'rename') {
         // 切换到重命名输入模式
         const modal = overlay.querySelector('.drawer-modal') as HTMLElement;
@@ -70,16 +86,24 @@ export function showUploadConflictDialog(
   });
 }
 
-/** 显示文件夹冲突对话框：合并 / 重命名 / 跳过 */
+/** 显示文件夹冲突对话框：合并 / 重命名 / 跳过，支持"全部"操作 */
 export function showDirConflictDialog(
   dirName: string,
-  container: HTMLElement
-): Promise<{ action: 'merge' | 'rename' | 'skip'; newName?: string }> {
+  container: HTMLElement,
+  showBatchButtons = false
+): Promise<DirConflictResult> {
   return new Promise((resolve) => {
     container.querySelector('.drawer-modal-overlay')?.remove();
 
     const overlay = document.createElement('div');
     overlay.className = 'drawer-modal-overlay';
+
+    const batchBtns = showBatchButtons ? `
+          <div style="border-top:1px solid var(--border-subtle);margin-top:4px;padding-top:6px;display:flex;flex-direction:column;gap:6px;">
+            <button class="drawer-modal-btn confirm" data-action="merge-all" style="width:100%">全部合并</button>
+            <button class="drawer-modal-btn cancel" data-action="skip-all" style="width:100%">全部跳过</button>
+          </div>` : '';
+
     overlay.innerHTML = `
       <div class="drawer-modal">
         <div class="drawer-modal-title">文件夹 "${escapeHtml(dirName)}" 已存在</div>
@@ -88,13 +112,14 @@ export function showDirConflictDialog(
           <button class="drawer-modal-btn confirm" data-action="merge" style="width:100%">合并</button>
           <button class="drawer-modal-btn" data-action="rename" style="width:100%">重命名</button>
           <button class="drawer-modal-btn cancel" data-action="skip" style="width:100%">跳过</button>
+          ${batchBtns}
         </div>
       </div>
     `;
 
     container.appendChild(overlay);
 
-    const close = (result: { action: 'merge' | 'rename' | 'skip'; newName?: string }) => {
+    const close = (result: DirConflictResult) => {
       overlay.remove();
       resolve(result);
     };
@@ -104,8 +129,12 @@ export function showDirConflictDialog(
       const action = target.dataset.action;
       if (action === 'merge') {
         close({ action: 'merge' });
+      } else if (action === 'merge-all') {
+        close({ action: 'merge', applyToAll: true });
       } else if (action === 'skip') {
         close({ action: 'skip' });
+      } else if (action === 'skip-all') {
+        close({ action: 'skip', applyToAll: true });
       } else if (action === 'rename') {
         const modal = overlay.querySelector('.drawer-modal') as HTMLElement;
         modal.innerHTML = `

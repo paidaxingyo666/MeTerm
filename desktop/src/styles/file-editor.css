@@ -193,6 +193,32 @@ html.platform-linux .editor-tabs-area {
   font-variant-numeric: tabular-nums;
 }
 
+/* Format button */
+.editor-format-btn {
+  border: none;
+  background: rgba(128, 128, 128, 0.1);
+  color: var(--text-secondary, #a8a8a8);
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.editor-format-btn:hover {
+  background: rgba(128, 128, 128, 0.25);
+  color: var(--text-primary, #d0d0d0);
+}
+.editor-format-btn.success {
+  color: #66bb6a;
+  background: rgba(102, 187, 106, 0.12);
+}
+.editor-format-btn.error {
+  color: #ef5350;
+  background: rgba(239, 83, 80, 0.12);
+}
+
 .editor-lang-btn {
   border: none;
   background: transparent;

@@ -134,16 +134,64 @@ export function renderProgressBar(percent: number): string {
   return `<div class="sysinfo-progress ${colorClass}"><div class="sysinfo-progress-fill" style="width:${pct}%"></div><span class="sysinfo-progress-text">${pct.toFixed(0)}%</span></div>`;
 }
 
-export function renderSysInfo(instance: SysInfoFields): void {
-  const info = instance.sysInfo;
-  if (!info) return;
+/** Compact mode breakpoint — exactly 2 columns of 44px tiles + gap + padding */
+const COMPACT_BREAKPOINT = 104;
 
-  const serverInfoEl = instance.element.querySelector(`#server-info-${instance.sessionId}`) as HTMLElement;
-  if (!serverInfoEl) return;
+/** Render a compact liquid-fill tile */
+function renderTile(label: string, value: string, percent?: number, colorClass?: string): string {
+  if (percent !== undefined) {
+    const pct = Math.max(0, Math.min(100, percent));
+    const cls = pct > 90 ? 'critical' : pct > 70 ? 'warning' : '';
+    return `<div class="si-tile si-tile-gauge ${cls}" title="${label}: ${value}">
+      <div class="si-tile-fill" style="height:${pct}%"></div>
+      <span class="si-tile-label">${label}</span>
+      <span class="si-tile-value">${value}</span>
+    </div>`;
+  }
+  return `<div class="si-tile ${colorClass || ''}" title="${value}">
+    <span class="si-tile-label">${label}</span>
+    <span class="si-tile-value">${value}</span>
+  </div>`;
+}
 
+/** Render compact tiles view (narrow sidebar) */
+function renderCompactSysInfo(instance: SysInfoFields, serverInfoEl: HTMLElement): void {
+  const info = instance.sysInfo!;
+  const memPct = info.mem_total > 0 ? (info.mem_used / info.mem_total) * 100 : 0;
+
+  // Net rates
+  let rxRate = 0;
+  const nic = instance.selectedNic;
+  const history = instance.netHistory.get(nic);
+  if (history && history.length > 0) {
+    rxRate = history[history.length - 1].rxRate;
+  }
+
+  const diskTiles = (info.disks || []).map(d => {
+    const pct = d.total > 0 ? (d.used / d.total) * 100 : 0;
+    return renderTile(escapeHtml(String(d.mount)), `${pct.toFixed(0)}%`, pct);
+  }).join('');
+
+  // No connection info in compact mode — just tiles in a single column
+  serverInfoEl.innerHTML = `
+    <div class="si-tiles">
+      ${renderTile('CPU', `${info.cpu_usage.toFixed(0)}%`, info.cpu_usage)}
+      ${renderTile('MEM', `${memPct.toFixed(0)}%`, memPct)}
+      ${diskTiles}
+      ${renderTile('UP', formatUptime(info.uptime_seconds))}
+      ${renderTile('NET', `↓${formatRate(rxRate).replace('/s', '')}`)}
+    </div>
+  `;
+
+  serverInfoEl.classList.add('server-info-compact');
+  serverInfoEl.classList.remove('server-info-expanded');
+}
+
+/** Render full expanded view (wide sidebar) */
+function renderExpandedSysInfo(instance: SysInfoFields, serverInfoEl: HTMLElement): void {
+  const info = instance.sysInfo!;
   const memPercent = info.mem_total > 0 ? (info.mem_used / info.mem_total) * 100 : 0;
 
-  // Keep existing connection info (host/user) at the top
   const existingConn = serverInfoEl.querySelector('.server-info-conn');
   const connHtml = existingConn ? existingConn.outerHTML : '';
 
@@ -184,7 +232,10 @@ export function renderSysInfo(instance: SysInfoFields): void {
     ${disksHtml}
   `;
 
-  // Bind NIC selector event after innerHTML update
+  serverInfoEl.classList.add('server-info-expanded');
+  serverInfoEl.classList.remove('server-info-compact');
+
+  // Bind NIC selector
   const nicSelect = serverInfoEl.querySelector(`.net-nic-select[data-session="${instance.sessionId}"]`) as HTMLSelectElement;
   if (nicSelect) {
     nicSelect.addEventListener('change', () => {
@@ -192,8 +243,26 @@ export function renderSysInfo(instance: SysInfoFields): void {
       renderSysInfo(instance);
     });
   }
+}
 
-  // 仅在文本被截断时显示 tooltip
+export function renderSysInfo(instance: SysInfoFields): void {
+  const info = instance.sysInfo;
+  if (!info) return;
+
+  const serverInfoEl = instance.element.querySelector(`#server-info-${instance.sessionId}`) as HTMLElement;
+  if (!serverInfoEl) return;
+
+  // Determine compact vs expanded based on sidebar width
+  const sidebar = serverInfoEl.closest('.drawer-sidebar') as HTMLElement;
+  const isCompact = sidebar ? sidebar.offsetWidth < COMPACT_BREAKPOINT : false;
+
+  if (isCompact) {
+    renderCompactSysInfo(instance, serverInfoEl);
+  } else {
+    renderExpandedSysInfo(instance, serverInfoEl);
+  }
+
+  // Tooltip on truncated text
   serverInfoEl.querySelectorAll('.server-info-value, .server-info-value-small, .server-info-label').forEach((el) => {
     el.addEventListener('mouseenter', () => {
       const htmlEl = el as HTMLElement;

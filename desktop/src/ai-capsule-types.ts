@@ -6,6 +6,8 @@ export interface HistoryEntry {
   source: 'manual' | 'ai';
 }
 
+export type AIChatLayoutMode = 'bottom' | 'side';
+
 export interface AICapsuleInstance {
   sessionId: string;
   historyKey: string;
@@ -30,6 +32,12 @@ export interface AICapsuleInstance {
   chatHistoryOpen: boolean;
   chatHistoryPanel: HTMLDivElement | null;
   currentConversationId: string;
+  // Layout mode (bottom panel vs side panel)
+  layoutMode: AIChatLayoutMode;
+  sidePanel: HTMLDivElement | null;
+  sideResizeHandle: HTMLDivElement | null;
+  sideInputArea: HTMLDivElement | null;
+  sideInput: HTMLTextAreaElement | null;
 }
 
 /** Discriminated-union entry stored per conversation turn */

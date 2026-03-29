@@ -242,6 +242,15 @@ export function handleDownloadChunk(
   const offset = Number(view.getBigUint64(8));
   const chunkData = content.slice(16);
 
+  // Empty file: totalSize=0, no data — finalize immediately
+  if (totalSize === 0 && chunkData.length === 0) {
+    if (state.currentDownloadId) {
+      callbacks.updateTransferProgress(state.currentDownloadId, 100, 'inprogress');
+    }
+    finalizeDownload(state, callbacks);
+    return;
+  }
+
   // Update total size on first chunk
   if (state.pendingDownload.totalSize === 0 && totalSize > 0) {
     state.pendingDownload.totalSize = totalSize;

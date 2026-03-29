@@ -111,7 +111,7 @@ export function doResizeInternal(
     return;
   }
 
-  if (mt.thumbnailTerminal.cols !== cols || mt.thumbnailTerminal.rows !== rows) {
+  if (mt.thumbnailTerminal && (mt.thumbnailTerminal.cols !== cols || mt.thumbnailTerminal.rows !== rows)) {
     mt.thumbnailTerminal.resize(cols, rows);
   }
 

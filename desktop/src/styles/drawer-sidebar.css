@@ -4,34 +4,24 @@
 .drawer-main-tabs {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  margin-right: 6px;
+  gap: calc(var(--file-manager-font-size, 12px) * 0.5);
+  margin-right: 0;
   flex-shrink: 0;
 }
 
+/* Tabs inherit .file-toolbar button base styles (pill shape, same size) */
 .drawer-tab {
-  height: calc(var(--file-manager-font-size, 12px) * 2);
-  padding: 0 calc(var(--file-manager-font-size, 12px) * 0.67);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 4px;
   color: var(--text-muted);
-  cursor: pointer;
-  font-size: var(--file-manager-font-size, 12px);
-  font-family: inherit;
-  transition: all 0.12s;
-  white-space: nowrap;
-}
-
-.drawer-tab:hover {
-  color: var(--text-primary);
-  background: rgba(var(--bg-button), 0.5);
 }
 
 .drawer-tab.active {
   color: var(--text-heading);
-  background: rgba(var(--bg-button), 0.8);
-  border-color: var(--border-primary);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* Sidebar toggle button — highlight when sidebar is hidden */
+.btn-toggle-sidebar.active {
+  color: var(--accent);
 }
 
 .file-toolbar-actions {
@@ -47,6 +37,107 @@
    ============================================================================ */
 .server-info-conn {
   margin-bottom: 2px;
+}
+
+/* ============================================================================
+   Compact Tiles (narrow sidebar, <160px)
+   ============================================================================ */
+.si-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0;
+}
+
+.si-tile {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: default;
+}
+
+/* Label at top */
+.si-tile-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-muted);
+  line-height: 1;
+  z-index: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* Value at bottom */
+.si-tile-value {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1;
+  z-index: 1;
+  font-family: 'Menlo', monospace;
+  margin-top: 2px;
+}
+
+/* Gauge tile: liquid fill from bottom */
+.si-tile-gauge {
+  background: transparent;
+}
+
+.si-tile-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(74, 222, 128, 0.2);
+  border-radius: 0 0 7px 7px;
+  transition: height 0.6s ease;
+}
+
+/* Warning level fill (>70%) */
+.si-tile-gauge.warning .si-tile-fill {
+  background: rgba(230, 167, 0, 0.25);
+}
+
+/* Critical level fill (>90%) */
+.si-tile-gauge.critical .si-tile-fill {
+  background: rgba(224, 80, 80, 0.25);
+}
+
+/* Light theme */
+[data-theme="light"] .si-tile {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .si-tile-fill {
+  background: rgba(74, 222, 128, 0.15);
+}
+[data-theme="light"] .si-tile-gauge.warning .si-tile-fill {
+  background: rgba(230, 167, 0, 0.18);
+}
+[data-theme="light"] .si-tile-gauge.critical .si-tile-fill {
+  background: rgba(224, 80, 80, 0.18);
+}
+
+/* Compact mode: tiles fill sidebar area */
+.server-info-compact {
+  margin: 0;
+}
+
+/* Sidebar: always hide scrollbar (content scrolls but no visible bar) */
+.drawer-sidebar {
+  scrollbar-width: none;
+}
+.drawer-sidebar::-webkit-scrollbar {
+  display: none;
 }
 
 .server-info-loading {

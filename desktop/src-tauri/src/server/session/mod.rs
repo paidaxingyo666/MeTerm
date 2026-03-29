@@ -495,6 +495,10 @@ impl Session {
     /// Flush the ring buffer history to a client (for replay on connect).
     /// Sends in 4096-byte chunks to avoid overwhelming the WebSocket buffer.
     /// Prepends RIS (Reset Initial State) `\x1bc` to avoid TUI corruption.
+    ///
+    /// NOTE: RIS resets all terminal modes including mouse tracking.  The
+    /// frontend is responsible for saving mouse modes before reconnect and
+    /// restoring them after the ring-buffer replay completes.
     pub fn flush_ring_buffer(&self, client: &Client) {
         let ring = self.ring_buf.lock().unwrap();
         let data = ring.read_all();

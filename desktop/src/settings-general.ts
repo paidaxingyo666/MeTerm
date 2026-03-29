@@ -2,6 +2,7 @@ import { THEMES, AppSettings, ColorScheme } from './themes';
 import { getAvailableLanguages, t, setLanguage } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { FONT_REGISTRY, getFontDef } from './fonts';
+import { isMacPlatform } from './app-state';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
 import { exportConnectionsToJSON, importConnectionsFromJSON } from './ssh';
@@ -187,7 +188,9 @@ export function createGeneralTab(
   fontFamilySection.className = 'settings-section';
   fontFamilySection.innerHTML = `<label>${t('fontFamily')}</label>`;
   const fontFamilySelect = createSettingsSelect(
-    FONT_REGISTRY.map((f) => ({ value: f.key, label: f.displayName, selected: f.key === current.fontFamily })),
+    FONT_REGISTRY
+      .filter((f) => !f.isSystem || isMacPlatform) // system fonts only on macOS
+      .map((f) => ({ value: f.key, label: f.displayName, selected: f.key === current.fontFamily })),
   );
   fontFamilySection.appendChild(fontFamilySelect.el);
   fontFamilySelect.onchange = () => {
@@ -197,23 +200,40 @@ export function createGeneralTab(
   };
   tabGeneral.appendChild(fontFamilySection);
 
-  // --- Font Options (Bold / Nerd Font / Ligatures) ---
+  // --- Font Weight ---
+  const fontWeightSection = document.createElement('div');
+  fontWeightSection.className = 'settings-section';
+  fontWeightSection.innerHTML = `<label>${t('fontWeight')}</label>`;
+  const curWeight = current.fontWeight || 400;
+  const fontWeightSelect = createSettingsSelect([
+    { value: '100', label: 'Thin (100)', selected: curWeight === 100 },
+    { value: '200', label: 'Extra Light (200)', selected: curWeight === 200 },
+    { value: '300', label: 'Light (300)', selected: curWeight === 300 },
+    { value: '400', label: 'Normal (400)', selected: curWeight === 400 },
+    { value: '500', label: 'Medium (500)', selected: curWeight === 500 },
+    { value: '700', label: 'Bold (700)', selected: curWeight === 700 },
+  ]);
+  fontWeightSection.appendChild(fontWeightSelect.el);
+  fontWeightSelect.onchange = () => { update({ fontWeight: Number(fontWeightSelect.value) }); };
+  tabGeneral.appendChild(fontWeightSection);
+
+  // --- Font Options (Nerd Font / Ligatures) ---
   const fontOptsSection = document.createElement('div');
   fontOptsSection.className = 'settings-section';
   const fontOptsGroup = document.createElement('div');
   fontOptsGroup.className = 'settings-checkbox-group';
   fontOptsGroup.innerHTML = `
-    <label><input type="checkbox" id="bold-font-toggle" ${current.enableBoldFont ? 'checked' : ''}> ${t('enableBoldFont')}</label>
     <label><input type="checkbox" id="nerd-font-toggle" ${current.enableNerdFont ? 'checked' : ''}> ${t('enableNerdFont')}</label>
     <label><input type="checkbox" id="ligatures-toggle" ${current.enableLigatures ? 'checked' : ''}> ${t('enableLigatures')}</label>
+    <label><input type="checkbox" id="sharpness-toggle" ${current.fontSharpness ? 'checked' : ''}> ${t('fontSharpness')}</label>
   `;
   fontOptsSection.appendChild(fontOptsGroup);
-  const boldToggle = fontOptsGroup.querySelector('#bold-font-toggle') as HTMLInputElement;
   const nerdToggle = fontOptsGroup.querySelector('#nerd-font-toggle') as HTMLInputElement;
   const ligToggle = fontOptsGroup.querySelector('#ligatures-toggle') as HTMLInputElement;
-  boldToggle.onchange = () => { update({ enableBoldFont: boldToggle.checked }); };
+  const sharpnessToggle = fontOptsGroup.querySelector('#sharpness-toggle') as HTMLInputElement;
   nerdToggle.onchange = () => { update({ enableNerdFont: nerdToggle.checked }); };
   ligToggle.onchange = () => { update({ enableLigatures: ligToggle.checked }); };
+  sharpnessToggle.onchange = () => { update({ fontSharpness: sharpnessToggle.checked }); };
   tabGeneral.appendChild(fontOptsSection);
 
   // --- Encoding ---
@@ -328,7 +348,16 @@ export function createGeneralTab(
   };
   tabGeneral.appendChild(fileManagerFontSection);
 
-  // --- Preview Refresh Rate ---
+  // --- Thumbnail Toggle + Preview Refresh Rate ---
+  const thumbSection = document.createElement('div');
+  thumbSection.className = 'settings-section';
+  const thumbGroup = document.createElement('div');
+  thumbGroup.className = 'settings-checkbox-group';
+  thumbGroup.innerHTML = `<label><input type="checkbox" id="enable-thumbnail-toggle" ${current.enableThumbnail ? 'checked' : ''}> ${t('enableThumbnail')}</label>`;
+  thumbSection.appendChild(thumbGroup);
+  const thumbCheckbox = thumbGroup.querySelector('#enable-thumbnail-toggle') as HTMLInputElement;
+  tabGeneral.appendChild(thumbSection);
+
   const rateSection = document.createElement('div');
   rateSection.className = 'settings-section';
   rateSection.innerHTML = `<label>${t('previewRefreshRate')}</label>`;
@@ -344,6 +373,13 @@ export function createGeneralTab(
     const previewRefreshRate = parseInt(rateSelect.value, 10);
     update({ previewRefreshRate });
   };
+  // Show/hide refresh rate based on thumbnail toggle
+  const updateRateVisibility = () => { rateSection.style.display = thumbCheckbox.checked ? '' : 'none'; };
+  updateRateVisibility();
+  thumbCheckbox.addEventListener('change', () => {
+    update({ enableThumbnail: thumbCheckbox.checked });
+    updateRateVisibility();
+  });
   tabGeneral.appendChild(rateSection);
 
   // --- Remember Options ---

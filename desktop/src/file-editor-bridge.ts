@@ -1,23 +1,38 @@
 /**
  * file-editor-bridge.ts — Main window side: manages the singleton editor window
- * and bridges FileManager (WebSocket) ↔ editor window via localStorage.
+ * and bridges FileManager (WebSocket / IPC Transport) ↔ editor window via localStorage.
  */
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { confirm } from '@tauri-apps/plugin-dialog';
 import { encodeMessage, MsgFileReadRequest, MsgFileSaveRequest } from './protocol';
 import { t } from './i18n';
 import { openEditorWindow } from './view-manager';
+import type { TerminalTransport } from './terminal-transport';
 
 const LS_PREFIX = 'meterm-editor-';
 const EDITOR_WINDOW_LABEL = 'editor';
+
+/** Abstraction over WebSocket and IpcTransport for file editor communication. */
+interface EditorConnection {
+  send(data: Uint8Array): void;
+  readonly isOpen: boolean;
+}
+
+function wrapWebSocket(ws: WebSocket): EditorConnection {
+  return { send: (d) => ws.send(d), get isOpen() { return ws.readyState === WebSocket.OPEN; } };
+}
+
+function wrapTransport(t: TerminalTransport): EditorConnection {
+  return { send: (d) => t.send(d), get isOpen() { return t.connected; } };
+}
 
 interface PendingRead {
   tabId: string;
   filePath: string;
 }
 
-/** Maps tabId → WebSocket (for save requests) */
-const tabWsMap = new Map<string, WebSocket>();
+/** Maps tabId → connection (for save requests) */
+const tabConnMap = new Map<string, EditorConnection>();
 
 /** Pending file reads waiting for MsgFileReadResponse */
 const pendingReads: PendingRead[] = [];
@@ -44,10 +59,10 @@ function startPolling(): void {
   const poll = () => {
     // Debug: log poll state every 5s
     if (Date.now() % 5000 < 200) {
-      console.log(`[Bridge] Poll running. tabWsMap keys: [${[...tabWsMap.keys()].join(', ')}]`);
+      console.log(`[Bridge] Poll running. tabConnMap keys: [${[...tabConnMap.keys()].join(', ')}]`);
     }
     // Check save requests from each tracked tab
-    for (const [tabId, ws] of tabWsMap) {
+    for (const [tabId, ws] of tabConnMap) {
       const reqKey = `${LS_PREFIX}savereq-${tabId}`;
       const raw = localStorage.getItem(reqKey);
       if (raw) {
@@ -60,7 +75,7 @@ function startPolling(): void {
     if (localStorage.getItem(`${LS_PREFIX}closed`)) {
       localStorage.removeItem(`${LS_PREFIX}closed`);
       editorWindowCreated = false;
-      tabWsMap.clear();
+      tabConnMap.clear();
       pendingReads.length = 0;
       pendingSaves.clear();
     }
@@ -75,9 +90,9 @@ function startPolling(): void {
   poll();
 }
 
-function processSaveRequest(tabId: string, ws: WebSocket, raw: string): void {
-  console.log(`[Bridge] Processing save request: tabId=${tabId}, wsState=${ws?.readyState}`);
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
+function processSaveRequest(tabId: string, conn: EditorConnection, raw: string): void {
+  console.log(`[Bridge] Processing save request: tabId=${tabId}, isOpen=${conn?.isOpen}`);
+  if (!conn || !conn.isOpen) {
     localStorage.setItem(`${LS_PREFIX}save-${tabId}`, JSON.stringify({
       success: false, error: 'Session disconnected',
     }));
@@ -108,7 +123,7 @@ function processSaveRequest(tabId: string, ws: WebSocket, raw: string): void {
   payload.set(pathBytes, 4);
   payload.set(contentBytes, 4 + pathBytes.length);
 
-  ws.send(encodeMessage(MsgFileSaveRequest, payload));
+  conn.send(encodeMessage(MsgFileSaveRequest, payload));
   pendingSaves.set(data.filePath, tabId);
 }
 
@@ -143,16 +158,17 @@ export async function openFileInEditor(
   filePath: string,
   fileName: string,
   fileSize: number,
-  ws: WebSocket,
+  conn: WebSocket | TerminalTransport,
   host?: string,
 ): Promise<void> {
   const tabId = makeTabId(sessionId, filePath);
+  const wrapped = conn instanceof WebSocket ? wrapWebSocket(conn) : wrapTransport(conn);
 
   // Always ensure polling is running
   startPolling();
 
   // Check if already open — just focus the window
-  if (tabWsMap.has(tabId) && editorWindowCreated) {
+  if (tabConnMap.has(tabId) && editorWindowCreated) {
     // Write pending entry to switch to this tab
     localStorage.setItem(`${LS_PREFIX}pending`, JSON.stringify([
       { tabId, sessionId, filePath, fileName, host: host || sessionId },
@@ -172,13 +188,13 @@ export async function openFileInEditor(
     if (!ok) return;
   }
 
-  // Track this tab's WebSocket
-  tabWsMap.set(tabId, ws);
+  // Track this tab's connection
+  tabConnMap.set(tabId, wrapped);
 
-  // Send read request via WebSocket
+  // Send read request
   const encoder = new TextEncoder();
   const reqPayload = encoder.encode(JSON.stringify({ path: filePath }));
-  ws.send(encodeMessage(MsgFileReadRequest, reqPayload));
+  wrapped.send(encodeMessage(MsgFileReadRequest, reqPayload));
   pendingReads.push({ tabId, filePath });
 
   // Write pending file info for editor window
@@ -242,7 +258,7 @@ export function handleSaveResponse(filePath: string, success: boolean, error?: s
  * Notify editor window that a session was disconnected.
  */
 export function notifyEditorsSessionClosed(sessionId: string): void {
-  for (const [tabId] of tabWsMap) {
+  for (const [tabId] of tabConnMap) {
     if (tabId.startsWith(sessionId + '::')) {
       localStorage.setItem(`${LS_PREFIX}disconnected-${tabId}`, '1');
     }

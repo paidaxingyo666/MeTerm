@@ -15,8 +15,8 @@
  * GitHub Release asset naming convention (must match in CI):
  *   darwin/aarch64  → meterm_*_aarch64.app.tar.gz + .sig
  *   darwin/x86_64   → meterm_*_x86_64.app.tar.gz  + .sig
- *   linux/x86_64    → meterm_*_amd64.AppImage      + .sig
- *   linux/aarch64   → meterm_*_aarch64.AppImage    + .sig
+ *   linux/x86_64    → meterm_*_amd64.AppImage.tar.gz    + .sig
+ *   linux/aarch64   → meterm_*_aarch64.AppImage.tar.gz  + .sig
  *   windows/x86_64  → MeTerm_*_x64-setup.exe       + .sig
  */
 
@@ -29,8 +29,8 @@ const DEFAULT_GITHUB_REPO = 'paidaxingyo666/meterm';
 const ASSET_PATTERNS = {
   'darwin-aarch64': { binary: 'aarch64.app.tar.gz', sig: 'aarch64.app.tar.gz.sig' },
   'darwin-x86_64':  { binary: 'x86_64.app.tar.gz',  sig: 'x86_64.app.tar.gz.sig'  },
-  'linux-x86_64':   { binary: 'amd64.AppImage',       sig: 'amd64.AppImage.sig'      },
-  'linux-aarch64':  { binary: 'aarch64.AppImage',     sig: 'aarch64.AppImage.sig'    },
+  'linux-x86_64':   { binary: 'amd64.AppImage.tar.gz',    sig: 'amd64.AppImage.tar.gz.sig'    },
+  'linux-aarch64':  { binary: 'aarch64.AppImage.tar.gz',  sig: 'aarch64.AppImage.tar.gz.sig'  },
   'windows-x86_64': { binary: 'x64-setup.exe',       sig: 'x64-setup.exe.sig'      },
 };
 

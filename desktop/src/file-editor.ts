@@ -242,10 +242,133 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// ===================== 格式化 =====================
+
+/** 支持格式化的语言 ID 集合 */
+const FORMATTABLE_LANGS = new Set(['json', 'jsonc', 'xml', 'svg', 'html', 'htm', 'css']);
+
+/** 获取当前 tab 的语言 ID */
+function getTabLang(tab: TabInfo): string {
+  return tab.forcedLang || getLang(tab.fileName, tab.editorView?.state.doc.toString() || tab.content);
+}
+
+/** 判断当前 tab 是否支持格式化 */
+function canFormat(tab: TabInfo): boolean {
+  return FORMATTABLE_LANGS.has(getTabLang(tab));
+}
+
+/** 格式化文本内容，返回格式化后的文本或 null（不支持/失败） */
+function formatText(text: string, lang: string): { result: string } | { error: string } {
+  switch (lang) {
+    case 'json':
+    case 'jsonc': {
+      try {
+        let cleaned = text;
+        if (lang === 'jsonc') {
+          // 简单移除行注释和块注释
+          cleaned = cleaned.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+        }
+        const parsed = JSON.parse(cleaned);
+        return { result: JSON.stringify(parsed, null, 2) + '\n' };
+      } catch (e) {
+        return { error: `JSON 格式化失败: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+    case 'xml':
+    case 'svg':
+    case 'html':
+    case 'htm': {
+      return { result: formatXml(text) };
+    }
+    case 'css': {
+      return { result: formatCss(text) };
+    }
+    default:
+      return { error: '不支持该语言的格式化' };
+  }
+}
+
+/** 简单 XML/HTML 缩进格式化 */
+function formatXml(xml: string): string {
+  let formatted = '';
+  let indent = 0;
+  // 按标签分割
+  const parts = xml.replace(/>\s*</g, '>\n<').split('\n');
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    // 关闭标签减少缩进
+    if (trimmed.startsWith('</')) indent = Math.max(0, indent - 1);
+    formatted += '  '.repeat(indent) + trimmed + '\n';
+    // 开启标签增加缩进（排除自关闭和声明）
+    if (trimmed.startsWith('<') && !trimmed.startsWith('</') && !trimmed.startsWith('<?') &&
+        !trimmed.startsWith('<!') && !trimmed.endsWith('/>') && !/<\/[^>]+>\s*$/.test(trimmed)) {
+      indent++;
+    }
+  }
+  return formatted;
+}
+
+/** 简单 CSS 格式化 */
+function formatCss(css: string): string {
+  // 压缩为单行再格式化
+  let s = css.replace(/\s+/g, ' ').trim();
+  s = s.replace(/\s*{\s*/g, ' {\n  ');
+  s = s.replace(/\s*}\s*/g, '\n}\n\n');
+  s = s.replace(/;\s*/g, ';\n  ');
+  // 清理多余空行和行尾空格
+  s = s.replace(/\n\s*\n\s*\n/g, '\n\n').replace(/  \n}/g, '\n}').trim() + '\n';
+  return s;
+}
+
+/** 格式化当前活跃 tab */
+function formatActiveTab(): void {
+  const tab = activeTabId ? tabs.get(activeTabId) : null;
+  if (!tab?.editorView) return;
+
+  const lang = getTabLang(tab);
+  const text = tab.editorView.state.doc.toString();
+  const result = formatText(text, lang);
+
+  if ('error' in result) {
+    setFormatBtnState('error', result.error);
+    return;
+  }
+
+  // 替换整个文档内容
+  tab.editorView.dispatch({
+    changes: { from: 0, to: tab.editorView.state.doc.length, insert: result.result },
+  });
+  setFormatBtnState('success');
+}
+
+/** 更新格式化按钮状态 */
+function setFormatBtnState(state: 'success' | 'error', errorMsg?: string): void {
+  const btn = document.getElementById('editor-format-btn');
+  if (!btn) return;
+  const origText = btn.textContent;
+  if (state === 'success') {
+    btn.textContent = '✓';
+    btn.classList.add('success');
+  } else {
+    btn.textContent = '✗';
+    btn.title = errorMsg || '';
+    btn.classList.add('error');
+  }
+  setTimeout(() => {
+    btn.textContent = origText;
+    btn.title = 'Shift+Alt+F';
+    btn.classList.remove('success', 'error');
+  }, 2000);
+}
+
 function buildExtensions(tab: TabInfo): Extension[] {
   return [
     basicSetup,
-    keymap.of([{ key: 'Mod-s', run: () => { saveTab(tab.tabId); return true; } }]),
+    keymap.of([
+      { key: 'Mod-s', run: () => { saveTab(tab.tabId); return true; } },
+      { key: 'Shift-Alt-f', run: () => { formatActiveTab(); return true; } },
+    ]),
     EditorView.updateListener.of((update) => {
       if (update.docChanged && !tab.isDirty) { tab.isDirty = true; renderTabs(); updateWindowTitle(); }
       if (update.selectionSet || update.docChanged) updateStatusBar();
@@ -469,6 +592,15 @@ function updateStatusBar(): void {
     });
     statusBarEl.appendChild(fontBtn);
 
+    // Format button
+    const formatBtn = document.createElement('button');
+    formatBtn.id = 'editor-format-btn';
+    formatBtn.className = 'editor-format-btn';
+    formatBtn.textContent = '格式化';
+    formatBtn.title = 'Shift+Alt+F';
+    formatBtn.addEventListener('click', () => formatActiveTab());
+    statusBarEl.appendChild(formatBtn);
+
     // Language selector
     const langBtn = document.createElement('button');
     langBtn.className = 'editor-lang-btn';
@@ -495,6 +627,12 @@ function updateStatusBar(): void {
   // Update language label
   const langBtn = statusBarEl.querySelector('.editor-lang-btn');
   if (langBtn) langBtn.textContent = langLabel;
+
+  // Update format button visibility (only for formattable languages)
+  const formatBtn = document.getElementById('editor-format-btn');
+  if (formatBtn) {
+    formatBtn.style.display = tab && canFormat(tab) ? '' : 'none';
+  }
 
   // Update font size label
   const fontBtn = statusBarEl.querySelector('.editor-font-btn');

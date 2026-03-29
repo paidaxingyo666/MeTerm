@@ -6,6 +6,7 @@ import { LigaturesAddon } from '@xterm/addon-ligatures';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { WebglAddon } from '@xterm/addon-webgl';
 import {
   encodeMessage,
@@ -18,13 +19,17 @@ import {
   MsgPairApproval,
 } from './protocol';
 import { AppSettings, getTheme, getColorSchemeBg, hexToRgba } from './themes';
-import { loadFont, getFontFamily } from './fonts';
+import { loadFont, getFontFamily, getEffectiveFontWeight } from './fonts';
 import { DrawerManager } from './drawer';
 import { registerFileLinkProvider, getSSHDirProbe, clearSSHDirProbe } from './terminal-file-link';
 import { isWindowsPlatform } from './app-state';
 import type { SessionStatus, SessionInfo, ManagedTerminal } from './terminal-types';
 export type { SessionStatus, SessionInfo, ManagedTerminal } from './terminal-types';
-import { patchCanvasBgOpacity, patchOverlayScrollbar } from './terminal-patches';
+import { patchCanvasBgOpacity, patchOverlayScrollbar, patchCanvasTextRendering, patchCanvasSharpness } from './terminal-patches';
+
+// Patch canvas text rendering BEFORE any Terminal instance is created.
+// This makes xterm.js glyph rendering sharper — closer to native Core Text.
+patchCanvasTextRendering();
 import {
   applySettingsToTerminal,
   registerOscColorHandlers,
@@ -125,7 +130,7 @@ class TerminalRegistryClass {
   async setSettings(settings: AppSettings): Promise<void> {
     const oldEncoding = this.settings?.encoding;
     this.settings = settings;
-    await loadFont(settings.fontFamily, settings.enableNerdFont);
+    await loadFont(settings.fontFamily, settings.enableNerdFont, settings.fontWeight);
     this.terminals.forEach((mt) => {
       this._applySettingsToTerminal(mt);
       if (oldEncoding !== settings.encoding) {
@@ -188,7 +193,7 @@ class TerminalRegistryClass {
 
   captureThumbnail(sessionId: string, width: number = 280, height: number = 160): string | null {
     const mt = this.terminals.get(sessionId);
-    if (!mt || mt.ended) return null;
+    if (!mt || mt.ended || !mt.thumbnailTerminal) return null;
 
     try {
       mt.thumbnailTerminal.refresh(0, Math.max(0, mt.thumbnailTerminal.rows - 1));
@@ -241,6 +246,45 @@ class TerminalRegistryClass {
     this.scheduleResize(mt);
   }
 
+  private _createThumbnailTerminal(
+    container: HTMLDivElement,
+    opts: { fontSize: number; fontFamily: string; fontWeight: number; terminalTheme: any },
+  ): Terminal | null {
+    if (this.settings?.enableThumbnail === false) return null;
+    const tt = new Terminal({
+      cursorBlink: false,
+      fontSize: opts.fontSize,
+      fontFamily: opts.fontFamily,
+      fontWeight: opts.fontWeight as any,
+      fontWeightBold: 'bold',
+      scrollback: 5000,
+      theme: opts.terminalTheme ? { ...opts.terminalTheme, background: '#00000000' } : undefined,
+      allowTransparency: true,
+    });
+    try { tt.loadAddon(new CanvasAddon()); } catch { /* ignore */ }
+    tt.open(container);
+    {
+      const termAny = tt as any;
+      if (termAny._intersectionObserver) termAny._intersectionObserver.disconnect();
+      requestAnimationFrame(() => {
+        const core = termAny._core;
+        core?._renderService?.onIntersectionChange?.(true);
+        core?.viewport?.onIntersectionChange?.(true);
+      });
+    }
+    tt.resize(80, 24);
+    tt.refresh(0, Math.max(0, tt.rows - 1));
+    // Block OSC 10/11/12 color set on thumbnail to prevent opaque background bleed
+    tt.parser.registerOscHandler(10, (d: string) => d !== '?');
+    tt.parser.registerOscHandler(11, (d: string) => d !== '?');
+    tt.parser.registerOscHandler(12, (d: string) => d !== '?');
+    tt.parser.registerOscHandler(104, () => true);
+    tt.parser.registerOscHandler(110, () => true);
+    tt.parser.registerOscHandler(111, () => true);
+    tt.parser.registerOscHandler(112, () => true);
+    return tt;
+  }
+
   create(
     sessionId: string,
     port: number,
@@ -257,10 +301,13 @@ class TerminalRegistryClass {
 
     const theme = this.settings ? getTheme(this.settings.theme) : undefined;
     const fontSize = this.settings?.fontSize || 14;
+    const rawWeight = this.settings?.fontWeight || 400;
     const fontFamily = this.settings
-      ? getFontFamily(this.settings.fontFamily, this.settings.enableNerdFont)
+      ? getFontFamily(this.settings.fontFamily, this.settings.enableNerdFont, rawWeight)
       : 'Menlo, Monaco, "Courier New", monospace';
-    const fontWeight = this.settings?.enableBoldFont ? 'bold' as const : 'normal' as const;
+    const fontWeight = this.settings
+      ? getEffectiveFontWeight(this.settings.fontFamily, rawWeight)
+      : 400;
     const opacityVal = this.settings ? Math.max(20, Math.min(100, this.settings.opacity)) / 100 : 1;
     const hasBackgroundImage = !!this.settings?.backgroundImage;
     const needsTransparency = isWindowsPlatform || opacityVal < 1 || hasBackgroundImage;
@@ -319,7 +366,7 @@ class TerminalRegistryClass {
     } catch { /* ignore */ }
     terminal.open(container);
     // OSC 8 hyperlink support — makes URLs in terminal output clickable
-    try { terminal.loadAddon(new WebLinksAddon()); } catch { /* ignore */ }
+    try { terminal.loadAddon(new WebLinksAddon((_e, uri) => { void openUrl(uri); })); } catch { /* ignore */ }
     // Sixel / iTerm2 inline image support
     try { terminal.loadAddon(new ImageAddon()); } catch { /* ignore */ }
     if (hasBackgroundImage) {
@@ -329,61 +376,13 @@ class TerminalRegistryClass {
     // (like iTerm2's window-level transparency). xterm.js Canvas addon draws
     // explicit backgrounds via fillRect; text is drawn via drawImage (unaffected).
     patchCanvasBgOpacity(container, opacityVal);
+    patchCanvasSharpness(container, !!this.settings?.fontSharpness);
     patchOverlayScrollbar(terminal, container);
     // patchConPtyAlternateScreen removed — see note above
 
-    const thumbnailTerminal = new Terminal({
-      cursorBlink: false,
-      fontSize,
-      fontFamily,
-      fontWeight,
-      fontWeightBold: 'bold',
-      scrollback: 5000,
-      // Fully transparent background: the thumbnail is composited inside the app
-      // which supplies its own background. A transparent background ensures the
-      // thumbnail's GPU canvas layer is entirely see-through — preventing it from
-      // bleeding into the main terminal's compositing in WKWebView during resize.
-      theme: terminalTheme ? { ...terminalTheme, background: '#00000000' } : undefined,
-      allowTransparency: true,
+    const thumbnailTerminal = this._createThumbnailTerminal(thumbnailContainer, {
+      fontSize, fontFamily, fontWeight, terminalTheme,
     });
-    let thumbnailCanvasAddon: CanvasAddon | null = null;
-    try {
-      thumbnailCanvasAddon = new CanvasAddon();
-      thumbnailTerminal.loadAddon(thumbnailCanvasAddon);
-    } catch {
-      thumbnailCanvasAddon = null;
-    }
-    thumbnailTerminal.open(thumbnailContainer);
-    // The thumbnail container uses transform:scale(0.001) which makes its visual
-    // bounding box ~1.28×0.72 px. Some browsers report isIntersecting=false for
-    // sub-pixel boxes, which would pause xterm.js rendering. Disconnect the observer
-    // and explicitly resume to guarantee continuous rendering in all environments.
-    {
-      const termAny = thumbnailTerminal as any;
-      if (termAny._intersectionObserver) {
-        termAny._intersectionObserver.disconnect();
-      }
-      // Resume after one frame so any async IntersectionObserver callback that
-      // already fired (with isIntersecting=false) is overridden.
-      requestAnimationFrame(() => {
-        const core = termAny._core;
-        core?._renderService?.onIntersectionChange?.(true);
-        core?.viewport?.onIntersectionChange?.(true);
-      });
-    }
-    thumbnailTerminal.resize(80, 24);
-    thumbnailTerminal.refresh(0, Math.max(0, thumbnailTerminal.rows - 1));
-    // Block OSC 10/11 color set commands on the thumbnail terminal.
-    // Without this, SSH data containing OSC 11;#color would make the thumbnail
-    // background opaque (overriding allowTransparency), causing it to bleed
-    // through the main terminal in WKWebView where opacity:0 is unreliable.
-    thumbnailTerminal.parser.registerOscHandler(10, (data: string) => data !== '?');
-    thumbnailTerminal.parser.registerOscHandler(11, (data: string) => data !== '?');
-    thumbnailTerminal.parser.registerOscHandler(12, (data: string) => data !== '?');
-    thumbnailTerminal.parser.registerOscHandler(104, () => true);
-    thumbnailTerminal.parser.registerOscHandler(110, () => true);
-    thumbnailTerminal.parser.registerOscHandler(111, () => true);
-    thumbnailTerminal.parser.registerOscHandler(112, () => true);
 
     const mt: ManagedTerminal = {
       id: sessionId,
@@ -418,7 +417,7 @@ class TerminalRegistryClass {
       _hasUserInput: false,
       _transferGrace: false,
       _oscMarkerResolvers: new Map(),
-      shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0, lastCommand: '' },
+      shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0, lastCommand: '', promptRow: -1, promptCol: 0 },
     };
 
     // OSC 7/7766/7768/9/777 are intercepted by Rust OscFilter and delivered
@@ -433,17 +432,20 @@ class TerminalRegistryClass {
     // JS-level interception). When the height recovers, scrollTop stays
     // at the clamped value — the viewport jumps to the top.
     //
-    // Fix: prevent the scroll area height from shrinking. We intercept
-    // style.height writes on the scroll-area element and enforce a floor
-    // equal to the last seen maximum. This stops the browser from ever
-    // needing to clamp scrollTop. The floor resets on terminal resize
-    // (which legitimately changes the scroll area).
+    // Fix: block transient shrinks during buffer reflow but allow
+    // legitimate shrinks after data stabilizes.  When a shrink is blocked,
+    // a 150 ms decay timer starts.  If the height recovers before the
+    // timer fires it was a transient reflow and the block was correct.
+    // If the timer fires without recovery the floor is lowered to the
+    // pending height — eliminating stale blank space below the prompt.
     const viewportEl = container.querySelector('.xterm-viewport') as HTMLElement | null;
     if (viewportEl) {
       const scrollAreaEl = viewportEl.querySelector('.xterm-scroll-area') as HTMLElement | null;
       if (scrollAreaEl) {
         let _heightFloor = 0;
         let _userScrolledUp = false;
+        let _floorDecayTimer: ReturnType<typeof setTimeout> | null = null;
+        let _pendingHeight = 0;
 
         viewportEl.addEventListener('wheel', (e) => {
           if (e.deltaY < 0) _userScrolledUp = true;
@@ -469,11 +471,27 @@ class TerminalRegistryClass {
               const num = parseFloat(v);
               if (!isNaN(num)) {
                 if (num >= _heightFloor) {
-                  // Height increasing or equal — update floor and allow
+                  // Height increasing or equal — update floor.
+                  // Cancel any pending decay since height recovered.
                   _heightFloor = num;
+                  if (_floorDecayTimer) {
+                    clearTimeout(_floorDecayTimer);
+                    _floorDecayTimer = null;
+                  }
                 } else if (!_userScrolledUp) {
-                  // Height shrinking while viewport should be at bottom —
-                  // keep the floor to prevent browser scrollTop clamping
+                  // Height shrinking while viewport at bottom — block it
+                  // to prevent browser scrollTop clamping during reflow.
+                  // Schedule a decay: if height doesn't recover within
+                  // 150 ms this is a legitimate shrink, not a transient
+                  // reflow, so lower the floor.
+                  _pendingHeight = num;
+                  if (!_floorDecayTimer) {
+                    _floorDecayTimer = setTimeout(() => {
+                      _floorDecayTimer = null;
+                      _heightFloor = _pendingHeight;
+                      origSet.call(scrollAreaEl.style, _pendingHeight + 'px');
+                    }, 150);
+                  }
                   origSet.call(this, _heightFloor + 'px');
                   return;
                 }
@@ -486,7 +504,13 @@ class TerminalRegistryClass {
         }
 
         // Reset height floor on terminal resize (legitimate height change).
-        terminal.onResize(() => { _heightFloor = 0; });
+        terminal.onResize(() => {
+          _heightFloor = 0;
+          if (_floorDecayTimer) {
+            clearTimeout(_floorDecayTimer);
+            _floorDecayTimer = null;
+          }
+        });
       }
     }
 
@@ -528,6 +552,13 @@ class TerminalRegistryClass {
       mt.shellState.lastUserInputAt = Date.now();
       if (mt.shellState.phase === 'agent_executing') {
         mt.shellState.lastInputSource = 'user';
+      }
+      // When user presses Enter at a ready prompt, assume a command is being
+      // submitted → switch to 'user_active' so click-to-move won't fire while
+      // a foreground process is running (no preexec hook to detect this).
+      // The next precmd (OSC 7768) will reset phase back to 'ready'.
+      if (data === '\r' && mt.shellState.phase === 'ready') {
+        mt.shellState.phase = 'user_active';
       }
       sendToTerminal(mt, encodeMessage(MsgInput, new TextEncoder().encode(data)));
       // For SSH sessions: if last pong is stale, send an immediate ping to detect dead connections
@@ -785,6 +816,31 @@ class TerminalRegistryClass {
     }
   }
 
+  /**
+   * Restore xterm.js rendering state after system wake / screen unlock.
+   *
+   * During screen-off the GPU context may be reclaimed and xterm.js
+   * IntersectionObserver marks the terminal as invisible, pausing rendering.
+   *
+   * @param skipSigwinch  If true, only fix IntersectionObserver + repaint.
+   *   Caller is responsible for SIGWINCH (e.g. reconnectAll does its own).
+   */
+  async refreshAfterWake(skipSigwinch = false): Promise<void> {
+    // Restore xterm.js IntersectionObserver state + repaint buffer
+    for (const mt of this.terminals.values()) {
+      if (mt.ended) continue;
+      const termAny = mt.terminal as any;
+      const core = termAny._core;
+      core?._renderService?.onIntersectionChange?.(true);
+      core?.viewport?.onIntersectionChange?.(true);
+      mt.terminal.refresh(0, mt.terminal.rows - 1);
+    }
+
+    if (!skipSigwinch) {
+      await this.forceFullRefresh();
+    }
+  }
+
   clearActive(): void {
     this.terminals.forEach((mt) => {
       if (mt.container.classList.contains('active') && !mt.ended) {
@@ -832,15 +888,20 @@ class TerminalRegistryClass {
   /**
    * Send a command to the terminal for AI agent execution.
    * Uses Ctrl+U to clear current line before injecting the command.
+   * For PowerShell, Ctrl+U is not recognized (echoes as ^U and breaks parsing),
+   * so we skip the clear-line prefix — the prompt should be clean when the agent
+   * is controlling execution.
    * Automatically transitions shellState to agent_executing.
    */
-  sendAgentCommand(sessionId: string, command: string): void {
+  sendAgentCommand(sessionId: string, command: string, shellType?: string): void {
     const mt = this.terminals.get(sessionId);
     if (!mt) return;
     mt.shellState.phase = 'agent_executing';
     mt.shellState.lastInputSource = 'agent';
     mt.shellState.agentCommandSeq++;
-    const payload = new TextEncoder().encode('\x15' + command + '\n');
+    // PowerShell does not support Ctrl+U (unix-line-discard); skip prefix to avoid ^U echo.
+    const prefix = shellType === 'powershell' ? '' : '\x15';
+    const payload = new TextEncoder().encode(prefix + command + '\n');
     sendToTerminal(mt, encodeMessage(MsgInput, payload));
   }
 
@@ -930,7 +991,7 @@ class TerminalRegistryClass {
     if (mt.canvasAddon) mt.canvasAddon.dispose();
     if (mt.webglAddon) mt.webglAddon.dispose();
     mt._oscMarkerResolvers.clear();
-    mt.thumbnailTerminal.dispose();
+    mt.thumbnailTerminal?.dispose();
     mt.terminal.dispose();
     mt.thumbnailContainer.remove();
     mt.container.remove();
@@ -959,10 +1020,13 @@ class TerminalRegistryClass {
 
     const theme = this.settings ? getTheme(this.settings.theme) : undefined;
     const fontSize = this.settings?.fontSize || 14;
+    const rawWeight = this.settings?.fontWeight || 400;
     const fontFamily = this.settings
-      ? getFontFamily(this.settings.fontFamily, this.settings.enableNerdFont)
+      ? getFontFamily(this.settings.fontFamily, this.settings.enableNerdFont, rawWeight)
       : 'Menlo, Monaco, "Courier New", monospace';
-    const fontWeight = this.settings?.enableBoldFont ? 'bold' as const : 'normal' as const;
+    const fontWeight = this.settings
+      ? getEffectiveFontWeight(this.settings.fontFamily, rawWeight)
+      : 400;
     const opacityVal = this.settings ? Math.max(20, Math.min(100, this.settings.opacity)) / 100 : 1;
     const hasBackgroundImage = !!this.settings?.backgroundImage;
     const needsTransparency = isWindowsPlatform || opacityVal < 1 || hasBackgroundImage;
@@ -1005,58 +1069,9 @@ class TerminalRegistryClass {
     // DO NOT call terminal.open() here — container is detached from DOM.
     // WebGL/Ligatures/WebLinks/Image addons are loaded in openAndConnect() after open().
 
-    const thumbnailTerminal = new Terminal({
-      cursorBlink: false,
-      fontSize,
-      fontFamily,
-      fontWeight,
-      fontWeightBold: 'bold',
-      scrollback: 5000,
-      // Fully transparent background: the thumbnail is composited inside the app
-      // which supplies its own background. A transparent background ensures the
-      // thumbnail's GPU canvas layer is entirely see-through — preventing it from
-      // bleeding into the main terminal's compositing in WKWebView during resize.
-      theme: terminalTheme ? { ...terminalTheme, background: '#00000000' } : undefined,
-      allowTransparency: true,
+    const thumbnailTerminal = this._createThumbnailTerminal(thumbnailContainer, {
+      fontSize, fontFamily, fontWeight, terminalTheme,
     });
-    let thumbnailCanvasAddon: CanvasAddon | null = null;
-    try {
-      thumbnailCanvasAddon = new CanvasAddon();
-      thumbnailTerminal.loadAddon(thumbnailCanvasAddon);
-    } catch {
-      thumbnailCanvasAddon = null;
-    }
-    thumbnailTerminal.open(thumbnailContainer);
-    // The thumbnail container uses transform:scale(0.001) which makes its visual
-    // bounding box ~1.28×0.72 px. Some browsers report isIntersecting=false for
-    // sub-pixel boxes, which would pause xterm.js rendering. Disconnect the observer
-    // and explicitly resume to guarantee continuous rendering in all environments.
-    {
-      const termAny = thumbnailTerminal as any;
-      if (termAny._intersectionObserver) {
-        termAny._intersectionObserver.disconnect();
-      }
-      // Resume after one frame so any async IntersectionObserver callback that
-      // already fired (with isIntersecting=false) is overridden.
-      requestAnimationFrame(() => {
-        const core = termAny._core;
-        core?._renderService?.onIntersectionChange?.(true);
-        core?.viewport?.onIntersectionChange?.(true);
-      });
-    }
-    thumbnailTerminal.resize(80, 24);
-    thumbnailTerminal.refresh(0, Math.max(0, thumbnailTerminal.rows - 1));
-    // Block OSC 10/11 color set commands on the thumbnail terminal.
-    // Without this, SSH data containing OSC 11;#color would make the thumbnail
-    // background opaque (overriding allowTransparency), causing it to bleed
-    // through the main terminal in WKWebView where opacity:0 is unreliable.
-    thumbnailTerminal.parser.registerOscHandler(10, (data: string) => data !== '?');
-    thumbnailTerminal.parser.registerOscHandler(11, (data: string) => data !== '?');
-    thumbnailTerminal.parser.registerOscHandler(12, (data: string) => data !== '?');
-    thumbnailTerminal.parser.registerOscHandler(104, () => true);
-    thumbnailTerminal.parser.registerOscHandler(110, () => true);
-    thumbnailTerminal.parser.registerOscHandler(111, () => true);
-    thumbnailTerminal.parser.registerOscHandler(112, () => true);
 
     const mt: ManagedTerminal = {
       id: sessionId,
@@ -1091,7 +1106,7 @@ class TerminalRegistryClass {
       _hasUserInput: false,
       _transferGrace: true,
       _oscMarkerResolvers: new Map(),
-      shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0, lastCommand: '' },
+      shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0, lastCommand: '', promptRow: -1, promptCol: 0 },
     };
 
     // OSC handlers are processed by Rust OscFilter → MSG_OSC_EVENT → handleOscEvents.
@@ -1115,6 +1130,9 @@ class TerminalRegistryClass {
       mt.shellState.lastUserInputAt = Date.now();
       if (mt.shellState.phase === 'agent_executing') {
         mt.shellState.lastInputSource = 'user';
+      }
+      if (data === '\r' && mt.shellState.phase === 'ready') {
+        mt.shellState.phase = 'user_active';
       }
       sendToTerminal(mt, encodeMessage(MsgInput, new TextEncoder().encode(data)));
       const listeners = this.inputListeners.get(mt.id);
@@ -1195,7 +1213,7 @@ class TerminalRegistryClass {
       }
     }
     // OSC 8 hyperlink support
-    try { mt.terminal.loadAddon(new WebLinksAddon()); } catch { /* ignore */ }
+    try { mt.terminal.loadAddon(new WebLinksAddon((_e, uri) => { void openUrl(uri); })); } catch { /* ignore */ }
     // Sixel / iTerm2 inline image support
     try { mt.terminal.loadAddon(new ImageAddon()); } catch { /* ignore */ }
 
@@ -1221,10 +1239,28 @@ class TerminalRegistryClass {
    * Force reconnect all local (non-remote) sessions.
    * Called after system wake from sleep/hibernate or after sidecar restart.
    * If port/token are provided, updates stored values first (sidecar restarted on new port).
+   *
+   * The server sends RIS (\x1bc) before the ring-buffer replay, which resets
+   * all terminal modes including mouse tracking.  We snapshot mouse state
+   * before reconnect and restore it after the replay finishes.
    */
   reconnectAll(port?: number, token?: string): void {
+    // Snapshot mouse modes BEFORE reconnect (RIS will wipe them).
+    const mouseSnapshots = new Map<string, { protocol: string; encoding: string }>();
+
     for (const mt of this.terminals.values()) {
       if (mt.isRemote || mt.ended) continue;
+
+      // Save mouse mode state from xterm.js internals
+      try {
+        const cms = (mt.terminal as any)._core?.coreMouseService;
+        if (cms) {
+          mouseSnapshots.set(mt.id, {
+            protocol: cms.activeProtocol ?? 'NONE',
+            encoding: cms.activeEncoding ?? 'DEFAULT',
+          });
+        }
+      } catch { /* ignore */ }
 
       // Update port/token if sidecar restarted on a new port
       if (port !== undefined && port > 0) mt._port = port;
@@ -1257,6 +1293,22 @@ class TerminalRegistryClass {
 
       // Reconnect
       this.connect(mt);
+    }
+
+    // After ring-buffer replay completes:
+    //  1. Restore mouse modes (RIS wiped them).
+    //  2. Trigger SIGWINCH so TUI apps fully redraw (ring buffer is partial).
+    // 1.5s is generous enough for typical ring-buffer sizes over IPC.
+    if (mouseSnapshots.size > 0) {
+      setTimeout(() => {
+        for (const [id, snap] of mouseSnapshots) {
+          const mt = this.terminals.get(id);
+          if (!mt || mt.ended) continue;
+          const seq = buildMouseModeRestoreSeq(snap.protocol, snap.encoding);
+          if (seq) mt.terminal.write(seq);
+        }
+        void this.forceFullRefresh();
+      }, 1500);
     }
   }
 
@@ -1296,7 +1348,7 @@ class TerminalRegistryClass {
       mt.ws.close();
     }
     mt._oscMarkerResolvers.clear();
-    mt.thumbnailTerminal.dispose();
+    mt.thumbnailTerminal?.dispose();
     mt.terminal.dispose();
     mt.thumbnailContainer.remove();
     mt.container.remove();
@@ -1310,3 +1362,32 @@ class TerminalRegistryClass {
 }
 
 export const TerminalRegistry = new TerminalRegistryClass();
+
+/**
+ * Build an escape sequence string that re-enables the given mouse tracking
+ * protocol and encoding.  Returns empty string if no mouse mode was active.
+ *
+ * Protocol names match xterm.js CoreMouseService._activeProtocol.
+ * Encoding names match xterm.js CoreMouseService._activeEncoding.
+ */
+function buildMouseModeRestoreSeq(protocol: string, encoding: string): string {
+  let seq = '';
+
+  // Mouse tracking protocol
+  switch (protocol) {
+    case 'X10':   seq += '\x1b[?9h';    break; // X10 mouse reporting
+    case 'VT200': seq += '\x1b[?1000h'; break; // Normal tracking mode
+    case 'DRAG':  seq += '\x1b[?1002h'; break; // Button-event tracking
+    case 'ANY':   seq += '\x1b[?1003h'; break; // Any-event tracking
+    default:      return '';                    // NONE — nothing to restore
+  }
+
+  // Mouse encoding extension
+  switch (encoding) {
+    case 'SGR':        seq += '\x1b[?1006h'; break;
+    case 'SGR_PIXELS': seq += '\x1b[?1016h'; break;
+    // 'DEFAULT' uses X10-compatible encoding, no extra sequence needed
+  }
+
+  return seq;
+}

@@ -1,4 +1,5 @@
 import { t } from './i18n';
+import { createOverlayScrollbar } from './overlay-scrollbar';
 import type { TldrPage } from './tldr-help';
 
 /**
@@ -80,58 +81,59 @@ let activePopup: HTMLDivElement | null = null;
 
 export function showTldrPopup(
   page: TldrPage,
-  anchorEl: HTMLElement,
+  _anchorEl: HTMLElement,
   options?: { onExampleClick?: (command: string) => void },
 ): void {
   dismissTldrPopup();
 
+  // Overlay backdrop
+  const overlay = document.createElement('div');
+  overlay.className = 'tldr-popup-overlay';
+
   const popup = document.createElement('div');
   popup.className = 'tldr-popup';
 
+  // Scrollable content container
+  const scrollWrap = document.createElement('div');
+  scrollWrap.className = 'tldr-popup-scroll';
+
   const card = createTldrCard(page, {
-    onExampleClick: options?.onExampleClick,
+    onExampleClick: (cmd) => {
+      if (options?.onExampleClick) options.onExampleClick(cmd);
+    },
   });
-  popup.appendChild(card);
+  scrollWrap.appendChild(card);
+  popup.appendChild(scrollWrap);
+
+  // Overlay scrollbar (vertical + horizontal)
+  createOverlayScrollbar({ viewport: scrollWrap, container: popup, horizontal: true });
 
   // Close button
   const closeBtn = document.createElement('button');
   closeBtn.className = 'tldr-popup-close';
   closeBtn.innerHTML = '&times;';
-  closeBtn.addEventListener('click', dismissTldrPopup);
+  closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); // Don't propagate to document click handlers
+    dismissTldrPopup();
+  });
   popup.appendChild(closeBtn);
 
-  document.body.appendChild(popup);
+  overlay.appendChild(popup);
+  document.body.appendChild(overlay);
 
-  // Position above the anchor element
-  const rect = anchorEl.getBoundingClientRect();
-  popup.style.left = `${rect.left}px`;
-  popup.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+  activePopup = overlay;
 
-  // Ensure popup stays within viewport
-  requestAnimationFrame(() => {
-    const popupRect = popup.getBoundingClientRect();
-    if (popupRect.right > window.innerWidth - 8) {
-      popup.style.left = `${window.innerWidth - popupRect.width - 8}px`;
-    }
-    if (popupRect.left < 8) {
-      popup.style.left = '8px';
-    }
+  // Stop all clicks inside overlay from propagating to document
+  // (prevents closing the history panel underneath)
+  overlay.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (e.target === overlay) dismissTldrPopup();
   });
 
-  activePopup = popup;
-
-  // Dismiss on outside click
-  const onClickOutside = (e: MouseEvent) => {
-    if (!popup.contains(e.target as Node)) {
-      dismissTldrPopup();
-      document.removeEventListener('click', onClickOutside, true);
-    }
-  };
-  setTimeout(() => document.addEventListener('click', onClickOutside, true), 0);
-
-  // Dismiss on Escape
+  // Dismiss on Escape (capture phase, stop propagation)
   const onEscape = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
+      e.stopPropagation();
       dismissTldrPopup();
       document.removeEventListener('keydown', onEscape, true);
     }

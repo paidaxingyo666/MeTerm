@@ -460,7 +460,7 @@ async function executeAgentCommand(
     // Leading space to suppress shell history (HIST_IGNORE_SPACE / ignorespace / fish private)
     if (shellType === 'powershell') {
       TerminalRegistry.sendAgentCommand(sessionId,
-        ` ${cmd}; $__ec=$LASTEXITCODE; [Console]::Write("$([char]0x1b)]7766;${markerId};$__ec$([char]7)")`);
+        ` ${cmd}; $__ec=$LASTEXITCODE; [Console]::Write("$([char]0x1b)]7766;${markerId};$__ec$([char]7)")`, 'powershell');
     } else if (shellType === 'fish') {
       // fish: commands starting with space are private when fish_private_mode or
       // fish_history is empty; not universally reliable, but best effort
@@ -478,7 +478,7 @@ async function executeAgentCommand(
   // Send bare command — it displays normally in the terminal (user can see it).
   // Space prefix: excluded from shell history (HIST_IGNORE_SPACE / ignorespace).
   const resultPromise = waitForIdle(sessionId, timeoutSec, signal);
-  TerminalRegistry.sendAgentCommand(sessionId, ` ${cmd}`);
+  TerminalRegistry.sendAgentCommand(sessionId, ` ${cmd}`, shellType);
   const result = await resultPromise;
   return { ...result, output: cleanOutput(result.output, cmd) };
 }

@@ -3,17 +3,18 @@ import { CanvasAddon } from '@xterm/addon-canvas';
 import { LigaturesAddon } from '@xterm/addon-ligatures';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { AppSettings, getTheme, getColorSchemeBg, hexToRgba, hexToOscRgb } from './themes';
-import { getFontFamily } from './fonts';
+import { getFontFamily, getEffectiveFontWeight } from './fonts';
 import { encodeMessage, encodeResize, MsgInput } from './protocol';
 import { isWindowsPlatform } from './app-state';
-import { patchCanvasBgOpacity } from './terminal-patches';
+import { patchCanvasBgOpacity, patchCanvasSharpness } from './terminal-patches';
 import { sendToTerminal } from './terminal-transport';
 import type { ManagedTerminal } from './terminal-types';
 
 export function applySettingsToTerminal(mt: ManagedTerminal, settings: AppSettings): void {
   const theme = getTheme(settings.theme);
-  const fontFamily = getFontFamily(settings.fontFamily, settings.enableNerdFont);
-  const fontWeight = settings.enableBoldFont ? 'bold' as const : 'normal' as const;
+  const fontFamily = getFontFamily(settings.fontFamily, settings.enableNerdFont, settings.fontWeight);
+  const fontWeight = getEffectiveFontWeight(settings.fontFamily, settings.fontWeight || 400);
+  console.log(`[terminal] applySettings: fontFamily="${fontFamily}" fontWeight=${fontWeight} (raw=${settings.fontWeight})`);
 
   // Use rgba background so only the background is transparent, not the text
   const bgHex = getColorSchemeBg(settings.colorScheme);
@@ -86,14 +87,19 @@ export function applySettingsToTerminal(mt: ManagedTerminal, settings: AppSettin
     patchCanvasBgOpacity(mt.container, opacity);
   }
 
+  // Text sharpening (GPU-accelerated contrast filter)
+  patchCanvasSharpness(mt.container, settings.fontSharpness);
+
   // Keep thumbnail background fully transparent — the app supplies its own
   // background behind the thumbnail, so the thumbnail canvas GPU layer must be
   // entirely see-through to avoid compositing interference in WKWebView.
-  mt.thumbnailTerminal.options.theme = { ...theme, background: '#00000000' };
-  mt.thumbnailTerminal.options.fontSize = settings.fontSize;
-  mt.thumbnailTerminal.options.fontFamily = fontFamily;
-  mt.thumbnailTerminal.options.fontWeight = fontWeight;
-  mt.thumbnailTerminal.options.fontWeightBold = 'bold';
+  if (mt.thumbnailTerminal) {
+    mt.thumbnailTerminal.options.theme = { ...theme, background: '#00000000' };
+    mt.thumbnailTerminal.options.fontSize = settings.fontSize;
+    mt.thumbnailTerminal.options.fontFamily = fontFamily;
+    mt.thumbnailTerminal.options.fontWeight = fontWeight;
+    mt.thumbnailTerminal.options.fontWeightBold = 'bold';
+  }
 
   // Manage ligatures addon
   if (settings.enableLigatures && !mt.ligaturesAddon) {
@@ -110,7 +116,7 @@ export function applySettingsToTerminal(mt: ManagedTerminal, settings: AppSettin
   }
 
   mt.terminal.refresh(0, mt.terminal.rows - 1);
-  mt.thumbnailTerminal.refresh(0, mt.thumbnailTerminal.rows - 1);
+  mt.thumbnailTerminal?.refresh(0, mt.thumbnailTerminal.rows - 1);
 
   // When theme changes, proactively report the new background/foreground
   // colors via OSC 11/10 responses so running TUI apps can auto-adapt

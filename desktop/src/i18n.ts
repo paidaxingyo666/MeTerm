@@ -13,9 +13,11 @@ export interface Translations {
   fontFamily: string;
   enableNerdFont: string;
   enableLigatures: string;
-  enableBoldFont: string;
+  fontWeight: string;
+  fontSharpness: string;
   encoding: string;
   fileManagerFontSize: string;
+  enableThumbnail: string;
   previewRefreshRate: string;
   newTerminal: string;
   noSessions: string;
@@ -118,6 +120,7 @@ export interface Translations {
   sshPasswordUpdated: string;
   drawerTabFiles: string;
   drawerTabProcesses: string;
+  serverInfoToggle: string;
   serverInfoHost: string;
   serverInfoUser: string;
   serverInfoOS: string;
@@ -160,6 +163,8 @@ export interface Translations {
   aiPlaceholderAgent: string;
   aiCollapse: string;
   aiExpand: string;
+  aiLayoutSide: string;
+  aiLayoutBottom: string;
   aiHistory: string;
   aiHistoryEmpty: string;
   aiSearchHistory: string;
@@ -202,6 +207,11 @@ export interface Translations {
   aiThinking: string;
   aiWorking: string;
   aiStopGenerating: string;
+  aiSendToAgentConfirm: string;
+  aiSendToAgentDontAsk: string;
+  aiSendToAgentYes: string;
+  aiSendToAgentNo: string;
+  aiPlaceholderAgentMode: string;
   aiCtxCopy: string;
   aiCtxCopyResult: string;
   aiCtxResend: string;
@@ -557,9 +567,11 @@ const translations: Record<Language, Translations> = {
     fontFamily: 'Font',
     enableNerdFont: 'Nerd Font Icons',
     enableLigatures: 'Ligatures',
-    enableBoldFont: 'Bold',
+    fontWeight: 'Font Weight',
+    fontSharpness: 'Text Sharpening (may reduce scroll performance)',
     encoding: 'Encoding',
     fileManagerFontSize: 'File Manager Font Size',
+    enableThumbnail: 'Session Thumbnail Preview',
     previewRefreshRate: 'Preview Refresh Rate',
     newTerminal: 'New Terminal',
     noSessions: 'No terminal sessions',
@@ -662,6 +674,7 @@ const translations: Record<Language, Translations> = {
     sshPasswordUpdated: 'Password updated and saved.',
     drawerTabFiles: 'Files',
     drawerTabProcesses: 'Processes',
+    serverInfoToggle: 'Server Info',
     serverInfoHost: 'Host',
     serverInfoUser: 'User',
     serverInfoOS: 'OS',
@@ -694,16 +707,18 @@ const translations: Record<Language, Translations> = {
     homeShowMore: 'Show More',
     homeShowLess: 'Show Less',
     homeRecentConnections: 'Recent',
-    aiCapsule: 'AI Assistant',
+    aiCapsule: 'MeAgent',
     aiBarOpacity: 'AI Bar Opacity',
     aiSendCommand: 'Send Command',
     aiSendPrompt: 'Send Prompt',
     aiModelSelect: 'Model',
     aiPlaceholderInput: 'Type a command or prompt...',
     aiPlaceholderCmd: 'Command ',
-    aiPlaceholderAgent: ' Agent chat ',
+    aiPlaceholderAgent: ' Ask MeAgent... ',
     aiCollapse: 'Collapse',
     aiExpand: 'Expand',
+    aiLayoutSide: 'Sidebar',
+    aiLayoutBottom: 'Bottom',
     aiHistory: 'History',
     aiHistoryEmpty: 'No command history',
     aiSearchHistory: 'Search command history...',
@@ -746,6 +761,11 @@ const translations: Record<Language, Translations> = {
     aiThinking: 'Thinking',
     aiWorking: 'Working',
     aiStopGenerating: 'Stop',
+    aiSendToAgentConfirm: 'This looks like a prompt. Send to MeAgent?',
+    aiSendToAgentDontAsk: "Don't ask again, always send to MeAgent",
+    aiSendToAgentYes: 'Send to Agent',
+    aiSendToAgentNo: 'Send to Terminal',
+    aiPlaceholderAgentMode: ' MeAgent ',
     aiCtxCopy: 'Copy',
     aiCtxCopyResult: 'Copy Result',
     aiCtxResend: 'Resend',
@@ -769,7 +789,7 @@ const translations: Record<Language, Translations> = {
     aiSearxngUrlPlaceholder: 'https://searx.example.org',
     aiSearxngUsername: 'Username (optional)',
     aiSearxngPassword: 'Password (optional)',
-    aiSearxngEnable: 'Enable web search tool for AI agent',
+    aiSearxngEnable: 'Enable web search tool for MeAgent',
     aiSearxngTest: 'Test',
     aiSearxngTestOk: 'SearXNG connected!',
     aiSearxngTestFail: 'SearXNG connection failed',
@@ -1098,9 +1118,11 @@ const translations: Record<Language, Translations> = {
     fontFamily: '字体',
     enableNerdFont: 'Nerd Font 图标',
     enableLigatures: '编程连字',
-    enableBoldFont: '加粗',
+    fontWeight: '字重',
+    fontSharpness: '文字锐化（可能影响滚动流畅度）',
     encoding: '字符编码',
     fileManagerFontSize: '文件管理器字体大小',
+    enableThumbnail: '会话缩略图预览',
     previewRefreshRate: '预览刷新频率',
     newTerminal: '新建终端',
     noSessions: '没有终端会话',
@@ -1203,6 +1225,7 @@ const translations: Record<Language, Translations> = {
     sshPasswordUpdated: '密码已更新并保存。',
     drawerTabFiles: '文件',
     drawerTabProcesses: '进程',
+    serverInfoToggle: '服务器信息',
     serverInfoHost: '主机',
     serverInfoUser: '用户',
     serverInfoOS: '系统',
@@ -1235,16 +1258,18 @@ const translations: Record<Language, Translations> = {
     homeShowMore: '展开更多',
     homeShowLess: '收起',
     homeRecentConnections: '最近连接',
-    aiCapsule: 'AI 助手',
+    aiCapsule: 'MeAgent',
     aiBarOpacity: 'AI 栏透明度',
     aiSendCommand: '发送命令',
     aiSendPrompt: '发送提示词',
     aiModelSelect: '模型',
     aiPlaceholderInput: '输入命令或提示词...',
     aiPlaceholderCmd: '命令 ',
-    aiPlaceholderAgent: ' Agent 对话 ',
+    aiPlaceholderAgent: ' 询问 MeAgent... ',
     aiCollapse: '收起',
     aiExpand: '展开',
+    aiLayoutSide: '侧边栏',
+    aiLayoutBottom: '底部',
     aiHistory: '历史',
     aiHistoryEmpty: '暂无命令历史',
     aiSearchHistory: '搜索命令历史...',
@@ -1287,6 +1312,11 @@ const translations: Record<Language, Translations> = {
     aiThinking: '思考中',
     aiWorking: '工作中',
     aiStopGenerating: '停止',
+    aiSendToAgentConfirm: '这看起来是提示词，发送给 MeAgent？',
+    aiSendToAgentDontAsk: '不再询问，默认发送至 MeAgent',
+    aiSendToAgentYes: '发送给 Agent',
+    aiSendToAgentNo: '发送到终端',
+    aiPlaceholderAgentMode: ' MeAgent ',
     aiCtxCopy: '复制',
     aiCtxCopyResult: '复制结果',
     aiCtxResend: '重新发送',
@@ -1310,7 +1340,7 @@ const translations: Record<Language, Translations> = {
     aiSearxngUrlPlaceholder: 'https://searx.example.org',
     aiSearxngUsername: '用户名（可选）',
     aiSearxngPassword: '密码（可选）',
-    aiSearxngEnable: '为 AI 助手启用网络搜索工具',
+    aiSearxngEnable: '为 MeAgent 启用网络搜索工具',
     aiSearxngTest: '测试',
     aiSearxngTestOk: 'SearXNG 连接成功！',
     aiSearxngTestFail: 'SearXNG 连接失败',

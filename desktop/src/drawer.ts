@@ -1,14 +1,17 @@
 import { FileManager } from './file-manager';
-import { MsgInput, type SysInfoResponse, type ServerInfoResponse, type NetIfaceInfo } from './protocol';
+import { type SysInfoResponse, type ServerInfoResponse, type NetIfaceInfo } from './protocol';
 import type { TerminalTransport } from './terminal-transport';
 import { loadSettings } from './themes';
 import { t } from './i18n';
 import { escapeHtml } from './status-bar';
 import { jumpServerConfigMap } from './app-state';
+import { setupContextMenu } from './drawer-context-menu';
+import { showBookmarkPopup, addBookmark } from './file-bookmarks';
 import { createOverlayScrollbar } from './overlay-scrollbar';
 import {
   type NetRatePoint,
   handleServerInfoResponse,
+  renderSysInfo,
 } from './drawer-system-info';
 import {
   setupResizeHandle,
@@ -16,6 +19,12 @@ import {
   saveDrawerLayout,
   updateHeight,
 } from './drawer-layout';
+import {
+  setupBreadcrumb,
+  setupKeyboardNav,
+  setupFileSearch,
+  showSpeedLimitPicker,
+} from './drawer-file-features';
 
 export interface DrawerInstance {
   sessionId: string;
@@ -117,9 +126,11 @@ class DrawerManagerClass {
     this.setupFileManagerEvents(instance);
     this.setupMainTabs(instance);
     this.setupSmoothScroll(instance);
+    this.setupSidebarResize(instance);
 
     // Attach overlay scrollbar (inline mode: scrollbar inside each scroll area)
-    for (const sel of ['.drawer-sidebar', '.file-list', '.process-list', '.transfer-history']) {
+    // Skip sidebar — compact mode hides scrollbar via CSS
+    for (const sel of ['.file-list', '.process-list', '.transfer-history']) {
       const el = drawer.querySelector(sel) as HTMLElement | null;
       if (el) createOverlayScrollbar({ viewport: el, container: el });
     }
@@ -172,8 +183,15 @@ class DrawerManagerClass {
           </div>
           <div class="file-toolbar">
             <div class="drawer-main-tabs">
-              <button class="drawer-tab active" data-tab="files">${t('drawerTabFiles')}</button>
-              <button class="drawer-tab" data-tab="processes">${t('drawerTabProcesses')}</button>
+              <button class="drawer-tab btn-toggle-sidebar" title="${t('serverInfoToggle')}">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="2" width="14" height="12" rx="2"/><line x1="6" y1="2" x2="6" y2="14"/><circle cx="3.5" cy="6" r="0.5" fill="currentColor" stroke="none"/><circle cx="3.5" cy="8" r="0.5" fill="currentColor" stroke="none"/><circle cx="3.5" cy="10" r="0.5" fill="currentColor" stroke="none"/></svg>
+              </button>
+              <button class="drawer-tab active" data-tab="files" title="${t('drawerTabFiles')}">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13V4a1 1 0 011-1h3.5l2 2H13a1 1 0 011 1v7a1 1 0 01-1 1H3a1 1 0 01-1-1z"/></svg>
+              </button>
+              <button class="drawer-tab" data-tab="processes" title="${t('drawerTabProcesses')}">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="2"/><line x1="5" y1="6" x2="11" y2="6"/><line x1="5" y1="8.5" x2="9" y2="8.5"/><line x1="5" y1="11" x2="7" y2="11"/></svg>
+              </button>
             </div>
             <div class="file-toolbar-actions" data-tab-content="files">
               <button class="btn-back" title="返回上一层">
@@ -182,6 +200,7 @@ class DrawerManagerClass {
                 </svg>
               </button>
               <div class="path-input-wrapper">
+                <div class="breadcrumb"></div>
                 <input class="path-input" value="/" placeholder="路径" />
                 <div class="path-autocomplete"></div>
               </div>
@@ -198,6 +217,11 @@ class DrawerManagerClass {
               <button class="btn-upload" title="上传">
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M8 13V3M4 7l4-4 4 4"/>
+                </svg>
+              </button>
+              <button class="btn-bookmark" title="书签">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M3 1h10a1 1 0 0 1 1 1v13l-6-3-6 3V2a1 1 0 0 1 1-1z"/>
                 </svg>
               </button>
               <button class="btn-history" title="上传下载历史" style="margin-left: auto;">
@@ -222,6 +246,10 @@ class DrawerManagerClass {
             </div>
           </div>
           <div class="file-list" data-tab-content="files">
+            <div class="file-search-bar" style="display:none;">
+              <svg class="file-search-icon" width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04-1.06 1.06-3.04-3.04z" fill="currentColor"/></svg>
+              <input class="file-search-input" type="text" placeholder="搜索文件..." spellcheck="false" />
+            </div>
             <table id="file-table-${sessionId}">
               <thead>
                 <tr>
@@ -280,6 +308,7 @@ class DrawerManagerClass {
               </tbody>
             </table>
           </div>
+          <div class="file-status-bar" id="file-status-bar-${sessionId}"></div>
           <div class="process-list" data-tab-content="processes" style="display: none;">
             <table class="process-table" id="process-table-${sessionId}">
               <thead>
@@ -311,6 +340,9 @@ class DrawerManagerClass {
                 <button class="btn-filter" data-filter="completed" title="已完成">完成</button>
                 <button class="btn-filter" data-filter="failed" title="失败">失败</button>
               </div>
+              <button class="btn-speed-limit" title="限速控制">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.5"/><path d="M8 4v4l3 2"/></svg>
+              </button>
               <button class="btn-clear-history" title="清空历史记录">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M5 2V1h6v1h4v1H1V2h4zm1 3v8h1V5H6zm3 0v8h1V5H9zM2 4l1 11h10l1-11H2z" fill="currentColor"/></svg>
               </button>
@@ -332,13 +364,33 @@ class DrawerManagerClass {
   }
 
   private setupMainTabs(instance: DrawerInstance): void {
-    const tabBtns = instance.element.querySelectorAll('.drawer-tab');
+    const tabBtns = instance.element.querySelectorAll('.drawer-tab[data-tab]');
     tabBtns.forEach(btn => {
       btn.addEventListener('click', () => {
         const tab = (btn as HTMLElement).dataset.tab as 'files' | 'processes';
         this.switchTab(instance, tab);
       });
     });
+
+    // Toggle sidebar visibility
+    // Default: sidebar hidden
+    const defaultSidebar = instance.element.querySelector('.drawer-sidebar') as HTMLElement;
+    const defaultSplitHandle = instance.element.querySelector('.drawer-split-handle') as HTMLElement;
+    if (defaultSidebar) defaultSidebar.style.display = 'none';
+    if (defaultSplitHandle) defaultSplitHandle.style.display = 'none';
+
+    const toggleSidebarBtn = instance.element.querySelector('.btn-toggle-sidebar') as HTMLButtonElement;
+    if (toggleSidebarBtn) {
+      toggleSidebarBtn.addEventListener('click', () => {
+        const sidebar = instance.element.querySelector('.drawer-sidebar') as HTMLElement;
+        const splitHandle = instance.element.querySelector('.drawer-split-handle') as HTMLElement;
+        if (!sidebar) return;
+        const hidden = sidebar.style.display === 'none';
+        sidebar.style.display = hidden ? '' : 'none';
+        if (splitHandle) splitHandle.style.display = hidden ? '' : 'none';
+        toggleSidebarBtn.classList.toggle('active', hidden); // visible → active
+      });
+    }
 
     // Refresh processes button
     const refreshProcessBtn = instance.element.querySelector('.btn-refresh-processes');
@@ -384,6 +436,22 @@ class DrawerManagerClass {
     observer.observe(instance.element, { childList: true, subtree: true });
   }
 
+  /** Watch sidebar width changes to toggle compact/expanded server info */
+  private setupSidebarResize(instance: DrawerInstance): void {
+    const sidebar = instance.element.querySelector('.drawer-sidebar') as HTMLElement;
+    if (!sidebar) return;
+    let lastCompact: boolean | null = null;
+    const ro = new ResizeObserver(() => {
+      const isCompact = sidebar.offsetWidth < 104;
+      sidebar.classList.toggle('sidebar-compact', isCompact);
+      if (isCompact !== lastCompact && instance.sysInfo) {
+        lastCompact = isCompact;
+        renderSysInfo(instance);
+      }
+    });
+    ro.observe(sidebar);
+  }
+
   private switchTab(instance: DrawerInstance, tab: 'files' | 'processes'): void {
     instance.activeTab = tab;
 
@@ -401,12 +469,14 @@ class DrawerManagerClass {
       (el as HTMLElement).style.display = contentTab === tab ? '' : 'none';
     });
 
-    // Also hide transfer history and reset history button state when switching tabs
+    // Also hide transfer history, file status bar, and reset history button state when switching tabs
     instance.isHistoryView = false;
     const historyContainer = instance.element.querySelector('.transfer-history') as HTMLElement;
     if (historyContainer) historyContainer.style.display = 'none';
     const fileListContainer = instance.element.querySelector('.file-list') as HTMLElement;
     if (fileListContainer && tab === 'files') fileListContainer.style.display = 'block';
+    const fileStatusBar = instance.element.querySelector('.file-status-bar') as HTMLElement;
+    if (fileStatusBar) fileStatusBar.style.display = tab === 'files' ? '' : 'none';
     const historyBtn = instance.element.querySelector('.btn-history') as HTMLElement;
     if (historyBtn) {
       historyBtn.classList.remove('active');
@@ -482,10 +552,13 @@ class DrawerManagerClass {
     const horizontalIcon = historyBtn.querySelector('.history-icon-horizontal') as SVGElement;
     const verticalIcon = historyBtn.querySelector('.history-icon-vertical') as SVGElement;
 
+    const statusBar = instance.element.querySelector('.file-status-bar') as HTMLElement;
+
     const showFileList = () => {
       instance.isHistoryView = false;
       fileListContainer.style.display = 'block';
       historyContainer.style.display = 'none';
+      if (statusBar) statusBar.style.display = '';
       historyBtn.classList.remove('active');
       if (horizontalIcon && verticalIcon) {
         horizontalIcon.style.display = 'inline';
@@ -501,6 +574,7 @@ class DrawerManagerClass {
       instance.isHistoryView = true;
       fileListContainer.style.display = 'none';
       historyContainer.style.display = 'block';
+      if (statusBar) statusBar.style.display = 'none';
       historyBtn.classList.add('active');
       if (horizontalIcon && verticalIcon) {
         horizontalIcon.style.display = 'none';
@@ -556,6 +630,14 @@ class DrawerManagerClass {
             instance.fileManager.setTransferSearchQuery(searchInput.value.trim());
           }
         }, 200);
+      });
+    }
+
+    // 限速按钮
+    const speedLimitBtn = instance.element.querySelector('.btn-speed-limit') as HTMLButtonElement;
+    if (speedLimitBtn) {
+      speedLimitBtn.addEventListener('click', () => {
+        showSpeedLimitPicker(speedLimitBtn, instance);
       });
     }
 
@@ -644,6 +726,18 @@ class DrawerManagerClass {
       }
     });
 
+    // 书签按钮
+    const bookmarkBtn = instance.element.querySelector('.btn-bookmark') as HTMLButtonElement;
+    if (bookmarkBtn) {
+      bookmarkBtn.addEventListener('click', () => {
+        if (instance.isHistoryView) { showFileList(); return; }
+        const info = instance.serverConnectionInfo || { host: 'local', port: 0 };
+        showBookmarkPopup(bookmarkBtn, info.host, info.port, (path) => {
+          instance.fileManager?.loadDirectory(path);
+        });
+      });
+    }
+
     // 历史按钮
     historyBtn.addEventListener('click', () => {
       if (instance.isHistoryView) {
@@ -654,385 +748,27 @@ class DrawerManagerClass {
     });
 
     // 右键菜单
-    this.setupContextMenu(instance, listElement);
+    setupContextMenu(instance, listElement);
 
     // 设置拖拽上传
     const fileList = instance.element.querySelector('.file-list') as HTMLElement;
     if (fileList) {
       this.setupDragAndDrop(instance, fileList);
     }
-  }
 
-  private sendTerminalCommand(instance: DrawerInstance, command: string): void {
-    const ws = instance.fileManager?.getWebSocket();
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Send Ctrl+U to clear current line, then the command + Enter
-    const payload = new TextEncoder().encode('\x15' + command + '\n');
-    const msg = new Uint8Array(1 + payload.length);
-    msg[0] = MsgInput;
-    msg.set(payload, 1);
-    ws.send(msg);
-  }
+    // 面包屑导航
+    setupBreadcrumb(instance, pathInput);
 
-  private setupContextMenu(instance: DrawerInstance, listElement: HTMLElement): void {
-    let contextMenu: HTMLDivElement | null = null;
+    // 文件搜索/过滤
+    const toggleSearchBar = setupFileSearch(instance, listElement);
 
-    const closeMenu = () => {
-      if (contextMenu) {
-        contextMenu.remove();
-        contextMenu = null;
-      }
-    };
+    // 键盘导航
+    setupKeyboardNav(instance, listElement, fileListContainer, backBtn, toggleSearchBar);
 
-    type MenuItem = {
-      label: string;
-      action?: () => void;
-      danger?: boolean;
-      separator?: boolean;
-      children?: MenuItem[];
-    };
-
-    const buildMenu = (items: MenuItem[], parent: HTMLElement) => {
-      items.forEach(item => {
-        if (item.separator) {
-          const sep = document.createElement('div');
-          sep.className = 'context-menu-separator';
-          parent.appendChild(sep);
-          return;
-        }
-
-        const menuItem = document.createElement('div');
-        menuItem.className = 'context-menu-item';
-        if (item.danger) menuItem.classList.add('danger');
-
-        if (item.children) {
-          menuItem.classList.add('has-submenu');
-          menuItem.innerHTML = `<span>${item.label}</span><span class="submenu-arrow">›</span>`;
-
-          const submenu = document.createElement('div');
-          submenu.className = 'context-menu context-submenu';
-          buildMenu(item.children, submenu);
-          menuItem.appendChild(submenu);
-
-          // 子菜单边界检测
-          menuItem.addEventListener('mouseenter', () => {
-            const itemRect = menuItem.getBoundingClientRect();
-            const subRect = submenu.getBoundingClientRect();
-            const viewW = window.innerWidth;
-            const viewH = window.innerHeight;
-
-            if (itemRect.right + subRect.width > viewW) {
-              submenu.style.left = 'auto';
-              submenu.style.right = '100%';
-            } else {
-              submenu.style.left = '100%';
-              submenu.style.right = 'auto';
-            }
-
-            if (itemRect.top + subRect.height > viewH) {
-              submenu.style.top = 'auto';
-              submenu.style.bottom = '0';
-            }
-          });
-        } else {
-          menuItem.textContent = item.label;
-          menuItem.addEventListener('click', () => {
-            item.action?.();
-            closeMenu();
-          });
-        }
-
-        parent.appendChild(menuItem);
-      });
-    };
-
-    const createContextMenu = (x: number, y: number, fileName: string, isDir: boolean) => {
-      closeMenu();
-
-      const fm = instance.fileManager;
-      if (!fm) return;
-
-      const fullPath = fm.getFullPath(fileName);
-      const escapedPath = fullPath.replace(/([ '"\\$`!#&|;(){}])/g, '\\$1');
-
-      const items: MenuItem[] = [];
-
-      // 下载
-      items.push({
-        label: isDir ? '下载文件夹' : '下载',
-        action: () => (fm as any).downloadFile(fileName, isDir)
-      });
-
-      // 上传
-      if (isDir) {
-        items.push({
-          label: '上传',
-          children: [
-            {
-              label: '上传到此文件夹',
-              action: () => fm.triggerUpload(fullPath)
-            },
-            {
-              label: '上传到当前路径',
-              action: () => fm.triggerUpload()
-            }
-          ]
-        });
-      } else {
-        items.push({
-          label: '上传',
-          action: () => fm.triggerUpload()
-        });
-      }
-
-      items.push({ separator: true, label: '' });
-
-      // 新建
-      items.push({
-        label: '新建文件',
-        action: () => this.showCreateFileDialog(instance)
-      });
-      items.push({
-        label: '新建文件夹',
-        action: () => this.showMkdirDialog(instance)
-      });
-
-      items.push({ separator: true, label: '' });
-
-      // 复制路径 / 终端命令（子菜单）
-      items.push({
-        label: '复制路径',
-        children: [
-          {
-            label: '复制绝对路径',
-            action: () => navigator.clipboard.writeText(fullPath)
-          },
-          { separator: true, label: '' },
-          {
-            label: `cd ${isDir ? '' : '..'}`,
-            action: () => {
-              const dir = isDir ? escapedPath : escapedPath.substring(0, escapedPath.lastIndexOf('/')) || '/';
-              this.sendTerminalCommand(instance, `cd ${dir}`);
-            }
-          },
-          {
-            label: isDir ? 'ls' : 'cat',
-            action: () => {
-              const cmd = isDir ? `ls -la ${escapedPath}` : `cat ${escapedPath}`;
-              this.sendTerminalCommand(instance, cmd);
-            }
-          },
-          {
-            label: 'cp',
-            action: () => {
-              const cmd = isDir ? `cp -r ${escapedPath} ` : `cp ${escapedPath} `;
-              const ws = instance.fileManager?.getWebSocket();
-              if (!ws || ws.readyState !== WebSocket.OPEN) return;
-              const payload = new TextEncoder().encode('\x15' + cmd);
-              const msg = new Uint8Array(1 + payload.length);
-              msg[0] = MsgInput;
-              msg.set(payload, 1);
-              ws.send(msg);
-            }
-          },
-          {
-            label: 'rm',
-            action: () => {
-              const cmd = isDir ? `rm -r ${escapedPath}` : `rm ${escapedPath}`;
-              const ws = instance.fileManager?.getWebSocket();
-              if (!ws || ws.readyState !== WebSocket.OPEN) return;
-              const payload = new TextEncoder().encode('\x15' + cmd);
-              const msg = new Uint8Array(1 + payload.length);
-              msg[0] = MsgInput;
-              msg.set(payload, 1);
-              ws.send(msg);
-            },
-            danger: true
-          }
-        ]
-      });
-
-      items.push({ separator: true, label: '' });
-
-      // 重命名 / 删除
-      items.push({
-        label: '重命名',
-        action: () => this.showRenameDialog(instance, fileName)
-      });
-      items.push({
-        label: '删除',
-        action: () => this.showDeleteConfirm(instance, fileName, isDir),
-        danger: true
-      });
-
-      contextMenu = document.createElement('div');
-      contextMenu.className = 'context-menu';
-      contextMenu.style.left = `${x}px`;
-      contextMenu.style.top = `${y}px`;
-
-      buildMenu(items, contextMenu);
-      document.body.appendChild(contextMenu);
-
-      // 边界检测
-      const menuRect = contextMenu.getBoundingClientRect();
-      const viewW = window.innerWidth;
-      const viewH = window.innerHeight;
-
-      if (x + menuRect.width > viewW) {
-        contextMenu.style.left = `${Math.max(0, viewW - menuRect.width - 4)}px`;
-      }
-      if (y + menuRect.height > viewH) {
-        contextMenu.style.top = `${Math.max(0, viewH - menuRect.height - 4)}px`;
-      }
-
-      // 点击外部关闭
-      const onClickOutside = (e: MouseEvent) => {
-        if (contextMenu && !contextMenu.contains(e.target as Node)) {
-          closeMenu();
-          document.removeEventListener('click', onClickOutside);
-        }
-      };
-      setTimeout(() => document.addEventListener('click', onClickOutside), 0);
-    };
-
-    // 监听右键事件
-    listElement.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const target = (e.target as HTMLElement).closest('tr') as HTMLTableRowElement;
-      if (!target || !target.dataset.path) return;
-
-      const fileName = target.dataset.path;
-      const isDir = target.dataset.isDir === 'true';
-      createContextMenu(e.clientX, e.clientY, fileName, isDir);
-    });
-  }
-
-  private async showCreateFileDialog(instance: DrawerInstance): Promise<void> {
-    const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
-    const fileName = await this.showModal({
-      title: '新建文件',
-      input: { placeholder: '文件名称' },
-      confirmText: '创建',
-      container,
-    });
-    if (fileName && instance.fileManager) {
-      await instance.fileManager.createFile(fileName);
-    }
-  }
-
-  private showModal(options: {
-    title: string;
-    description?: string;
-    input?: { placeholder?: string; value?: string };
-    confirmText?: string;
-    cancelText?: string;
-    danger?: boolean;
-    container?: HTMLElement;
-  }): Promise<string | null> {
-    return new Promise((resolve) => {
-      const container = options.container || document.body;
-      container.querySelector('.drawer-modal-overlay')?.remove();
-
-      const overlay = document.createElement('div');
-      overlay.className = 'drawer-modal-overlay';
-
-      const hasInput = !!options.input;
-      overlay.innerHTML = `
-        <div class="drawer-modal">
-          <div class="drawer-modal-title">${options.title}</div>
-          ${options.description ? `<div class="drawer-modal-desc" style="font-size:12px;color:#999;margin:4px 0 8px;line-height:1.5;white-space:pre-wrap;">${options.description}</div>` : ''}
-          ${hasInput ? `<input class="drawer-modal-input" type="text" value="${(options.input!.value || '').replace(/"/g, '&quot;')}" placeholder="${options.input!.placeholder || ''}" spellcheck="false" />` : ''}
-          <div class="drawer-modal-buttons">
-            <button class="drawer-modal-btn cancel">${options.cancelText || '取消'}</button>
-            <button class="drawer-modal-btn confirm${options.danger ? ' danger' : ''}">${options.confirmText || '确定'}</button>
-          </div>
-        </div>
-      `;
-
-      container.appendChild(overlay);
-
-      const input = overlay.querySelector('.drawer-modal-input') as HTMLInputElement | null;
-      const confirmBtn = overlay.querySelector('.drawer-modal-btn.confirm') as HTMLButtonElement;
-      const cancelBtn = overlay.querySelector('.drawer-modal-btn.cancel') as HTMLButtonElement;
-
-      const close = (value: string | null) => {
-        overlay.remove();
-        resolve(value);
-      };
-
-      if (input) {
-        input.focus();
-        input.select();
-        input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') close(input.value);
-          if (e.key === 'Escape') close(null);
-        });
-      }
-
-      confirmBtn.addEventListener('click', () => close(hasInput ? input!.value : ''));
-      cancelBtn.addEventListener('click', () => close(null));
-    });
-  }
-
-  private async showDeleteConfirm(instance: DrawerInstance, fileName: string, isDir: boolean): Promise<void> {
-    const type = isDir ? '文件夹' : '文件';
-    const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
-
-    // 检查是否大文件（>100MB）或文件夹，给出提示
-    let description: string | undefined;
-    if (instance.fileManager) {
-      const fileInfo = instance.fileManager.getFileInfo(fileName);
-      const isLargeFile = fileInfo && !isDir && fileInfo.size > 100 * 1024 * 1024;
-      if (isDir || isLargeFile) {
-        description = isDir
-          ? '删除文件夹可能耗时较长，如超时请在终端中使用 rm -rf 命令删除。'
-          : `文件较大 (${this.formatSize(fileInfo!.size)})，删除可能耗时较长。`;
-      }
-    }
-
-    const result = await this.showModal({
-      title: `确定要删除${type} "${fileName}" 吗？`,
-      description,
-      confirmText: '删除',
-      danger: true,
-      container,
-    });
-    if (result !== null && instance.fileManager) {
-      await instance.fileManager.deleteFile(fileName);
-    }
-  }
-
-  private formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  }
-
-  private async showRenameDialog(instance: DrawerInstance, oldName: string): Promise<void> {
-    const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
-    const newName = await this.showModal({
-      title: '重命名',
-      input: { value: oldName },
-      confirmText: '重命名',
-      container,
-    });
-    if (newName && newName !== oldName && instance.fileManager) {
-      await instance.fileManager.renameFile(oldName, newName);
-    }
-  }
-
-  private async showMkdirDialog(instance: DrawerInstance): Promise<void> {
-    const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
-    const dirName = await this.showModal({
-      title: '新建文件夹',
-      input: { placeholder: '文件夹名称' },
-      confirmText: '创建',
-      container,
-    });
-    if (dirName && instance.fileManager) {
-      await instance.fileManager.createDirectory(dirName);
+    // 点击文件列表区域时 focus 表格，使键盘导航生效
+    const fileTable = instance.element.querySelector(`#file-table-${instance.sessionId}`) as HTMLElement;
+    if (fileTable) {
+      fileListContainer.addEventListener('click', () => fileTable.focus());
     }
   }
 
@@ -1102,9 +838,10 @@ class DrawerManagerClass {
       this.startSysInfoRefresh(instance);
       // 通知 FileManager 全局监听器：当前活跃的 drag-drop 目标为此 drawer 的 fileManager
       FileManager.setActiveDragDropTarget(instance.fileManager ?? null);
-      // JumpServer 首次打开抽屉时延迟加载文件列表（SFTP 需要连接就绪后才可用）
-      if (jumpServerConfigMap.has(sessionId) && instance.fileManager && instance.fileManager.getCurrentPath() === '/') {
-        instance.fileManager.loadDirectory('.');
+      // 首次打开抽屉时加载文件列表（SSH 的 SFTP 后台初始化需要时间，延迟到打开时加载）
+      if (instance.fileManager && instance.fileManager.getCurrentPath() === '/') {
+        const initialPath = instance.serverConnectionInfo ? '.' : '/';
+        instance.fileManager.loadDirectory(initialPath);
       }
     } else {
       instance.element.classList.remove('open');
@@ -1198,8 +935,7 @@ class DrawerManagerClass {
 
   private _afterConnect(sessionId: string, instance: DrawerInstance): void {
     if (!instance.fileManager) return;
-    // JumpServer 连接：SFTP 子系统初始化较慢，跳过自动加载，
-    // 在用户首次打开抽屉时再加载，并自动进入唯一的资产子目录
+    // JumpServer 连接：自动进入唯一的资产子目录
     if (jumpServerConfigMap.has(sessionId)) {
       instance.fileManager.suppressListErrors = true;
       instance.fileManager.onFirstLoad = (files, _path) => {
@@ -1209,11 +945,13 @@ class DrawerManagerClass {
           instance.fileManager?.loadDirectory(dirs[0].name);
         }
       };
-      return;
     }
-    // SSH 会话加载 "."（SFTP 主目录），本地会话加载 "/"
-    const initialPath = instance.serverConnectionInfo ? '.' : '/';
-    instance.fileManager.loadDirectory(initialPath);
+    // 目录加载延迟到抽屉首次打开时（toggle 中处理），避免 SSH SFTP 未就绪
+    // 如果抽屉已经打开（如重连场景），立即加载
+    if (instance.isOpen && instance.fileManager.getCurrentPath() === '/') {
+      const initialPath = instance.serverConnectionInfo ? '.' : '/';
+      instance.fileManager.loadDirectory(initialPath);
+    }
   }
 
   getServerInfo(sessionId: string): { host: string; username: string; port: number } | null {

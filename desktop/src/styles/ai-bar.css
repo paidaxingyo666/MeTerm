@@ -14,21 +14,19 @@
   height: 30px;
   padding: 0 3px 0 6px;
   border-radius: 15px;
-  background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
-  border: 1px solid var(--border-primary);
-  box-shadow: 0 1px 6px var(--shadow-panel);
+  /* Liquid Glass: transparent fill + subtle blur directly on element */
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   user-select: none;
   -webkit-user-select: none;
 }
-/* Isolate backdrop-filter to pseudo-element so child popups can have their own blur */
-.ai-bar::before {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  backdrop-filter: blur(20px) saturate(1.4);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  z-index: -1;
+[data-theme="light"] .ai-bar {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.45);
+  box-shadow: none;
 }
 
 .ai-bar-model {
@@ -231,15 +229,29 @@
   left: 0;
   right: 0;
   max-height: 30%; /* JS will override dynamically */
-  overflow-y: auto;
+  overflow: hidden;
   z-index: 9999;
-  background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
-  backdrop-filter: blur(20px) saturate(1.4);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  border: 1px solid var(--border-primary);
+  /* Liquid Glass */
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 14px;
-  box-shadow: 0 -2px 10px var(--shadow-panel);
+  box-shadow: none;
   padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+[data-theme="light"] .ai-bar-history-panel {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+/* Inner scroll viewport for popup panels (used with JS overlay scrollbar) */
+.popup-scroll-viewport {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .ai-history-empty {
@@ -370,15 +382,22 @@
   left: 0;
   right: 0;
   max-height: 30%; /* JS will override dynamically */
-  overflow-y: auto;
+  overflow: hidden;
   z-index: 9999;
-  background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
-  backdrop-filter: blur(20px) saturate(1.4);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  border: 1px solid var(--border-primary);
+  /* Liquid Glass */
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 14px;
-  box-shadow: 0 -2px 10px var(--shadow-panel);
+  box-shadow: none;
   padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+[data-theme="light"] .ai-bar-chat-history-panel {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.45);
 }
 
 .ai-chat-hist-header {
@@ -439,8 +458,9 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  padding: 6px 8px;
   border-radius: 8px;
+  cursor: pointer;
   transition: background 0.12s ease;
 }
 
@@ -451,8 +471,9 @@
 .ai-chat-hist-info {
   flex: 1;
   min-width: 0;
-  cursor: pointer;
-  padding: 2px 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
 }
 
 .ai-chat-hist-row-title {
@@ -462,12 +483,16 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 1.3;
+  flex: 1;
+  min-width: 0;
 }
 
 .ai-chat-hist-row-meta {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   line-height: 1.3;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .ai-chat-hist-delete {
@@ -534,5 +559,124 @@
 
 .ai-bar-btn-chat-history:hover {
   color: var(--accent);
+}
+
+/* ============================================
+   AI Side Panel — right-side layout mode
+   ============================================ */
+
+.ai-side-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  height: 100%;
+  min-width: 280px;
+  max-width: 600px;
+  overflow: visible;
+  background: rgba(var(--bg-primary), var(--app-window-opacity));
+  border-left: 1px solid var(--border-subtle);
+}
+
+/* Resize handle between terminal and AI side panel */
+.ai-side-resize-handle {
+  width: 8px;
+  min-width: 8px;
+  margin: 0 -3.5px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+.ai-side-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--border-subtle);
+  transition: width 0.15s, left 0.15s, background 0.15s;
+}
+.ai-side-resize-handle:hover::after,
+.ai-side-resizing .ai-side-resize-handle::after {
+  width: 3px;
+  left: calc(50% - 1px);
+  background: var(--accent-primary, rgba(59, 130, 246, 0.5));
+}
+.ai-side-resizing {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* AI Bar — side-active: hide agent-related buttons when side panel is open */
+.ai-bar--side-active .ai-bar-model-select,
+.ai-bar--side-active .ai-bar-btn-llm,
+.ai-bar--side-active .ai-bar-btn-chat-history,
+.ai-bar--side-active .ai-bar-chat-history-panel,
+.ai-bar--side-active .ai-bar-trust-switcher {
+  display: none !important;
+}
+
+/* ============================================
+   Send-to-Agent inline hint (inside AI Bar)
+   ============================================ */
+
+.ai-prompt-hint {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  animation: chat-slide-up 0.12s ease-out;
+}
+
+.ai-prompt-hint-text {
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.ai-prompt-hint-keys {
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.ai-prompt-hint-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.ai-prompt-hint-check input {
+  accent-color: var(--accent, #6aa4ff);
+  width: 12px;
+  height: 12px;
+  cursor: pointer;
+}
+
+/* Highlight AI Bar border during pending state */
+.ai-bar--prompt-pending {
+  border-color: var(--accent, #6aa4ff) !important;
+}
+
+[data-theme="light"] .ai-prompt-hint {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.45);
 }
 

@@ -96,7 +96,10 @@ export function setupClickToMoveCursor(mt: ManagedTerminal): void {
     const { clickAbsRow, snappedClickCol, cursorAbsRow, cursorCol } =
       resolveClickPositions(terminal, screenEl, e);
     if (clickAbsRow < 0) return;
-    if (Math.abs(clickAbsRow - cursorAbsRow) > 50) return;
+    const { promptRow, promptCol } = mt.shellState;
+    if (promptRow < 0 || clickAbsRow < promptRow) return;
+    // Clicked inside prompt text (before editable area) → ignore
+    if (clickAbsRow === promptRow && snappedClickCol < promptCol) return;
     if (clickAbsRow === cursorAbsRow && snappedClickCol === cursorCol) return;
 
     const charCount = computeCharDistance(
@@ -129,8 +132,9 @@ function handleDragSelect(
 
   const buf = terminal.buffer.active;
   const rect = screenEl.getBoundingClientRect();
-  const cellW = rect.width / terminal.cols;
-  const cellH = rect.height / terminal.rows;
+  const dims = getCellDims(terminal, screenEl);
+  const cellW = dims.w;
+  const cellH = dims.h;
   const viewportY = getViewportY(terminal, buf.baseY);
   const cursorAbsRow = buf.baseY + buf.cursorY;
   const cursorCol = buf.cursorX;
@@ -144,16 +148,21 @@ function handleDragSelect(
   const upRow = clamp(Math.floor((upEvent.clientY - rect.top) / cellH), 0, terminal.rows - 1);
   const upAbsRow = viewportY + upRow;
 
-  // Only editable if both ends are near cursor (command area)
-  if (Math.abs(downAbsRow - cursorAbsRow) > 50) return;
-  if (Math.abs(upAbsRow - cursorAbsRow) > 50) return;
+  // Only editable if both ends are within command area (at or after prompt row)
+  const { promptRow, promptCol } = mt.shellState;
+  if (promptRow < 0) return;
+  if (downAbsRow < promptRow || upAbsRow < promptRow) return;
 
   // Snap to character boundaries
   const downLine = buf.getLine(downAbsRow);
   const upLine = buf.getLine(upAbsRow);
   if (!downLine || !upLine) return;
-  const snappedDownCol = snapClickCol(downLine, downCol);
-  const snappedUpCol = snapClickCol(upLine, upCol);
+  let snappedDownCol = snapClickCol(downLine, downCol);
+  let snappedUpCol = snapClickCol(upLine, upCol);
+
+  // Clamp selection start to editable area (after prompt text)
+  if (downAbsRow === promptRow && snappedDownCol < promptCol) snappedDownCol = promptCol;
+  if (upAbsRow === promptRow && snappedUpCol < promptCol) snappedUpCol = promptCol;
 
   const selCharCount = computeCharDistance(buf, downAbsRow, snappedDownCol, upAbsRow, snappedUpCol);
   if (selCharCount === 0) return;
@@ -161,8 +170,13 @@ function handleDragSelect(
   const isForward = upAbsRow > downAbsRow
     || (upAbsRow === downAbsRow && snappedUpCol > snappedDownCol);
 
-  // Save selected text before clearing xterm selection
-  const selectedText = terminal.getSelection() || '';
+  // Save selected text — recompute from buffer to exclude prompt portion
+  const selectedText = extractBufferText(buf, terminal.cols,
+    isForward ? downAbsRow : upAbsRow, isForward ? snappedDownCol : snappedUpCol,
+    isForward ? upAbsRow : downAbsRow, isForward ? snappedUpCol : snappedDownCol);
+
+  // Empty or whitespace-only selection (blank area) → keep native xterm selection
+  if (!selectedText.trim()) return;
 
   // Clear xterm.js native selection — we'll show our own highlight
   terminal.clearSelection();
@@ -181,12 +195,12 @@ function handleDragSelect(
   sel.charCount = selCharCount;
   sel.text = selectedText;
 
-  // Show custom cursor-style highlight
+  // Show custom cursor-style highlight (uses clamped range)
   const startAbsRow = isForward ? downAbsRow : upAbsRow;
   const startCol = isForward ? snappedDownCol : snappedUpCol;
   const endAbsRow = isForward ? upAbsRow : downAbsRow;
   const endCol = isForward ? snappedUpCol : snappedDownCol;
-  showHighlight(terminal, sel, screenEl, viewportY, cellW, cellH,
+  showHighlight(terminal, sel, screenEl, viewportY,
     startAbsRow, startCol, endAbsRow, endCol);
 }
 
@@ -243,10 +257,12 @@ function showHighlight(
   sel: EditableSelection,
   screenEl: HTMLElement,
   viewportY: number,
-  cellW: number, cellH: number,
   startAbsRow: number, startCol: number,
   endAbsRow: number, endCol: number,
 ): void {
+  const dims = getCellDims(terminal, screenEl);
+  const cellW = dims.w;
+  const cellH = dims.h;
   ensureSelectionStyle();
   const cursorColor = terminal.options.theme?.cursor || '#ffffff';
   const isFocused = document.hasFocus();
@@ -397,10 +413,9 @@ function buildSelectionDelete(sel: EditableSelection): string {
 
 function resolveClickPositions(terminal: Terminal, screenEl: HTMLElement, e: MouseEvent) {
   const rect = screenEl.getBoundingClientRect();
-  const cellW = rect.width / terminal.cols;
-  const cellH = rect.height / terminal.rows;
-  const clickCol = clamp(Math.floor((e.clientX - rect.left) / cellW), 0, terminal.cols - 1);
-  const clickRow = clamp(Math.floor((e.clientY - rect.top) / cellH), 0, terminal.rows - 1);
+  const dims = getCellDims(terminal, screenEl);
+  const clickCol = clamp(Math.floor((e.clientX - rect.left) / dims.w), 0, terminal.cols - 1);
+  const clickRow = clamp(Math.floor((e.clientY - rect.top) / dims.h), 0, terminal.rows - 1);
 
   const buf = terminal.buffer.active;
   const viewportY = getViewportY(terminal, buf.baseY);
@@ -457,6 +472,21 @@ function getViewportY(terminal: Terminal, fallback: number): number {
     if (typeof ydisp === 'number') return ydisp;
   } catch { /* ignore */ }
   return fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Accurate cell dimensions from xterm.js renderer
+// ---------------------------------------------------------------------------
+
+function getCellDims(terminal: Terminal, screenEl: HTMLElement): { w: number; h: number } {
+  try {
+    const core = (terminal as any)._core;
+    const cell = core?._renderService?.dimensions?.css?.cell;
+    if (cell?.width > 0 && cell?.height > 0) return { w: cell.width, h: cell.height };
+  } catch { /* ignore */ }
+  // Fallback: derive from screen rect (less accurate when min-height: 100% is set)
+  const rect = screenEl.getBoundingClientRect();
+  return { w: rect.width / terminal.cols, h: rect.height / terminal.rows };
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +554,40 @@ function countCharsInRange(line: IBufferLine, fromCol: number, toCol: number): n
     }
   }
   return chars;
+}
+
+// ---------------------------------------------------------------------------
+// Extract text from buffer range (for clamped selections)
+// ---------------------------------------------------------------------------
+
+function extractBufferText(
+  buf: Terminal['buffer']['active'], cols: number,
+  startRow: number, startCol: number,
+  endRow: number, endCol: number,
+): string {
+  const parts: string[] = [];
+  for (let r = startRow; r <= endRow; r++) {
+    const line = buf.getLine(r);
+    if (!line) break;
+    const from = (r === startRow) ? startCol : 0;
+    const to = (r === endRow) ? endCol : cols;
+    let rowText = '';
+    for (let c = from; c < to;) {
+      const cell = line.getCell(c);
+      if (!cell) break;
+      const ch = cell.getChars();
+      const w = cell.getWidth();
+      if (ch && w > 0) { rowText += ch; c += w; }
+      else { c++; }
+    }
+    parts.push(rowText);
+    // Add newline between non-wrapped rows
+    if (r < endRow) {
+      const nextLine = buf.getLine(r + 1);
+      if (nextLine && !nextLine.isWrapped) parts.push('\n');
+    }
+  }
+  return parts.join('');
 }
 
 // ---------------------------------------------------------------------------

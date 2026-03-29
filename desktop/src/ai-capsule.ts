@@ -11,7 +11,15 @@ import { AIAgent, AgentCallbacks } from './ai-agent';
 import { escapeHtml } from './status-bar';
 import { resolveActiveModel, resolveModel } from './ai-provider';
 import { thinkingIcon } from './ai-icons';
-import type { HistoryEntry, AICapsuleInstance, ConvEntry, ChatConversation } from './ai-capsule-types';
+import type { HistoryEntry, AICapsuleInstance, ConvEntry, ChatConversation, AIChatLayoutMode } from './ai-capsule-types';
+import {
+  getSavedLayoutMode, saveLayoutMode,
+  switchToSideMode, switchToBottomMode,
+  hideSidePanel, showSidePanel,
+  updateSideSendButton, getSideSendButton,
+  SVG_LAYOUT_SIDE, SVG_LAYOUT_BOTTOM,
+  type SideInputCallbacks,
+} from './ai-capsule-layout';
 import { renderMarkdown } from './ai-capsule-markdown';
 import { isDangerousCommand, confirmDangerousCommand } from './ai-capsule-danger';
 import { buildToolCard as buildToolCardFn, appendToolCallCard as appendToolCallCardFn, updateToolResultCard as updateToolResultCardFn, showConfirmCard as showConfirmCardFn } from './ai-capsule-tool-ui';
@@ -43,6 +51,52 @@ import {
 
 export type { HistoryEntry, AICapsuleInstance, ConvEntry, ChatConversation } from './ai-capsule-types';
 export { MAX_HISTORY, HISTORY_STORAGE_KEY } from './ai-capsule-types';
+
+// ── Prompt vs Command detection ──
+
+/** Path-like start patterns — always a command */
+const PATH_START = /^(\.\/|\.\.\/|~\/|\/)/;
+
+/** Natural language patterns — strong signal for prompt */
+const PROMPT_PATTERNS = /^(what|how|why|when|where|who|can|could|would|should|is|are|does|did|will|help|explain|describe|tell|write|create|generate|fix|debug|refactor|optimize|translate|summarize|review|analyze|compare|please|hey|hi|hello|I |I'm |I've |my |the |this |that |we |our |let me|怎么|什么|为什么|如何|请|帮我|帮忙|解释|告诉|写一个|能不能|可以|是不是|有没有|我想|我要|我需要|你能|你可以|给我|做一个|生成|创建|修复|优化|翻译|分析|比较|列出|总结|描述)/i;
+
+/**
+ * Detect if input looks like a natural-language prompt (not a command).
+ *
+ * Strategy (fast to slow, with fallback):
+ * 1. Path-like prefix → command (instant)
+ * 2. Natural language pattern → prompt (instant regex)
+ * 3. Completion index lookup → first token is known command? (Trie O(n), <1ms)
+ * 4. Fallback heuristics if index not ready (Chinese chars, long text with spaces)
+ */
+function looksLikePrompt(text: string): boolean {
+  if (!text) return false;
+
+  // 1. Path-like → definitely a command
+  if (PATH_START.test(text)) return false;
+
+  // 2. Contains Chinese characters → almost certainly a prompt (not a CLI command)
+  if (/[\u4e00-\u9fff]/.test(text)) return true;
+
+  // 3. Too short for English detection (single-word like "ls", "cd")
+  if (text.length < 3) return false;
+
+  // 4. Natural language pattern → definitely a prompt
+  if (PROMPT_PATTERNS.test(text)) return true;
+
+  // 5. Check first token against completion index (Trie lookup, very fast)
+  const firstToken = text.split(/\s/)[0];
+  if (firstToken && globalCompletionIndex.ready) {
+    const matches = globalCompletionIndex.getMatches(firstToken, 1);
+    if (matches.length > 0) return false;
+    if (text.includes(' ')) return true;
+  }
+
+  // 6. Fallback heuristics (index not ready or single-word input)
+  if (text.includes(' ') && text.length > 20) return true;
+
+  return false;
+}
 
 // ─── AI Capsule Manager ──────────────────────────────────────────
 
@@ -93,6 +147,11 @@ class AICapsuleManagerClass {
       chatHistoryOpen: false,
       chatHistoryPanel: null,
       currentConversationId: conversationId,
+      layoutMode: getSavedLayoutMode(),
+      sidePanel: null,
+      sideResizeHandle: null,
+      sideInputArea: null,
+      sideInput: null,
     };
 
     this.capsules.set(sessionId, instance);
@@ -103,6 +162,7 @@ class AICapsuleManagerClass {
     if (isSSH) {
       this.setupDrawerToggle(instance);
     }
+    this.syncBarPlaceholder(instance);
 
     return instance;
   }
@@ -125,7 +185,7 @@ class AICapsuleManagerClass {
     modelArrow.innerHTML = `<svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="2 3 4 5 6 3"/></svg>`;
 
     const modelDropdown = document.createElement('div');
-    modelDropdown.className = 'ai-bar-model-dropdown';
+    modelDropdown.className = 'ai-bar-model-dropdown styled-scrollbar';
     modelDropdown.style.display = 'none';
     this.buildModelDropdown(modelDropdown, modelLabel);
 
@@ -184,6 +244,7 @@ class AICapsuleManagerClass {
       : `<svg class="key-icon key-icon-wide" viewBox="0 0 24 14" width="24" height="14"><text x="12" y="11" text-anchor="middle" font-size="10" font-family="system-ui, -apple-system, sans-serif" fill="currentColor">Ctrl</text></svg>`;
     const cmdIcon = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 3 6 7 2 11"/><line x1="7" y1="11" x2="12" y2="11"/></svg>`;
     const botIcon = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="10" height="7" rx="2"/><line x1="5" y1="11" x2="5" y2="13"/><line x1="9" y1="11" x2="9" y2="13"/><circle cx="5.5" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="8.5" cy="7.5" r="1" fill="currentColor" stroke="none"/><line x1="7" y1="1" x2="7" y2="4"/><circle cx="7" cy="1" r="1" fill="currentColor" stroke="none"/></svg>`;
+    // Default placeholder (will be synced properly after create via syncBarPlaceholder)
     phOverlay.innerHTML = `<span class="ai-ph-seg">${cmdIcon}${enterKey}</span><span class="ai-ph-sep">/</span><span class="ai-ph-seg">${botIcon}${modKey}<span class="ai-ph-plus">+</span>${enterKey}</span>`;
 
     inputWrap.appendChild(input);
@@ -211,7 +272,6 @@ class AICapsuleManagerClass {
     const chatHistPanel = document.createElement('div');
     chatHistPanel.className = 'ai-bar-chat-history-panel';
     chatHistPanel.style.display = 'none';
-    createOverlayScrollbar({ viewport: chatHistPanel, container: chatHistPanel });
 
     // History button
     const histBtn = document.createElement('button');
@@ -223,7 +283,6 @@ class AICapsuleManagerClass {
     const histPanel = document.createElement('div');
     histPanel.className = 'ai-bar-history-panel';
     histPanel.style.display = 'none';
-    createOverlayScrollbar({ viewport: histPanel, container: histPanel });
 
     bar.appendChild(modelSelect);
     bar.appendChild(inputWrap);
@@ -394,6 +453,13 @@ class AICapsuleManagerClass {
       this.updateChatTitle(instance);
     });
 
+    // Layout toggle button — switch between bottom and side panel mode
+    const layoutBtn = document.createElement('button');
+    layoutBtn.className = 'ai-chat-layout-toggle';
+    layoutBtn.innerHTML = instance.layoutMode === 'bottom' ? SVG_LAYOUT_SIDE : SVG_LAYOUT_BOTTOM;
+    layoutBtn.title = instance.layoutMode === 'bottom' ? t('aiLayoutSide') : t('aiLayoutBottom');
+    layoutBtn.addEventListener('click', () => this.toggleLayout(instance, layoutBtn));
+
     // Minimize button — hides panel but keeps conversation alive
     const minimizeBtn = document.createElement('button');
     minimizeBtn.className = 'ai-chat-minimize';
@@ -410,6 +476,7 @@ class AICapsuleManagerClass {
     header.appendChild(title);
     header.appendChild(newChatBtn);
     header.appendChild(clearBtn);
+    header.appendChild(layoutBtn);
     header.appendChild(minimizeBtn);
     header.appendChild(closeBtn);
 
@@ -421,7 +488,7 @@ class AICapsuleManagerClass {
     panel.appendChild(resizeHandle);
     panel.appendChild(header);
     panel.appendChild(messages);
-    createOverlayScrollbar({ viewport: messages, container: panel });
+    createOverlayScrollbar({ viewport: messages, container: messages });
 
     // Bind context menu on the messages container (event delegation)
     this.bindChatContextMenu(instance, messages);
@@ -467,19 +534,27 @@ class AICapsuleManagerClass {
 
     if (!instance.chatPanel) {
       instance.chatPanel = this.createChatPanel(instance);
-      // Insert chat panel into #terminal-panel (before .ai-bar) so it
-      // participates in the flex layout and pushes the terminal area up.
-      const terminalPanel = instance.element.parentElement;
-      if (terminalPanel) {
-        terminalPanel.insertBefore(instance.chatPanel, instance.element);
-      }
     }
 
-    instance.chatPanel.style.display = '';
+    if (instance.layoutMode === 'side') {
+      // Side panel mode: chatPanel in side panel, AI Bar stays in terminal
+      switchToSideMode(instance, this.getSideInputCallbacks());
+      instance.chatPanel!.style.display = '';
+    } else {
+      // Bottom mode: insert chat panel into #terminal-panel (before .ai-bar)
+      const terminalPanel = instance.element.parentElement;
+      if (terminalPanel && instance.chatPanel.parentElement !== terminalPanel) {
+        terminalPanel.insertBefore(instance.chatPanel, instance.element);
+      }
+      instance.chatPanel.style.display = '';
+    }
+
     instance.chatOpen = true;
     instance.chatMinimized = false;
     this.closeHistory(instance);
+    this.closeChatHistory(instance);
     this.updateButtonHighlight(instance);
+    this.syncBarPlaceholder(instance);
     // Refit terminal to new available height
     TerminalRegistry.resizeAll();
   }
@@ -490,9 +565,15 @@ class AICapsuleManagerClass {
     if (instance.chatPanel) {
       instance.chatPanel.style.display = 'none';
     }
+    // In side mode, hide side panel and restore AI Bar buttons
+    if (instance.layoutMode === 'side') {
+      hideSidePanel(instance);
+      instance.element.classList.remove('ai-bar--side-active');
+    }
     instance.chatOpen = false;
     instance.chatMinimized = true;
     this.updateButtonHighlight(instance);
+    this.syncBarPlaceholder(instance);
     TerminalRegistry.resizeAll();
   }
 
@@ -512,6 +593,10 @@ class AICapsuleManagerClass {
       void this.saveConversation(instance, snapshot);
     }
 
+    // Close any open history panels
+    this.closeChatHistory(instance);
+    this.closeHistory(instance);
+
     // Reset conversation immediately
     instance.agent.clear();
     instance.messages = [];
@@ -521,6 +606,11 @@ class AICapsuleManagerClass {
       if (msgContainer) msgContainer.innerHTML = '';
       instance.chatPanel.style.display = 'none';
     }
+    // In side mode, hide side panel and restore AI Bar buttons
+    if (instance.layoutMode === 'side') {
+      hideSidePanel(instance);
+      instance.element.classList.remove('ai-bar--side-active');
+    }
     instance.chatOpen = false;
     instance.chatMinimized = false;
     instance.streamMsgEl = null;
@@ -528,7 +618,111 @@ class AICapsuleManagerClass {
     instance.reasoningBuffer = '';
     this.updateChatTitle(instance);
     this.updateButtonHighlight(instance);
+    this.syncBarPlaceholder(instance);
     TerminalRegistry.resizeAll();
+  }
+
+  /** Toggle between bottom and side panel layout */
+  private toggleLayout(instance: AICapsuleInstance, layoutBtn: HTMLButtonElement): void {
+    if (instance.layoutMode === 'bottom') {
+      switchToSideMode(instance, this.getSideInputCallbacks());
+      layoutBtn.innerHTML = SVG_LAYOUT_BOTTOM;
+      layoutBtn.title = t('aiLayoutBottom');
+    } else {
+      switchToBottomMode(instance);
+      layoutBtn.innerHTML = SVG_LAYOUT_SIDE;
+      layoutBtn.title = t('aiLayoutSide');
+    }
+    // Sync layout mode across all instances
+    this.capsules.forEach((inst) => {
+      if (inst !== instance) inst.layoutMode = instance.layoutMode;
+    });
+    this.syncBarPlaceholder(instance);
+  }
+
+  /** Build callbacks for the side panel input area */
+  private getSideInputCallbacks(): SideInputCallbacks {
+    return {
+      sendToLLM: (instance, text) => this.sendToLLMFrom(instance, text),
+      buildModelDropdown: (dropdown, label) => this.buildModelDropdown(dropdown, label),
+      updateModelLabel: (label) => this.updateModelLabel(label),
+      createTrustSwitcher: () => this.createTrustSwitcher(),
+      toggleSideChatHistory: (instance) => this.toggleChatHistory(instance, true),
+      toggleLayout: (instance) => {
+        const layoutBtn = instance.chatPanel?.querySelector('.ai-chat-layout-toggle') as HTMLButtonElement;
+        if (layoutBtn) this.toggleLayout(instance, layoutBtn);
+      },
+    };
+  }
+
+  /** Send text to LLM from any input source (AI Bar or side panel textarea) */
+  private sendToLLMFrom(instance: AICapsuleInstance, text: string): void {
+    if (!text) return;
+
+    const settings = loadSettings();
+    const resolved = resolveActiveModel(settings.aiProviders, settings.aiActiveModel);
+    if (!resolved) {
+      this.openChat(instance);
+      this.showNoConfigHint(instance);
+      return;
+    }
+
+    this.openChat(instance);
+    this.appendUserMessage(instance, text);
+    instance.messages.push({ type: 'user', content: text, timestamp: Date.now() });
+    this.updateChatTitle(instance);
+    void this.saveConversation(instance);
+
+    instance.isStreaming = true;
+    instance.streamBuffer = '';
+    document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: true } }));
+    this.updateButtonHighlight(instance);
+    // Update side panel send button to stop icon
+    updateSideSendButton(getSideSendButton(instance), true);
+    this.beginAssistantMessage(instance);
+    this.showAgentPulse(instance);
+
+    const agentCallbacks = this.buildAgentCallbacks(instance);
+    instance.agent.send(text, instance.sessionId, agentCallbacks);
+  }
+
+
+
+  /**
+   * Sync AI Bar placeholder based on current state:
+   * - Side mode active: command-only (Enter → terminal)
+   * - Agent mode: swapped (Enter → Agent, Ctrl+Enter → terminal)
+   * - Default: Enter → terminal, Ctrl+Enter → Agent
+   */
+  private syncBarPlaceholder(instance: AICapsuleInstance): void {
+    const ph = instance.element.querySelector('.ai-bar-placeholder') as HTMLDivElement;
+    if (!ph) return;
+
+    const isMac = navigator.userAgent.includes('Mac');
+    const enterKey = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3v4.5a1.5 1.5 0 01-1.5 1.5H4"/><polyline points="6 6 3.5 9 6 12"/></svg>`;
+    const modKey = isMac
+      ? `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><text x="7" y="11" text-anchor="middle" font-size="12" font-family="system-ui, -apple-system, sans-serif" fill="currentColor" stroke="none">⌘</text></svg>`
+      : `<svg class="key-icon key-icon-wide" viewBox="0 0 24 14" width="24" height="14"><text x="12" y="11" text-anchor="middle" font-size="10" font-family="system-ui, -apple-system, sans-serif" fill="currentColor">Ctrl</text></svg>`;
+    const cmdIcon = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 3 6 7 2 11"/><line x1="7" y1="11" x2="12" y2="11"/></svg>`;
+    const botIcon = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="10" height="7" rx="2"/><line x1="5" y1="11" x2="5" y2="13"/><line x1="9" y1="11" x2="9" y2="13"/><circle cx="5.5" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="8.5" cy="7.5" r="1" fill="currentColor" stroke="none"/><line x1="7" y1="1" x2="7" y2="4"/><circle cx="7" cy="1" r="1" fill="currentColor" stroke="none"/></svg>`;
+
+    const sideActive = instance.element.classList.contains('ai-bar--side-active');
+    const agentMode = loadSettings().aiEnterSendsToAgent;
+    const chatActive = instance.chatOpen || instance.chatMinimized;
+
+    if (sideActive) {
+      // Side mode: AI Bar is command-only
+      ph.innerHTML = `<span class="ai-ph-seg">${cmdIcon}${t('aiPlaceholderCmd')}${enterKey}</span>`;
+    } else if (chatActive) {
+      // Chat open/minimized: Enter → Agent
+      ph.innerHTML = `<span class="ai-ph-seg">${botIcon}${t('aiPlaceholderAgentMode')}${enterKey}</span>`;
+    } else if (agentMode) {
+      // Agent mode: Enter → Agent, Ctrl+Enter → Terminal
+      ph.innerHTML = `<span class="ai-ph-seg">${botIcon}${enterKey}</span><span class="ai-ph-sep">/</span><span class="ai-ph-seg">${cmdIcon}${modKey}<span class="ai-ph-plus">+</span>${enterKey}</span>`;
+    } else {
+      // Default: Enter → Terminal, Ctrl+Enter → Agent
+      ph.innerHTML = `<span class="ai-ph-seg">${cmdIcon}${enterKey}</span><span class="ai-ph-sep">/</span><span class="ai-ph-seg">${botIcon}${modKey}<span class="ai-ph-plus">+</span>${enterKey}</span>`;
+    }
   }
 
   /** Restore a saved conversation into the main chat panel */
@@ -551,11 +745,15 @@ class AICapsuleManagerClass {
     instance.messages = conv.messages.map(m => ({ ...m }));
     instance.reasoningBuffer = '';
 
-    // Ensure chat panel exists
+    // Ensure chat panel exists and is in the correct layout
     if (!instance.chatPanel) {
       instance.chatPanel = this.createChatPanel(instance);
+    }
+    if (instance.layoutMode === 'side') {
+      switchToSideMode(instance, this.getSideInputCallbacks());
+    } else {
       const terminalPanel = instance.element.parentElement;
-      if (terminalPanel) {
+      if (terminalPanel && instance.chatPanel.parentElement !== terminalPanel) {
         terminalPanel.insertBefore(instance.chatPanel, instance.element);
       }
     }
@@ -630,6 +828,7 @@ class AICapsuleManagerClass {
 
     // Show chat panel
     instance.chatPanel.style.display = '';
+    if (instance.layoutMode === 'side') showSidePanel(instance);
     instance.chatOpen = true;
     instance.chatMinimized = false;
     instance.isStreaming = false;
@@ -953,6 +1152,10 @@ class AICapsuleManagerClass {
 
   private openHistory(instance: AICapsuleInstance): void {
     this.closeChatHistory(instance); // 互斥
+    // Bottom mode: minimize chat panel so popups don't overlap
+    if (instance.layoutMode !== 'side' && instance.chatOpen) {
+      this.minimizeChat(instance);
+    }
     instance.historyOpen = true;
     const panel = instance.element.querySelector('.ai-bar-history-panel') as HTMLDivElement;
     const btn = instance.element.querySelector('.ai-bar-btn-history') as HTMLButtonElement;
@@ -989,9 +1192,42 @@ class AICapsuleManagerClass {
     const termBtn = instance.element.querySelector('.ai-bar-btn-term') as HTMLButtonElement;
     const llmBtn = instance.element.querySelector('.ai-bar-btn-llm') as HTMLButtonElement;
 
+    // ── Prompt detection inline hint state ──
+    let pendingPromptConfirm = false;
+
+    const showPromptHint = (bar: HTMLElement) => {
+      let hint = bar.querySelector('.ai-prompt-hint') as HTMLElement;
+      if (!hint) {
+        hint = document.createElement('div');
+        hint.className = 'ai-prompt-hint';
+        hint.innerHTML = `<span class="ai-prompt-hint-text">${t('aiSendToAgentConfirm')}</span>`
+          + `<span class="ai-prompt-hint-keys">Enter → Agent &nbsp;/&nbsp; Esc → ${t('aiSendToAgentNo')}</span>`
+          + `<label class="ai-prompt-hint-check"><input type="checkbox"><span>${t('aiSendToAgentDontAsk')}</span></label>`;
+        bar.appendChild(hint);
+      }
+      hint.style.display = '';
+      bar.classList.add('ai-bar--prompt-pending');
+    };
+
+    const dismissPromptHint = () => {
+      const hint = instance.element.querySelector('.ai-prompt-hint') as HTMLElement;
+      if (hint) hint.style.display = 'none';
+      instance.element.classList.remove('ai-bar--prompt-pending');
+    };
+
+    // Dismiss hint when input changes
+    input.addEventListener('input', () => {
+      if (pendingPromptConfirm) {
+        pendingPromptConfirm = false;
+        dismissPromptHint();
+      }
+    });
+
     const sendToTerminal = () => {
       const text = input.value.trim();
       if (!text) return;
+      pendingPromptConfirm = false;
+      dismissPromptHint();
       TerminalRegistry.sendCommand(instance.sessionId, text);
       this.addHistory(instance, text, 'manual');
       input.value = '';
@@ -1035,11 +1271,9 @@ class AICapsuleManagerClass {
       if (instance.isStreaming) {
         const text = input.value.trim();
         if (text) {
-          // Has text → inject message into running agent
           this.injectUserMessage(instance, text);
           input.value = '';
         } else {
-          // Empty → abort
           instance.agent.abort();
           this.collapseActiveThinking(instance);
           instance.reasoningBuffer = '';
@@ -1054,16 +1288,27 @@ class AICapsuleManagerClass {
             document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
           }
         }
-      } else {
-        sendToLLM();
-      }
-    });
-
-    // Right-click on LLM button: restore minimized chat
-    llmBtn.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      if (instance.chatMinimized) {
+      } else if (instance.chatOpen) {
+        // Chat is open: if text → send, if empty → minimize (toggle close)
+        const text = input.value.trim();
+        if (text) {
+          sendToLLM();
+        } else {
+          this.minimizeChat(instance);
+        }
+      } else if (instance.chatMinimized) {
+        // Restore minimized chat, send if there's text
         this.openChat(instance);
+        const text = input.value.trim();
+        if (text) sendToLLM();
+      } else {
+        // Chat not open: if text → send (opens chat), if empty → just open chat
+        const text = input.value.trim();
+        if (text) {
+          sendToLLM();
+        } else {
+          this.openChat(instance);
+        }
       }
     });
 
@@ -1106,7 +1351,20 @@ class AICapsuleManagerClass {
       }
 
       if (e.key === 'Enter') {
-        if (instance.isStreaming && (instance.chatOpen || instance.chatMinimized)) {
+        if (instance.layoutMode === 'side') {
+          // Side mode: AI Bar input always sends to terminal
+          // Ctrl+Enter focuses side panel input instead
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            if (instance.sideInput) {
+              this.openChat(instance);
+              instance.sideInput.focus();
+            }
+          } else {
+            sendToTerminal();
+            e.preventDefault();
+          }
+        } else if (instance.isStreaming && (instance.chatOpen || instance.chatMinimized)) {
           // Streaming with chat open → inject message into running agent
           const text = input.value.trim();
           if (text) {
@@ -1115,17 +1373,55 @@ class AICapsuleManagerClass {
           }
           e.preventDefault();
         } else if (e.ctrlKey || e.metaKey) {
-          sendToLLM();
+          // Ctrl+Enter: swapped in agent mode
+          if (loadSettings().aiEnterSendsToAgent) {
+            sendToTerminal(); // agent mode: Ctrl+Enter → terminal
+          } else {
+            sendToLLM();      // default: Ctrl+Enter → LLM
+          }
           e.preventDefault();
         } else if (instance.chatOpen || instance.chatMinimized) {
           sendToLLM();
           e.preventDefault();
         } else {
-          sendToTerminal();
+          // Enter (no modifier, chat not open):
+          if (loadSettings().aiEnterSendsToAgent) {
+            sendToLLM();      // agent mode: Enter → LLM
+          } else if (pendingPromptConfirm) {
+            // Second Enter → confirm send to Agent
+            pendingPromptConfirm = false;
+            dismissPromptHint();
+            const dontAsk = instance.element.querySelector('.ai-prompt-hint-check input') as HTMLInputElement;
+            if (dontAsk?.checked) {
+              const s = loadSettings();
+              s.aiEnterSendsToAgent = true;
+              saveSettings(s);
+              this.syncBarPlaceholder(instance);
+            }
+            sendToLLM();
+          } else {
+            // default: Enter → terminal, but detect prompts
+            const text = input.value.trim();
+            if (text && looksLikePrompt(text)) {
+              e.preventDefault();
+              pendingPromptConfirm = true;
+              showPromptHint(instance.element);
+              return;
+            }
+            sendToTerminal();
+          }
           e.preventDefault();
         }
       }
       if (e.key === 'Escape') {
+        if (pendingPromptConfirm) {
+          // Esc during prompt confirm → send to terminal
+          pendingPromptConfirm = false;
+          dismissPromptHint();
+          sendToTerminal();
+          e.preventDefault();
+          return;
+        }
         if (instance.isStreaming) {
           instance.agent.abort();
           instance.isStreaming = false;
@@ -1211,69 +1507,121 @@ class AICapsuleManagerClass {
     document.addEventListener('click', (e) => {
       if (!instance.chatHistoryOpen) return;
       const target = e.target as HTMLElement;
-      if (!instance.element.contains(target)) {
-        this.closeChatHistory(instance);
-      }
+      // Don't close if click is inside AI Bar, side panel, or side input area
+      if (instance.element.contains(target)) return;
+      if (instance.sidePanel?.contains(target)) return;
+      if (instance.sideInputArea?.contains(target)) return;
+      this.closeChatHistory(instance);
     });
   }
 
-  private toggleChatHistory(instance: AICapsuleInstance): void {
+  private toggleChatHistory(instance: AICapsuleInstance, fromSidePanel = false): void {
     if (instance.chatHistoryOpen) {
       this.closeChatHistory(instance);
     } else {
-      this.openChatHistory(instance);
+      this.openChatHistory(instance, fromSidePanel);
     }
   }
 
   // 缓存已加载的对话列表，用于搜索筛选
   private _cachedConversations = new Map<string, ChatConversation[]>();
 
-  private openChatHistory(instance: AICapsuleInstance): void {
+  private openChatHistory(instance: AICapsuleInstance, fromSidePanel = false): void {
     this.closeHistory(instance);
-    instance.chatHistoryOpen = true;
-    const btn = instance.element.querySelector('.ai-bar-btn-chat-history') as HTMLButtonElement;
-    if (btn) btn.classList.add('active');
-
-    let panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
-    if (!panel) {
-      panel = document.createElement('div');
-      panel.className = 'ai-bar-chat-history-panel';
-      instance.element.appendChild(panel);
+    // Bottom mode: minimize chat panel so popups don't overlap
+    if (!fromSidePanel && instance.layoutMode !== 'side' && instance.chatOpen) {
+      this.minimizeChat(instance);
     }
-    panel.style.display = '';
-    this.adjustPopupMaxHeight(panel, instance.element);
-    this.observePopupResize(panel, instance.element);
-    instance.chatHistoryPanel = panel;
-    this.renderChatHistoryList(instance);
-    // 进入搜索模式
-    this.enterSearchMode(instance, t('aiSearchChatHistory'), () => {
-      const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement;
-      const query = input?.value || '';
-      const cached = this._cachedConversations.get(instance.sessionId);
-      if (cached) {
-        this.renderChatHistoryListFromCache(instance, cached, query);
+    instance.chatHistoryOpen = true;
+
+    if (fromSidePanel && instance.chatPanel) {
+      // Side panel: show chat history inline inside the chat messages area
+      const btn = instance.sideInputArea?.querySelector('.ai-side-btn-chat-history') as HTMLButtonElement;
+      if (btn) btn.classList.add('active');
+
+      let panel = instance.chatPanel.querySelector('.ai-side-chat-history-view') as HTMLDivElement;
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.className = 'ai-side-chat-history-view';
+        instance.chatPanel.appendChild(panel);
+        createOverlayScrollbar({ viewport: panel, container: panel });
       }
-    });
+      // Hide messages, show history
+      const msgs = instance.chatPanel.querySelector('.ai-chat-messages') as HTMLElement;
+      if (msgs) msgs.style.display = 'none';
+      panel.style.display = '';
+      instance.chatHistoryPanel = panel;
+      this.renderChatHistoryList(instance);
+    } else {
+      // AI Bar popup mode (bottom mode, or side mode with chat not open)
+      const btn = instance.element.querySelector('.ai-bar-btn-chat-history') as HTMLButtonElement;
+      if (btn) btn.classList.add('active');
+
+      let panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.className = 'ai-bar-chat-history-panel';
+        instance.element.appendChild(panel);
+      }
+      panel.style.display = '';
+      this.adjustPopupMaxHeight(panel, instance.element);
+      this.observePopupResize(panel, instance.element);
+      instance.chatHistoryPanel = panel;
+      this.renderChatHistoryList(instance);
+      // 进入搜索模式
+      this.enterSearchMode(instance, t('aiSearchChatHistory'), () => {
+        const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement;
+        const query = input?.value || '';
+        const cached = this._cachedConversations.get(instance.sessionId);
+        if (cached) {
+          this.renderChatHistoryListFromCache(instance, cached, query);
+        }
+      });
+    }
   }
 
   private closeChatHistory(instance: AICapsuleInstance): void {
     if (!instance.chatHistoryOpen) return;
     instance.chatHistoryOpen = false;
-    const panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
-    const btn = instance.element.querySelector('.ai-bar-btn-chat-history') as HTMLButtonElement;
-    if (panel) panel.style.display = 'none';
-    if (btn) btn.classList.remove('active');
-    this.unobservePopupResize();
-    this._popupManualHeight = false;
+
+    // Check if the history was shown inline in side panel
+    const sideHistView = instance.chatPanel?.querySelector('.ai-side-chat-history-view') as HTMLElement;
+    const isSideInline = sideHistView && sideHistView.style.display !== 'none';
+
+    if (isSideInline) {
+      // Side panel inline: restore messages view
+      const msgs = instance.chatPanel?.querySelector('.ai-chat-messages') as HTMLElement;
+      const btn = instance.sideInputArea?.querySelector('.ai-side-btn-chat-history') as HTMLButtonElement;
+      sideHistView.style.display = 'none';
+      if (msgs) msgs.style.display = '';
+      if (btn) btn.classList.remove('active');
+    } else {
+      // AI Bar popup
+      const panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
+      const btn = instance.element.querySelector('.ai-bar-btn-chat-history') as HTMLButtonElement;
+      if (panel) panel.style.display = 'none';
+      if (btn) btn.classList.remove('active');
+      this.unobservePopupResize();
+      this._popupManualHeight = false;
+      this.exitSearchMode(instance);
+    }
+    instance.chatHistoryPanel = null;
     this._cachedConversations.delete(instance.sessionId);
-    this.exitSearchMode(instance);
   }
 
   private async renderChatHistoryList(instance: AICapsuleInstance): Promise<void> {
-    const panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
+    const panel = instance.chatHistoryPanel;
     if (!panel) return;
 
-    panel.innerHTML = `<div class="ai-chat-hist-header"><span class="ai-chat-hist-title">${t('aiChatHistoryTitle')}</span></div><div class="ai-chat-hist-loading" style="padding:12px;text-align:center;color:var(--text-muted);font-size:12px;">...</div>`;
+    // For side inline view, render directly; for popup, use scroll viewport
+    const isSideInline = panel.classList.contains('ai-side-chat-history-view');
+    if (isSideInline) {
+      panel.innerHTML = `<div class="ai-chat-hist-header"><span class="ai-chat-hist-title">${t('aiChatHistoryTitle')}</span></div><div class="ai-chat-hist-loading" style="padding:12px;text-align:center;color:var(--text-muted);font-size:12px;">...</div>`;
+    } else {
+      const { getPopupScrollViewport } = await import('./overlay-scrollbar');
+      const vp = getPopupScrollViewport(panel);
+      vp.innerHTML = `<div class="ai-chat-hist-header"><span class="ai-chat-hist-title">${t('aiChatHistoryTitle')}</span></div><div class="ai-chat-hist-loading" style="padding:12px;text-align:center;color:var(--text-muted);font-size:12px;">...</div>`;
+    }
 
     const convs = await this.loadConversations();
     this._cachedConversations.set(instance.sessionId, convs);
@@ -1281,16 +1629,21 @@ class AICapsuleManagerClass {
   }
 
   private renderChatHistoryListFromCache(instance: AICapsuleInstance, convs: ChatConversation[], filter?: string): void {
+    // Skip popup resize handle in side panel mode (inline view doesn't need it)
+    const noopResize = () => {};
+    const isSideInline = instance.chatHistoryPanel?.classList.contains('ai-side-chat-history-view');
     renderChatHistoryListFromCacheFn(instance, convs, {
-      ensurePopupResizeHandle: (p, b) => this.ensurePopupResizeHandle(p, b),
+      ensurePopupResizeHandle: isSideInline ? noopResize : (p, b) => this.ensurePopupResizeHandle(p, b),
       restoreConversation: (inst, conv) => this.restoreConversation(inst, conv),
       handleDeleteConversation: (inst, convId) => { void this.handleDeleteConversation(inst, convId); },
     }, filter);
   }
 
   private renderChatHistoryDetail(instance: AICapsuleInstance, conv: ChatConversation): void {
+    const isSideInline = instance.chatHistoryPanel?.classList.contains('ai-side-chat-history-view');
+    const noopResize = () => {};
     renderChatHistoryDetailFn(instance, conv, {
-      ensurePopupResizeHandle: (p, b) => this.ensurePopupResizeHandle(p, b),
+      ensurePopupResizeHandle: isSideInline ? noopResize : (p, b) => this.ensurePopupResizeHandle(p, b),
       renderChatHistoryList: (inst) => { void this.renderChatHistoryList(inst); },
       addHistory: (inst, cmd, src) => this.addHistory(inst, cmd, src),
       bindCommandButtons: (inst, container) => this.bindCommandButtons(inst, container),
@@ -1316,8 +1669,12 @@ class AICapsuleManagerClass {
   private async reloadChatHistoryWithFilter(instance: AICapsuleInstance): Promise<void> {
     const convs = await this.loadConversations();
     this._cachedConversations.set(instance.sessionId, convs);
-    const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement;
-    const query = (instance.chatHistoryOpen && input) ? input.value : '';
+    // In side mode there's no search filter; in bottom mode use AI Bar input
+    let query = '';
+    if (instance.layoutMode !== 'side' && instance.chatHistoryOpen) {
+      const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement;
+      query = input?.value || '';
+    }
     this.renderChatHistoryListFromCache(instance, convs, query || undefined);
   }
 
@@ -1332,19 +1689,79 @@ class AICapsuleManagerClass {
       this.create(sessionId);
     }
     const instance = this.capsules.get(sessionId)!;
+
+    // AI Bar always mounts in the container (terminal-panel)
     if (instance.element.parentElement !== container) {
       container.appendChild(instance.element);
     }
-    // Mount chat panel before the AI bar so it appears above
-    if (instance.chatPanel && instance.chatPanel.parentElement !== container) {
-      container.insertBefore(instance.chatPanel, instance.element);
+
+    if (instance.layoutMode === 'side' && instance.chatOpen) {
+      // Side mode: ensure side panel is set up in #main-content
+      if (instance.sidePanel && !instance.sidePanel.parentElement) {
+        switchToSideMode(instance, this.getSideInputCallbacks());
+      }
+      instance.element.classList.add('ai-bar--side-active');
+    } else {
+      // Bottom mode: mount chat panel before the AI bar
+      if (instance.chatPanel && instance.chatPanel.parentElement !== container) {
+        container.insertBefore(instance.chatPanel, instance.element);
+      }
     }
+  }
+
+  /**
+   * Switch only the AI Bar to a different session (for split pane focus changes).
+   * Side panel stays untouched — shared within the same tab.
+   */
+  /**
+   * Switch AI Bar to a different session within the same tab (split pane focus).
+   * Side panel stays untouched. The new session's bar inherits the side-active
+   * state from whichever session has chat open in side mode within this tab.
+   */
+  switchBarOnly(sessionId: string, container: HTMLElement): void {
+    if (!this.capsules.has(sessionId)) {
+      this.create(sessionId);
+    }
+
+    // Check if ANY session in this tab has side panel chat open
+    let sideActive = false;
+    this.capsules.forEach((inst) => {
+      if (inst.layoutMode === 'side' && inst.chatOpen) sideActive = true;
+    });
+
+    // Hide all AI bars
+    this.capsules.forEach((inst) => {
+      inst.element.style.display = 'none';
+    });
+
+    // Mount and show the target session's bar
+    const inst = this.capsules.get(sessionId)!;
+    if (inst.element.parentElement !== container) {
+      container.appendChild(inst.element);
+    }
+    if (this._barHidden) {
+      inst.element.style.display = 'none';
+      return;
+    }
+    inst.element.style.display = '';
+    this._lastShownSessionId = sessionId;
+
+    // If any session in the tab has side panel open, keep bar in side-active mode
+    inst.element.classList.toggle('ai-bar--side-active', sideActive);
+    this.syncBarPlaceholder(inst);
+    const label = inst.element.querySelector('.ai-bar-model-label') as HTMLSpanElement;
+    if (label) this.updateModelLabel(label);
   }
 
   hideAll(): void {
     this.capsules.forEach((inst) => {
       inst.element.style.display = 'none';
-      if (inst.chatPanel) inst.chatPanel.style.display = 'none';
+      if (inst.layoutMode !== 'side') {
+        // Bottom mode: hide chat panel with the bar
+        if (inst.chatPanel) inst.chatPanel.style.display = 'none';
+      }
+      // Side panel stays visible — it's independent of pane focus.
+      // It will be switched by show() when the active session changes.
     });
   }
 
@@ -1353,16 +1770,42 @@ class AICapsuleManagerClass {
     if (inst) {
       if (this._barHidden) {
         inst.element.style.display = 'none';
-        if (inst.chatPanel) inst.chatPanel.style.display = 'none';
+        // In bottom mode, also hide chat panel; side panel stays independent
+        if (inst.layoutMode !== 'side') {
+          if (inst.chatPanel) inst.chatPanel.style.display = 'none';
+        }
         this.ensureFloatingBtn();
         if (this._floatingBtn) this._floatingBtn.style.display = 'flex';
         return;
       }
       this._lastShownSessionId = sessionId;
       inst.element.style.display = '';
-      // Restore chat panel visibility if it was open
-      if (inst.chatPanel && inst.chatOpen) {
-        inst.chatPanel.style.display = '';
+
+      // Hide other sessions' side panels, show this session's
+      this.capsules.forEach((other, otherId) => {
+        if (otherId !== sessionId && other.layoutMode === 'side' && other.sidePanel) {
+          hideSidePanel(other);
+        }
+      });
+
+      if (inst.layoutMode === 'side' && inst.chatOpen) {
+        // Side mode with chat open: ensure side panel is in DOM and visible
+        inst.element.classList.add('ai-bar--side-active');
+        if (inst.chatPanel) inst.chatPanel.style.display = '';
+        if (inst.sidePanel && !inst.sidePanel.parentElement) {
+          switchToSideMode(inst, this.getSideInputCallbacks());
+        }
+        showSidePanel(inst);
+      } else {
+        inst.element.classList.remove('ai-bar--side-active');
+        // Bottom mode: restore chat panel if it was open
+        if (inst.chatPanel && inst.chatOpen) {
+          inst.chatPanel.style.display = '';
+        }
+        // Side mode but chat not open: keep side panel hidden
+        if (inst.layoutMode === 'side' && inst.sidePanel) {
+          hideSidePanel(inst);
+        }
       }
       // Update model label whenever shown
       const label = inst.element.querySelector('.ai-bar-model-label') as HTMLSpanElement;
@@ -1375,10 +1818,21 @@ class AICapsuleManagerClass {
 
   /** 计算弹窗可用最大高度：保留至少 4 行终端内容，不超过终端面积 30% */
   private calcPopupMaxHeight(aiBar: HTMLElement): number {
-    const container = aiBar.closest('#terminal-panel') || aiBar.parentElement;
+    // In side mode, use the side panel as container; otherwise use terminal-panel
+    const container = aiBar.closest('.ai-side-panel')
+      || aiBar.closest('#terminal-panel')
+      || aiBar.parentElement;
     if (!container) return 0;
     const containerRect = container.getBoundingClientRect();
     const barRect = aiBar.getBoundingClientRect();
+
+    // In side mode there are no xterm rows in the side panel, use a simpler calculation
+    if (aiBar.closest('.ai-side-panel')) {
+      const available = barRect.top - containerRect.top - 8;
+      const maxByPercent = containerRect.height * 0.5;
+      return Math.max(Math.min(available, maxByPercent), 0);
+    }
+
     const row = container.querySelector('.xterm-rows > div');
     const lineHeight = row ? row.getBoundingClientRect().height : 18;
     const reserved = lineHeight * 4 + 8;
@@ -1405,7 +1859,7 @@ class AICapsuleManagerClass {
     };
 
     // ResizeObserver 监听容器
-    const container = aiBar.closest('#terminal-panel') || aiBar.parentElement;
+    const container = aiBar.closest('.ai-side-panel') || aiBar.closest('#terminal-panel') || aiBar.parentElement;
     if (container) {
       this._popupResizeObserver = new ResizeObserver(onResize);
       this._popupResizeObserver.observe(container);
@@ -1500,6 +1954,8 @@ class AICapsuleManagerClass {
     if (inst.unsubShellIdle) inst.unsubShellIdle();
     inst.agent.abort();
     inst.element.remove();
+    inst.sidePanel?.remove();
+    inst.sideResizeHandle?.remove();
     this.capsules.delete(sessionId);
   }
 
@@ -1513,6 +1969,7 @@ class AICapsuleManagerClass {
     this._barHidden = true;
     this.capsules.forEach((inst) => {
       inst.element.style.display = 'none';
+      // Side panel stays visible — it's independent from AI Bar
     });
     const panel = document.getElementById('terminal-panel');
     if (panel) panel.classList.add('ai-bar-hidden');
@@ -1528,7 +1985,11 @@ class AICapsuleManagerClass {
     if (this._floatingBtn) this._floatingBtn.style.display = 'none';
     if (this._lastShownSessionId) {
       const inst = this.capsules.get(this._lastShownSessionId);
-      if (inst) inst.element.style.display = '';
+      if (inst) {
+        inst.element.style.display = '';
+        // Sync side-active class based on current state
+        inst.element.classList.toggle('ai-bar--side-active', inst.layoutMode === 'side' && inst.chatOpen);
+      }
     }
     TerminalRegistry.resizeAll();
   }

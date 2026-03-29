@@ -2,6 +2,7 @@ import { t } from './i18n';
 import { escapeHtml } from './status-bar';
 import { pulseIcon, thinkingIcon, stopIcon } from './ai-icons';
 import { renderMarkdown } from './ai-capsule-markdown';
+import { updateSideSendButton, getSideSendButton } from './ai-capsule-layout';
 import type { AICapsuleInstance } from './ai-capsule-types';
 import type { AgentCallbacks } from './ai-agent';
 
@@ -24,6 +25,8 @@ export function updateButtonHighlight(instance: AICapsuleInstance): void {
       llmBtn.title = `${t('aiSendPrompt')} (Ctrl+Enter)`;
     }
   }
+  // Sync side panel send button
+  updateSideSendButton(getSideSendButton(instance), instance.isStreaming);
 }
 
 export function updateChatTitle(instance: AICapsuleInstance, title?: string): void {

@@ -50,10 +50,12 @@ pub struct FileListProgressResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct FileOperationRequest {
-    pub operation: String, // "delete", "rename", "mkdir", "touch"
+    pub operation: String, // "delete", "rename", "mkdir", "touch", "chmod"
     pub path: String,
     #[serde(default)]
     pub new_path: String, // for rename
+    #[serde(default)]
+    pub mode: u32, // for chmod (octal permission bits)
 }
 
 #[derive(Debug, Serialize)]
@@ -155,6 +157,19 @@ pub fn handle_file_operation(payload: &[u8]) -> Vec<u8> {
             }
         }
         "rename" => std::fs::rename(&req.path, &req.new_path).map(|_| None),
+        "copy" => {
+            std::fs::copy(&req.path, &req.new_path).map(|_| None)
+        }
+        "symlink" => {
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&req.path, &req.new_path).map(|_| None)
+            }
+            #[cfg(not(unix))]
+            {
+                Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "symlink not supported on this platform"))
+            }
+        }
         "touch" => {
             if std::path::Path::new(&req.path).exists() {
                 let _ = filetime::set_file_mtime(
@@ -164,6 +179,17 @@ pub fn handle_file_operation(payload: &[u8]) -> Vec<u8> {
                 Ok(None)
             } else {
                 std::fs::File::create(&req.path).map(|_| None)
+            }
+        }
+        "chmod" => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&req.path, std::fs::Permissions::from_mode(req.mode)).map(|_| None)
+            }
+            #[cfg(not(unix))]
+            {
+                Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "chmod not supported on this platform"))
             }
         }
         "stat" => {
@@ -307,10 +333,20 @@ pub async fn handle_sftp_file_list(payload: &[u8], sftp: &SftpSession) -> Vec<u8
         }
     };
 
+    // 相对路径（如 "."）解析为绝对路径
+    let resolved_path = if !req.path.starts_with('/') {
+        match sftp.canonicalize(&req.path).await {
+            Ok(p) => { eprintln!("[sftp] canonicalize '{}' -> '{}'", req.path, p); p }
+            Err(e) => { eprintln!("[sftp] canonicalize '{}' FAILED: {}", req.path, e); req.path.clone() }
+        }
+    } else {
+        req.path.clone()
+    };
+
     let mut files = Vec::new();
     let mut error = None;
 
-    match sftp.read_dir(req.path.clone()).await {
+    match sftp.read_dir(resolved_path.clone()).await {
         Ok(read_dir) => {
             for entry in read_dir {
                 let name = entry.file_name();
@@ -335,7 +371,7 @@ pub async fn handle_sftp_file_list(payload: &[u8], sftp: &SftpSession) -> Vec<u8
         }
     }
 
-    let resp = FileListResponse { path: req.path, files, error };
+    let resp = FileListResponse { path: resolved_path, files, error };
     let data = serde_json::to_vec(&resp).unwrap_or_default();
     protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data)
 }
@@ -358,10 +394,20 @@ pub async fn handle_sftp_file_list_with_progress(
         }
     };
 
+    // 相对路径（如 "."）解析为绝对路径
+    let resolved_path = if !req.path.starts_with('/') {
+        match sftp.canonicalize(&req.path).await {
+            Ok(p) => { eprintln!("[sftp] canonicalize '{}' -> '{}'", req.path, p); p }
+            Err(e) => { eprintln!("[sftp] canonicalize '{}' FAILED: {}", req.path, e); req.path.clone() }
+        }
+    } else {
+        req.path.clone()
+    };
+
     let mut files = Vec::new();
     let mut error = None;
 
-    match sftp.read_dir(req.path.clone()).await {
+    match sftp.read_dir(resolved_path.clone()).await {
         Ok(read_dir) => {
             let entries: Vec<_> = read_dir.into_iter().collect();
             let total = entries.len();
@@ -406,7 +452,7 @@ pub async fn handle_sftp_file_list_with_progress(
         Err(e) => { error = Some(format!("{}", e)); }
     }
 
-    let resp = FileListResponse { path: req.path, files, error };
+    let resp = FileListResponse { path: resolved_path, files, error };
     let data = serde_json::to_vec(&resp).unwrap_or_default();
     session.send_to_client(client_id, protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data));
 }
@@ -445,6 +491,56 @@ pub async fn handle_sftp_file_operation(payload: &[u8], sftp: &SftpSession) -> V
         }
         "rename" => {
             sftp.rename(req.path.clone(), req.new_path.clone()).await.map(|_| None).map_err(|e| format!("{}", e))
+        }
+        "copy" => {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            match sftp.open(req.path.clone()).await {
+                Ok(mut src) => {
+                    match sftp.create(req.new_path.clone()).await {
+                        Ok(mut dst) => {
+                            let mut buf = vec![0u8; 1024 * 1024];
+                            loop {
+                                match src.read(&mut buf).await {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        if let Err(e) = dst.write_all(&buf[..n]).await {
+                                            return encode_file_op_error_with_op(&format!("write: {}", e), "copy");
+                                        }
+                                    }
+                                    Err(e) => return encode_file_op_error_with_op(&format!("read: {}", e), "copy"),
+                                }
+                            }
+                            Ok(None)
+                        }
+                        Err(e) => Err(format!("create dest: {}", e)),
+                    }
+                }
+                Err(e) => Err(format!("open source: {}", e)),
+            }
+        }
+        "symlink" => {
+            // OpenSSH reverses SSH_FXP_SYMLINK args vs RFC:
+            // RFC: (linkpath, targetpath), OpenSSH: (targetpath, linkpath)
+            // russh-sftp follows RFC, so swap args for OpenSSH compatibility
+            sftp.symlink(req.path.clone(), req.new_path.clone()).await
+                .map(|_| None)
+                .map_err(|e| format!("{}", e))
+        }
+        "touch" => {
+            match sftp.create(req.path.clone()).await {
+                Ok(file) => { drop(file); Ok(None) }
+                Err(e) => Err(format!("{}", e))
+            }
+        }
+        "chmod" => {
+            use russh_sftp::client::fs::Metadata as SftpMetadata;
+            let metadata = SftpMetadata {
+                permissions: Some(req.mode),
+                ..SftpMetadata::empty()
+            };
+            sftp.set_metadata(req.path.clone(), metadata).await
+                .map(|_| None)
+                .map_err(|e| format!("{}", e))
         }
         "stat" => {
             return match sftp.metadata(req.path.clone()).await {
@@ -538,8 +634,24 @@ pub async fn handle_sftp_file_save(payload: &[u8], sftp: &SftpSession) -> Vec<u8
     if path_len == 0 || payload.len() < 4 + path_len {
         return encode_msg_error("INVALID_REQUEST", "invalid path length");
     }
-    let path = String::from_utf8_lossy(&payload[4..4 + path_len]).to_string();
+    let raw_path = String::from_utf8_lossy(&payload[4..4 + path_len]).to_string();
     let content = &payload[4 + path_len..];
+
+    // If path is a symlink, resolve to real target so we don't replace the link.
+    // Try read_link directly — if it succeeds, the path is a symlink.
+    // This is more reliable than lstat (which some SFTP proxies like JumpServer may not support).
+    let path = match sftp.read_link(raw_path.clone()).await {
+        Ok(target) => {
+            // read_link may return a relative path — resolve against parent dir
+            if target.starts_with('/') {
+                target
+            } else {
+                let parent = raw_path.rfind('/').map(|i| &raw_path[..i]).unwrap_or(".");
+                format!("{}/{}", parent, target)
+            }
+        }
+        Err(_) => raw_path, // not a symlink or read_link unsupported
+    };
 
     // Atomic write: write to .meterm.edit.tmp, then rename
     let tmp_path = format!("{}.meterm.edit.tmp", path);

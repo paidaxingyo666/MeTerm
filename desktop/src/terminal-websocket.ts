@@ -74,7 +74,7 @@ export function handleIncomingMessage(
     }
 
     mt.terminal.write(outData);
-    mt.thumbnailTerminal.write(outData);
+    mt.thumbnailTerminal?.write(outData);
 
     if (!mt.hasOscTitle) {
       callbacks.updateShellTitle(mt);

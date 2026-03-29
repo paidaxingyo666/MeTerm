@@ -6,6 +6,7 @@ import type { HistoryEntry, AICapsuleInstance } from './ai-capsule-types';
 import { loadSettings } from './themes';
 import { extractCommand, queryTldr } from './tldr-help';
 import { showTldrPopup } from './tldr-card';
+import { getPopupScrollViewport } from './overlay-scrollbar';
 
 export function getHistoryKey(sessionId: string): string {
   const info = DrawerManager.getServerInfo(sessionId);
@@ -127,7 +128,8 @@ export function renderHistoryPanel(
   const panel = instance.element.querySelector('.ai-bar-history-panel') as HTMLDivElement;
   if (!panel) return;
 
-  panel.innerHTML = '';
+  const vp = getPopupScrollViewport(panel);
+  vp.innerHTML = '';
   deps.ensurePopupResizeHandle(panel, instance.element);
 
   const filtered = filter
@@ -138,7 +140,7 @@ export function renderHistoryPanel(
     const empty = document.createElement('div');
     empty.className = 'ai-history-empty';
     empty.textContent = filter ? t('aiHistoryEmpty') : t('aiHistoryEmpty');
-    panel.appendChild(empty);
+    vp.appendChild(empty);
     return;
   }
 
@@ -214,7 +216,7 @@ export function renderHistoryPanel(
       if (input) input.focus();
     });
 
-    panel.appendChild(row);
+    vp.appendChild(row);
   });
 }
 

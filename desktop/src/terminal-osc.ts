@@ -81,6 +81,8 @@ export function handleOscEvents(
         mt.shellState.lastCommand = ev.cmd ?? '';
         mt.shellState.phase = 'ready';
         mt.shellState.hookInjected = true;
+        mt.shellState.promptRow = mt.terminal.buffer.active.baseY + mt.terminal.buffer.active.cursorY;
+        mt.shellState.promptCol = mt.terminal.buffer.active.cursorX;
         // Only prefetch local directories — SSH sessions use SFTP via 'cwd' handler
         if (includePrefetch && ev.cwd && !DrawerManager.getServerInfo(mt.id)) {
           prefetchDirCache(ev.cwd);

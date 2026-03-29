@@ -177,15 +177,14 @@ export function setupDomEventListeners(): void {
       activeTab.status = mt.ended ? 'ended' : mt.ws ? 'connected' : 'disconnected';
     }
 
-    // Switch drawer/AI to focused session (panel level, shared)
+    // Switch drawer/AI bar to focused session (side panel stays put within same tab)
     DrawerManager.hideAll();
-    AICapsuleManager.hideAll();
     if (DrawerManager.has(sessionId)) {
       DrawerManager.mountTo(sessionId, terminalPanelEl);
       DrawerManager.show(sessionId);
     }
-    AICapsuleManager.mountTo(sessionId, terminalPanelEl);
-    AICapsuleManager.show(sessionId);
+    // Only switch AI Bar, keep side panel as-is (shared within tab)
+    AICapsuleManager.switchBarOnly(sessionId, terminalPanelEl);
     TerminalRegistry.focusTerminal(sessionId);
 
     TabManager.notify();
@@ -387,15 +386,30 @@ export function setupDomEventListeners(): void {
     renderTabs();
   }) as EventListener);
 
-  // Detect system wake from sleep/hibernate
+  // Detect system wake from sleep/lock-screen and restore terminal rendering.
+  //
+  // Long sleep (>30s): IPC/WebSocket dead → reconnectAll() rebuilds them.
+  //   The server sends RIS + ring-buffer replay.  reconnectAll() handles
+  //   everything: mouse-mode restore + SIGWINCH after replay finishes.
+  //   Here we only fix IntersectionObserver (no SIGWINCH, no duplicate work).
+  //
+  // Short sleep: no reconnect, just restore rendering + SIGWINCH.
   let lastVisibleAt = Date.now();
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       const elapsed = Date.now() - lastVisibleAt;
-      if (elapsed > 30_000 && metermReady) {
+      const longSleep = elapsed > 30_000;
+
+      if (longSleep && metermReady) {
         console.log(`[meterm] system wake detected (gap=${Math.round(elapsed / 1000)}s), reconnecting sessions`);
         TerminalRegistry.reconnectAll(port, authToken);
+        // Only fix IntersectionObserver rendering; reconnectAll handles SIGWINCH.
+        setTimeout(() => { void TerminalRegistry.refreshAfterWake(true); }, 200);
+      } else if (metermReady) {
+        // Brief lock-screen — just restore rendering + SIGWINCH.
+        setTimeout(() => { void TerminalRegistry.refreshAfterWake(); }, 200);
       }
+
       lastVisibleAt = Date.now();
     } else {
       lastVisibleAt = Date.now();

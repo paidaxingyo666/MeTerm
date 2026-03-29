@@ -420,20 +420,31 @@ pub async fn test_connection(config: &SshConfig) -> Result<(), String> {
 // Proxy connection helpers
 // ---------------------------------------------------------------------------
 
+/// TCP connect timeout in seconds.
+const TCP_CONNECT_TIMEOUT_SECS: u64 = 8;
+
 /// Establish a TCP connection to the SSH target, optionally through a proxy.
 async fn establish_connection(config: &SshConfig) -> Result<tokio::net::TcpStream, String> {
     let target = format!("{}:{}", config.host, config.port);
+    let timeout = std::time::Duration::from_secs(TCP_CONNECT_TIMEOUT_SECS);
 
-    match config.proxy_type.as_str() {
-        "socks5" => connect_via_socks5(config, &target).await,
-        "http" => connect_via_http_connect(config, &target).await,
-        _ => {
-            // Direct connection
-            tokio::net::TcpStream::connect(&target)
-                .await
-                .map_err(|e| format!("TCP connect {}: {}", target, e))
-        }
+    let fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<tokio::net::TcpStream, String>> + Send>> = match config.proxy_type.as_str() {
+        "socks5" => Box::pin(connect_via_socks5(config, &target)),
+        "http" => Box::pin(connect_via_http_connect(config, &target)),
+        _ => Box::pin(connect_direct(&target)),
+    };
+
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(result) => result,
+        Err(_) => Err(format!("connection timed out ({}s): host {} unreachable", TCP_CONNECT_TIMEOUT_SECS, target)),
     }
+}
+
+/// Direct TCP connection (no proxy).
+async fn connect_direct(target: &str) -> Result<tokio::net::TcpStream, String> {
+    tokio::net::TcpStream::connect(target)
+        .await
+        .map_err(|e| format!("TCP connect {}: {}", target, e))
 }
 
 /// Connect through a SOCKS5 proxy.

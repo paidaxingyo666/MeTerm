@@ -95,9 +95,8 @@
   margin: 0 5px 5px;
   z-index: 10000;
   overflow: visible;
-  background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
-  border: 1px solid var(--border-primary);
   order: 1;
+  /* Inherit Liquid Glass styles from .ai-bar base rule */
 }
 
 /* Floating button to restore hidden AI bar */
@@ -106,11 +105,14 @@
   bottom: 12px;
   right: 12px;
   z-index: 300;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  border: 1px solid var(--border-primary);
-  background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
+  /* Liquid Glass */
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.2),
+              inset 0 -0.5px 0 rgba(0, 0, 0, 0.1);
   backdrop-filter: blur(20px) saturate(1.4);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);
   color: var(--text-secondary);
@@ -118,15 +120,21 @@
   display: none;
   align-items: center;
   justify-content: center;
-  transition: color 0.15s ease, transform 0.15s ease;
+  transition: color 0.15s ease, transform 0.15s ease, background 0.15s ease;
 }
 .ai-bar-floating-show:hover {
   color: var(--accent);
-  transform: scale(1.2);
+  background: rgba(255, 255, 255, 0.08);
+  transform: scale(1.1);
 }
-
 .ai-bar-floating-show:active {
-  transform: scale(1.05);
+  transform: scale(0.95);
+}
+[data-theme="light"] .ai-bar-floating-show {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.45);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.6),
+              inset 0 -0.5px 0 rgba(0, 0, 0, 0.04);
 }
 
 /* ─── AI Model Selector ─── */
@@ -174,12 +182,13 @@
   min-width: 180px;
   max-width: 240px;
   overflow-y: auto;
-  background: rgba(var(--bg-toolbar), var(--ai-bar-opacity));
-  backdrop-filter: blur(20px) saturate(1.4);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  border: 1px solid var(--border-primary);
+  /* Liquid Glass */
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
-  box-shadow: 0 -2px 8px var(--shadow-panel);
+  box-shadow: none;
   padding: 3px;
   z-index: 310;
   animation: chat-slide-up 0.15s ease-out;

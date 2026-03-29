@@ -20,6 +20,7 @@ import { ensureMeTermReady } from './session-actions';
 import { renderTabs } from './tab-renderer';
 import { createSSHSession, addConnection, addRecentConnection, showAuthFailedDialog, updateSavedPassword, type SSHConnectionConfig } from './ssh';
 import { loadSettings } from './themes';
+import { message } from '@tauri-apps/plugin-dialog';
 import {
   port, authToken,
   sshConfigMap,
@@ -169,5 +170,13 @@ export async function handleSSHConnect(config: SSHConnectionConfig): Promise<voi
     }
     renderTabs();
     StatusBar.setError(`${t('sshFailed')}: ${errStr}`);
+
+    // Show system dialog for connection-level errors (timeout, unreachable, refused)
+    if (/timed out|unreachable|refused|network|TCP connect/i.test(errStr)) {
+      await message(`${config.host}:${config.port}\n\n${errStr}`, {
+        title: t('sshFailed'),
+        kind: 'error',
+      });
+    }
   }
 }

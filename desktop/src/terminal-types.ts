@@ -19,7 +19,7 @@ export interface ManagedTerminal {
   shellTitle: string;
   hasOscTitle: boolean;
   terminal: Terminal;
-  thumbnailTerminal: Terminal;
+  thumbnailTerminal: Terminal | null;
   fitAddon: FitAddon;
   canvasAddon: CanvasAddon | null;
   webglAddon: WebglAddon | null;
@@ -75,5 +75,9 @@ export interface ManagedTerminal {
     agentCommandSeq: number;
     /** Last executed command reported by shell hook (fc -ln -1) */
     lastCommand: string;
+    /** Absolute row where the current prompt starts (set by OSC 7768 shell event) */
+    promptRow: number;
+    /** Column where user input begins (after prompt text, set by OSC 7768 shell event) */
+    promptCol: number;
   };
 }

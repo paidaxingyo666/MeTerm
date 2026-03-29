@@ -287,16 +287,18 @@ export function renderToolbarActions(): void {
   };
   toolbarLeftEl.appendChild(homeBtn);
 
-  const galleryBtn = document.createElement('button');
-  galleryBtn.className = `toolbar-action-btn ${isGalleryView ? 'active' : ''}`;
-  galleryBtn.type = 'button';
-  galleryBtn.title = t('sessionsGallery');
-  galleryBtn.innerHTML = `<span class="tab-icon">${icon('gallery')}</span>`;
-  galleryBtn.onclick = () => {
-    showGalleryView();
-    renderTabs();
-  };
-  toolbarLeftEl.appendChild(galleryBtn);
+  if (settings?.enableThumbnail !== false) {
+    const galleryBtn = document.createElement('button');
+    galleryBtn.className = `toolbar-action-btn ${isGalleryView ? 'active' : ''}`;
+    galleryBtn.type = 'button';
+    galleryBtn.title = t('sessionsGallery');
+    galleryBtn.innerHTML = `<span class="tab-icon">${icon('gallery')}</span>`;
+    galleryBtn.onclick = () => {
+      showGalleryView();
+      renderTabs();
+    };
+    toolbarLeftEl.appendChild(galleryBtn);
+  }
 
   const newBtn = document.createElement('button');
   newBtn.className = 'toolbar-action-btn';

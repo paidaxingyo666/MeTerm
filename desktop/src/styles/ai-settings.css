@@ -504,14 +504,14 @@
   bottom: calc(100% + 8px);
   right: 0;
   min-width: 200px;
-  background: rgba(var(--bg-toolbar, 33, 33, 35), 0.96);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: none;
+  /* Liquid Glass */
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   padding: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3),
-              0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  box-shadow: none;
   z-index: 9999;
 }
 
@@ -604,7 +604,9 @@
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.5);
 }
 [data-theme="light"] .ai-trust-dropdown {
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.45);
+  box-shadow: none;
 }
 [data-theme="light"] .ai-trust-item:hover {
   background: rgba(0, 0, 0, 0.04);

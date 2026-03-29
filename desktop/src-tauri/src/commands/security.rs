@@ -187,8 +187,12 @@ pub async fn revoke_all_clients(state: State<'_, Arc<ServerState>>) -> Result<St
 #[tauri::command]
 pub fn set_proxy_mode(mode: String) {
     let bypass = mode != "system";
-    crate::server::jumpserver::BYPASS_PROXY.store(bypass, std::sync::atomic::Ordering::Relaxed);
-    // Clear cached JumpServer clients so they pick up the new proxy setting
-    crate::server::jumpserver::clear_client_pool();
-    eprintln!("[settings] proxy mode: {} (bypass={})", mode, bypass);
+    let old_bypass = crate::server::jumpserver::BYPASS_PROXY.swap(bypass, std::sync::atomic::Ordering::Relaxed);
+    // 仅在代理模式真正改变时才清空 client pool，避免重复调用时丢失认证状态
+    if old_bypass != bypass {
+        crate::server::jumpserver::clear_client_pool();
+        eprintln!("[settings] proxy mode changed: {} (bypass={})", mode, bypass);
+    } else {
+        eprintln!("[settings] proxy mode: {} (bypass={}, unchanged)", mode, bypass);
+    }
 }

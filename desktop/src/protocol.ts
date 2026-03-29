@@ -157,9 +157,10 @@ export interface ProcessListResponse {
 export type ServerInfoResponse = SysInfoResponse | ProcessListResponse;
 
 export interface FileOperationRequest {
-  operation: 'delete' | 'rename' | 'mkdir' | 'touch' | 'stat';
+  operation: 'delete' | 'rename' | 'mkdir' | 'touch' | 'stat' | 'chmod' | 'copy' | 'symlink';
   path: string;
   new_path?: string;
+  mode?: number;
 }
 
 export interface ErrorResponse {

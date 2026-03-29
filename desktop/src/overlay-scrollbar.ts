@@ -145,6 +145,14 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
     e.preventDefault();
   });
 
+  // Forward wheel events on the scrollbar to the viewport.
+  // The track has pointer-events: auto (so it can be clicked/dragged), which
+  // means wheel events over it are captured instead of reaching the viewport.
+  // Re-dispatch them so scrolling works when hovering over the scrollbar area.
+  bar.addEventListener('wheel', (e: WheelEvent) => {
+    viewport.dispatchEvent(new WheelEvent('wheel', e));
+  }, { passive: true });
+
   // --- Horizontal scrollbar (optional) ---
   let hBar: HTMLDivElement | null = null;
   let hThumb: HTMLDivElement | null = null;
@@ -249,5 +257,22 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
   }
 
   return { sync, destroy };
+}
+
+/**
+ * Get or create an inner scroll viewport inside a popup panel.
+ * Panel acts as container (overflow: hidden), viewport acts as scrollable area.
+ * This allows createOverlayScrollbar to work with absolute-positioned popups
+ * where inline mode (container === viewport) would misposition the scrollbar.
+ */
+export function getPopupScrollViewport(panel: HTMLElement): HTMLElement {
+  let vp = panel.querySelector('.popup-scroll-viewport') as HTMLElement;
+  if (!vp) {
+    vp = document.createElement('div');
+    vp.className = 'popup-scroll-viewport';
+    panel.appendChild(vp);
+    createOverlayScrollbar({ viewport: vp, container: panel });
+  }
+  return vp;
 }
 
