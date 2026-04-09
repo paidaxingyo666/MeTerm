@@ -11,6 +11,8 @@ export interface Translations {
   enableVibrancy: string;
   fontSize: string;
   fontFamily: string;
+  cjkFontFamily: string;
+  cjkFontAuto: string;
   enableNerdFont: string;
   enableLigatures: string;
   fontWeight: string;
@@ -120,6 +122,55 @@ export interface Translations {
   sshPasswordUpdated: string;
   drawerTabFiles: string;
   drawerTabProcesses: string;
+  // File sidebar
+  sidebarRefresh: string;
+  sidebarNewFolder: string;
+  sidebarUpload: string;
+  sidebarToggleHidden: string;
+  sidebarLockRoot: string;
+  sidebarUnlockRoot: string;
+  sidebarSwitchView: string;
+  sidebarNewFolderPrompt: string;
+  sidebarItems: string;
+  sidebarInfoDirs: string;
+  sidebarInfoFiles: string;
+  sidebarMoveTitle: string;
+  sidebarMoveConfirm: string;
+  sidebarMoveCancel: string;
+  sidebarMoveDest: string;
+  sidebarEmptyDir: string;
+  sidebarTreeMore: string;
+  fileManager: string;
+  ctxMenuOpen: string;
+  ctxMenuOpenWith: string;
+  ctxMenuBuiltinEditor: string;
+  ctxMenuSystemDefault: string;
+  ctxMenuDownloadN: string;
+  ctxMenuDownloadFolder: string;
+  ctxMenuDownload: string;
+  ctxMenuUpload: string;
+  ctxMenuUploadToFolder: string;
+  ctxMenuUploadToCurrent: string;
+  ctxMenuNewFile: string;
+  ctxMenuNewFolder: string;
+  ctxMenuCopyPath: string;
+  ctxMenuCopyAbsPath: string;
+  ctxMenuTerminalOps: string;
+  ctxMenuCopyTo: string;
+  ctxMenuCopyToN: string;
+  ctxMenuMoveTo: string;
+  ctxMenuMoveToN: string;
+  ctxMenuSymlink: string;
+  ctxMenuChmod: string;
+  ctxMenuRename: string;
+  ctxMenuDelete: string;
+  ctxMenuDeleteN: string;
+  ctxMenuProperties: string;
+  ctxMenuMore: string;
+  ctxMenuView: string;
+  ctxMenuBookmark: string;
+  ctxMenuRefresh: string;
+  ctxMenuShowHidden: string;
   serverInfoToggle: string;
   serverInfoHost: string;
   serverInfoUser: string;
@@ -187,6 +238,34 @@ export interface Translations {
   aiAgentTrustFullAuto: string;
   aiAgentMaxIterations: string;
   aiAgentUnlimited: string;
+  aiPermissionMode: string;
+  aiPermissionModeAsk: string;
+  aiPermissionModeAcceptSafe: string;
+  aiPermissionModeAcceptAll: string;
+  aiPermissionModePlan: string;
+  aiPermissionModeBypass: string;
+  aiPermissionModeHint: string;
+  aiPermissionRules: string;
+  aiPermissionRulesAdd: string;
+  aiPermissionRulesNone: string;
+  aiPermissionActionAllow: string;
+  aiPermissionActionDeny: string;
+  aiPermissionActionAsk: string;
+  aiPermissionRuleTool: string;
+  aiPermissionRuleCmdMatch: string;
+  aiPermissionRulePathMatch: string;
+  aiAuditLog: string;
+  aiAuditLogOpen: string;
+  aiAuditLogEmpty: string;
+  aiAuditLogClose: string;
+  aiAuditLogClear: string;
+  aiAuditLogReload: string;
+  aiAuditLogClearConfirm: string;
+  aiNotifyWaitingTitle: string;
+  aiNotifyCompleteTitle: string;
+  aiNotifyCompleteBody: string;
+  aiNotifyErrorTitle: string;
+  aiNotifyErrorBody: string;
   aiTestConnection: string;
   aiTestSuccess: string;
   aiTestFailed: string;
@@ -551,6 +630,9 @@ export interface Translations {
   editorDisconnected: string;
   editorReadOnly: string;
   editorLoading: string;
+  editorMdPreview: string;
+  editorMdPreviewOff: string;
+  editorWordWrap: string;
 }
 
 const translations: Record<Language, Translations> = {
@@ -565,6 +647,8 @@ const translations: Record<Language, Translations> = {
     enableVibrancy: 'Background Blur (Vibrancy)',
     fontSize: 'Font Size',
     fontFamily: 'Font',
+    cjkFontFamily: 'CJK Font',
+    cjkFontAuto: 'System Default',
     enableNerdFont: 'Nerd Font Icons',
     enableLigatures: 'Ligatures',
     fontWeight: 'Font Weight',
@@ -674,6 +758,54 @@ const translations: Record<Language, Translations> = {
     sshPasswordUpdated: 'Password updated and saved.',
     drawerTabFiles: 'Files',
     drawerTabProcesses: 'Processes',
+    sidebarRefresh: 'Refresh',
+    sidebarNewFolder: 'New folder',
+    sidebarUpload: 'Upload',
+    sidebarToggleHidden: 'Toggle hidden files',
+    sidebarLockRoot: 'Unlock to follow terminal directory',
+    sidebarUnlockRoot: 'Lock current directory',
+    sidebarSwitchView: 'Switch view',
+    sidebarNewFolderPrompt: 'Enter folder name:',
+    sidebarItems: 'items',
+    sidebarInfoDirs: 'folders',
+    sidebarInfoFiles: 'files',
+    sidebarMoveTitle: 'Move {count} item(s)?',
+    sidebarMoveConfirm: 'Move',
+    sidebarMoveCancel: 'Cancel',
+    sidebarMoveDest: 'Destination',
+    sidebarEmptyDir: 'Empty',
+    sidebarTreeMore: '{n} more, click to load',
+    fileManager: 'File Manager',
+    ctxMenuOpen: 'Open',
+    ctxMenuOpenWith: 'Open With',
+    ctxMenuBuiltinEditor: 'Built-in Editor',
+    ctxMenuSystemDefault: 'System Default',
+    ctxMenuDownloadN: 'Download {count} Items',
+    ctxMenuDownloadFolder: 'Download Folder',
+    ctxMenuDownload: 'Download',
+    ctxMenuUpload: 'Upload',
+    ctxMenuUploadToFolder: 'Upload to This Folder',
+    ctxMenuUploadToCurrent: 'Upload to Current Path',
+    ctxMenuNewFile: 'New File',
+    ctxMenuNewFolder: 'New Folder',
+    ctxMenuCopyPath: 'Copy Path',
+    ctxMenuCopyAbsPath: 'Copy Absolute Path',
+    ctxMenuTerminalOps: 'Terminal Commands',
+    ctxMenuCopyTo: 'Copy To...',
+    ctxMenuCopyToN: 'Copy {count} Items To...',
+    ctxMenuMoveTo: 'Move To...',
+    ctxMenuMoveToN: 'Move {count} Items To...',
+    ctxMenuSymlink: 'Create Symlink',
+    ctxMenuChmod: 'Change Permissions',
+    ctxMenuRename: 'Rename',
+    ctxMenuDelete: 'Delete',
+    ctxMenuDeleteN: 'Delete {count} Items',
+    ctxMenuProperties: 'Properties',
+    ctxMenuMore: 'More',
+    ctxMenuView: 'View',
+    ctxMenuBookmark: 'Bookmark Current Directory',
+    ctxMenuRefresh: 'Refresh',
+    ctxMenuShowHidden: 'Show Hidden Files',
     serverInfoToggle: 'Server Info',
     serverInfoHost: 'Host',
     serverInfoUser: 'User',
@@ -735,6 +867,34 @@ const translations: Record<Language, Translations> = {
     aiTemperature: 'Temperature',
     aiMaxTokens: 'Max Tokens',
     aiContextLines: 'Context Lines',
+    aiPermissionMode: 'Permission Mode',
+    aiPermissionModeAsk: 'Ask every time',
+    aiPermissionModeAcceptSafe: 'Accept safe',
+    aiPermissionModeAcceptAll: 'Accept all',
+    aiPermissionModePlan: 'Plan (read-only)',
+    aiPermissionModeBypass: 'Bypass (no prompts)',
+    aiPermissionModeHint: 'Overrides the trust level. Plan mode disables every write tool.',
+    aiPermissionRules: 'Permission Rules',
+    aiPermissionRulesAdd: 'Add rule',
+    aiPermissionRulesNone: 'No custom rules. Defaults: deny writes to ~/.ssh & .env, allow read-only git/ls/cat.',
+    aiPermissionActionAllow: 'Allow',
+    aiPermissionActionDeny: 'Deny',
+    aiPermissionActionAsk: 'Ask',
+    aiPermissionRuleTool: 'Tool',
+    aiPermissionRuleCmdMatch: 'Command regex',
+    aiPermissionRulePathMatch: 'Path regex',
+    aiAuditLog: 'Agent Audit Log',
+    aiAuditLogOpen: 'Open audit log',
+    aiAuditLogEmpty: '(No audit entries yet)',
+    aiAuditLogClose: 'Close',
+    aiAuditLogClear: 'Clear log',
+    aiAuditLogReload: 'Reload',
+    aiAuditLogClearConfirm: 'Clear all audit entries? This cannot be undone.',
+    aiNotifyWaitingTitle: 'AI agent needs your attention',
+    aiNotifyCompleteTitle: 'AI agent finished',
+    aiNotifyCompleteBody: 'The agent turn completed.',
+    aiNotifyErrorTitle: 'AI agent stopped with an error',
+    aiNotifyErrorBody: 'The agent encountered an unrecoverable error.',
     aiAgentTrustLevel: 'Agent Trust Level',
     aiAgentTrustManual: 'Manual — confirm all actions',
     aiAgentTrustSemiAuto: 'Semi-Auto — confirm risky actions',
@@ -1104,6 +1264,9 @@ const translations: Record<Language, Translations> = {
     editorDisconnected: 'Session disconnected',
     editorReadOnly: 'Read-only',
     editorLoading: 'Loading...',
+    editorMdPreview: 'Preview',
+    editorMdPreviewOff: 'Hide Preview',
+    editorWordWrap: 'Wrap',
   },
   zh: {
     appName: 'MeTerm',
@@ -1116,6 +1279,8 @@ const translations: Record<Language, Translations> = {
     enableVibrancy: '背景模糊（毛玻璃）',
     fontSize: '字体大小',
     fontFamily: '字体',
+    cjkFontFamily: '中文字体',
+    cjkFontAuto: '系统默认',
     enableNerdFont: 'Nerd Font 图标',
     enableLigatures: '编程连字',
     fontWeight: '字重',
@@ -1225,6 +1390,54 @@ const translations: Record<Language, Translations> = {
     sshPasswordUpdated: '密码已更新并保存。',
     drawerTabFiles: '文件',
     drawerTabProcesses: '进程',
+    sidebarRefresh: '刷新',
+    sidebarNewFolder: '新建文件夹',
+    sidebarUpload: '上传',
+    sidebarToggleHidden: '显示/隐藏文件',
+    sidebarLockRoot: '解锁以跟随终端目录',
+    sidebarUnlockRoot: '锁定当前目录',
+    sidebarSwitchView: '切换视图',
+    sidebarNewFolderPrompt: '请输入文件夹名称：',
+    sidebarItems: '项',
+    sidebarInfoDirs: '个文件夹',
+    sidebarInfoFiles: '个文件',
+    sidebarMoveTitle: '移动 {count} 个项目？',
+    sidebarMoveConfirm: '移动',
+    sidebarMoveCancel: '取消',
+    sidebarMoveDest: '目标位置',
+    sidebarEmptyDir: '空目录',
+    sidebarTreeMore: '还有 {n} 项,点击加载',
+    fileManager: '文件管理',
+    ctxMenuOpen: '打开',
+    ctxMenuOpenWith: '打开方式',
+    ctxMenuBuiltinEditor: '内置编辑器',
+    ctxMenuSystemDefault: '系统默认',
+    ctxMenuDownloadN: '下载 {count} 个文件',
+    ctxMenuDownloadFolder: '下载文件夹',
+    ctxMenuDownload: '下载',
+    ctxMenuUpload: '上传',
+    ctxMenuUploadToFolder: '上传到此文件夹',
+    ctxMenuUploadToCurrent: '上传到当前路径',
+    ctxMenuNewFile: '新建文件',
+    ctxMenuNewFolder: '新建文件夹',
+    ctxMenuCopyPath: '复制路径',
+    ctxMenuCopyAbsPath: '复制绝对路径',
+    ctxMenuTerminalOps: '终端操作',
+    ctxMenuCopyTo: '复制到...',
+    ctxMenuCopyToN: '复制 {count} 个文件到...',
+    ctxMenuMoveTo: '移动到...',
+    ctxMenuMoveToN: '移动 {count} 个文件到...',
+    ctxMenuSymlink: '创建符号链接',
+    ctxMenuChmod: '修改权限',
+    ctxMenuRename: '重命名',
+    ctxMenuDelete: '删除',
+    ctxMenuDeleteN: '删除 {count} 个文件',
+    ctxMenuProperties: '详情',
+    ctxMenuMore: '更多',
+    ctxMenuView: '视图',
+    ctxMenuBookmark: '收藏当前目录',
+    ctxMenuRefresh: '刷新',
+    ctxMenuShowHidden: '显示隐藏文件',
     serverInfoToggle: '服务器信息',
     serverInfoHost: '主机',
     serverInfoUser: '用户',
@@ -1286,6 +1499,34 @@ const translations: Record<Language, Translations> = {
     aiTemperature: '温度',
     aiMaxTokens: '最大 Token',
     aiContextLines: '上下文行数',
+    aiPermissionMode: '权限模式',
+    aiPermissionModeAsk: '每次询问',
+    aiPermissionModeAcceptSafe: '接受安全操作',
+    aiPermissionModeAcceptAll: '全部接受',
+    aiPermissionModePlan: '计划模式(只读)',
+    aiPermissionModeBypass: '绕过(不提示)',
+    aiPermissionModeHint: '覆盖信任级别。计划模式禁用所有写入工具。',
+    aiPermissionRules: '权限规则',
+    aiPermissionRulesAdd: '添加规则',
+    aiPermissionRulesNone: '无自定义规则。默认:禁止写入 ~/.ssh 和 .env,允许只读的 git/ls/cat。',
+    aiPermissionActionAllow: '允许',
+    aiPermissionActionDeny: '拒绝',
+    aiPermissionActionAsk: '询问',
+    aiPermissionRuleTool: '工具',
+    aiPermissionRuleCmdMatch: '命令正则',
+    aiPermissionRulePathMatch: '路径正则',
+    aiAuditLog: 'Agent 审计日志',
+    aiAuditLogOpen: '查看审计日志',
+    aiAuditLogEmpty: '(暂无审计记录)',
+    aiAuditLogClose: '关闭',
+    aiAuditLogClear: '清空日志',
+    aiAuditLogReload: '刷新',
+    aiAuditLogClearConfirm: '确定清空所有审计记录?此操作不可撤销。',
+    aiNotifyWaitingTitle: 'AI Agent 需要确认',
+    aiNotifyCompleteTitle: 'AI Agent 已完成',
+    aiNotifyCompleteBody: 'Agent 已完成当前任务。',
+    aiNotifyErrorTitle: 'AI Agent 遇到错误',
+    aiNotifyErrorBody: 'Agent 执行中止,请查看详情。',
     aiAgentTrustLevel: 'Agent 信任级别',
     aiAgentTrustManual: '手动 — 所有操作均需确认',
     aiAgentTrustSemiAuto: '半自动 — 仅危险操作需确认',
@@ -1655,6 +1896,9 @@ const translations: Record<Language, Translations> = {
     editorDisconnected: '会话已断开',
     editorReadOnly: '只读',
     editorLoading: '加载中...',
+    editorMdPreview: '预览',
+    editorMdPreviewOff: '关闭预览',
+    editorWordWrap: '换行',
   },
 };
 

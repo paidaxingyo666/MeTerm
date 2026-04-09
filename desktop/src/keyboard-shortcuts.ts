@@ -24,6 +24,7 @@ import {
 } from './app-state';
 import { showQuickHelp } from './tldr-card';
 import { togglePip, isPipActive } from './pip';
+import { saveSettings } from './themes';
 
 export function setupKeyboardShortcuts(): void {
   document.addEventListener('keydown', async (event) => {
@@ -65,6 +66,32 @@ export function setupKeyboardShortcuts(): void {
       event.stopImmediatePropagation();
       void togglePip();
       return;
+    }
+
+    // ── Font size: Cmd/Ctrl + = or + (increase), - (decrease), 0 (reset) ──
+    // Placed before the Windows terminal-focus guard so it works even when
+    // the terminal is focused (matches iTerm2 / most terminal emulators).
+    {
+      const isIncrease = (key === '=' || key === '+') && !event.altKey;
+      const isDecrease = key === '-' && !event.shiftKey && !event.altKey;
+      const isReset    = key === '0' && !event.shiftKey && !event.altKey;
+      if (isIncrease || isDecrease || isReset) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        const FONT_MIN = 8, FONT_MAX = 32, FONT_DEFAULT = 14;
+        const cur = settings.fontSize ?? FONT_DEFAULT;
+        let next: number;
+        if (isIncrease) next = Math.min(FONT_MAX, cur + 1);
+        else if (isDecrease) next = Math.max(FONT_MIN, cur - 1);
+        else next = FONT_DEFAULT;
+        settings.fontSize = next;
+        saveSettings(settings);
+        void TerminalRegistry.setSettings(settings).then(() => {
+          requestAnimationFrame(() => TerminalRegistry.resizeAll());
+        });
+        return;
+      }
     }
 
     // On Windows, skip app-level shortcuts when focus is inside the xterm terminal

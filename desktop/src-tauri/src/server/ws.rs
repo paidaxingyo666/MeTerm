@@ -7,10 +7,12 @@ use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Extension, Path, Query, WebSocketUpgrade};
 use axum::response::IntoResponse;
+use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use tokio::sync::oneshot;
 
 use super::protocol;
-use super::session::client::Client;
+use super::session::client::{Client, WsReceivers};
 use super::session::state::ClientRole;
 use super::ServerState;
 
@@ -37,32 +39,32 @@ pub async fn ws_upgrade(
 
 /// Main WebSocket handler — runs after upgrade.
 async fn handle_ws(
-    mut socket: WebSocket,
+    socket: WebSocket,
     state: Arc<ServerState>,
     session_id: String,
     query: WsQuery,
     remote_addr: String,
 ) {
-    eprintln!("[ws] new connection for session={}, client_id={:?}, mode={:?}", session_id, query.client_id, query.mode);
+    eprintln!(
+        "[ws] new connection for session={}, client_id={:?}, mode={:?}",
+        session_id, query.client_id, query.mode
+    );
 
     // 1. Find session
     let session = match state.session_manager.get(&session_id) {
         Some(s) => s,
         None => {
             let err = protocol::encode_error(protocol::ERR_SESSION_NOT_FOUND, "session not found");
-            let _ = socket.send(Message::Binary(err.into())).await;
+            let (mut sender, _) = socket.split();
+            let _ = sender.send(Message::Binary(err.into())).await;
             return;
         }
     };
 
     // 2. Handle reconnect or create new client
-    let (client, mut rx) = if let Some(ref cid) = query.client_id {
+    let (client, receivers) = if let Some(ref cid) = query.client_id {
         // Attempt reconnect
-        match session.reconnect_client(
-            cid,
-            remote_addr.clone(),
-            state.config.reconnect_grace,
-        ) {
+        match session.reconnect_client(cid, remote_addr.clone(), state.config.reconnect_grace) {
             Ok(rx) => {
                 let clients = session.clients.lock().unwrap();
                 let client = clients.get(cid).cloned().unwrap();
@@ -83,7 +85,14 @@ async fn handle_ws(
     } else {
         client.role.as_str()
     };
-    eprintln!("[ws] client={} role={} master={}", client_id, actual_role, session.master());
+    eprintln!(
+        "[ws] client={} role={} master={}",
+        client_id,
+        actual_role,
+        session.master()
+    );
+
+    let (mut sender, mut receiver) = socket.split();
 
     // 3. Send Hello
     let hello = protocol::encode_hello(
@@ -93,7 +102,7 @@ async fn handle_ws(
         *session.last_cols.lock().unwrap(),
         *session.last_rows.lock().unwrap(),
     );
-    if socket.send(Message::Binary(hello.into())).await.is_err() {
+    if sender.send(Message::Binary(hello.into())).await.is_err() {
         return;
     }
 
@@ -104,28 +113,62 @@ async fn handle_ws(
         client.role as u8
     };
     let role_msg = protocol::encode_role_change(role_byte);
-    let _ = socket.send(Message::Binary(role_msg.into())).await;
+    let _ = sender.send(Message::Binary(role_msg.into())).await;
 
     // 5. Flush ring buffer
     session.flush_ring_buffer(&client);
+
+    let WsReceivers {
+        mut priority_rx,
+        mut bulk_rx,
+    } = receivers;
+    let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
+    let writer = tokio::spawn(async move {
+        let mut priority_open = true;
+        let mut bulk_open = true;
+
+        while priority_open || bulk_open {
+            tokio::select! {
+                biased;
+                msg = priority_rx.recv(), if priority_open => {
+                    match msg {
+                        Some(data) => {
+                            if sender.send(Message::Binary(data.into())).await.is_err() {
+                                break;
+                            }
+                            while let Ok(data) = priority_rx.try_recv() {
+                                if sender.send(Message::Binary(data.into())).await.is_err() {
+                                    let _ = writer_done_tx.send(());
+                                    return;
+                                }
+                            }
+                        }
+                        None => priority_open = false,
+                    }
+                }
+                msg = bulk_rx.recv(), if bulk_open => {
+                    match msg {
+                        Some(data) => {
+                            if sender.send(Message::Binary(data.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => bulk_open = false,
+                    }
+                }
+            }
+        }
+
+        let _ = writer_done_tx.send(());
+    });
 
     // 6. Bidirectional message loop
     let conn_gen = client.conn_gen();
     loop {
         tokio::select! {
-            // Outgoing: session → WebSocket client
-            msg = rx.recv() => {
-                match msg {
-                    Some(data) => {
-                        if socket.send(Message::Binary(data.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                    None => break,
-                }
-            }
+            _ = &mut writer_done_rx => break,
             // Incoming: WebSocket client → session
-            msg = socket.recv() => {
+            msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Binary(data))) => {
                         if data.is_empty() {
@@ -145,13 +188,14 @@ async fn handle_ws(
 
     // Cleanup
     session.remove_client(&client_id, conn_gen);
+    writer.abort();
 }
 
 fn create_new_client(
     session: &super::session::Session,
     query: &WsQuery,
     remote_addr: &str,
-) -> (Arc<Client>, tokio::sync::mpsc::Receiver<Vec<u8>>) {
+) -> (Arc<Client>, WsReceivers) {
     let id = uuid::Uuid::new_v4().to_string();
     let role = match query.mode.as_deref() {
         Some("readonly") => ClientRole::ReadOnly,

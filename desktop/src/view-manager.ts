@@ -14,7 +14,9 @@
 import { TabManager } from './tabs';
 import { TerminalRegistry } from './terminal';
 import { DrawerManager } from './drawer';
+import { SidebarManager } from './file-sidebar';
 import { AICapsuleManager } from './ai-capsule';
+import { loadSettings } from './themes';
 import { SplitPaneManager, getAllLeaves, findLeafById } from './split-pane';
 import { createSSHHomeView, updateSSHHomeView } from './ssh';
 import { createGalleryView, updateGalleryView, startGalleryRefresh, stopGalleryRefresh } from './gallery';
@@ -87,6 +89,7 @@ export async function activateTab(tabId: string): Promise<void> {
   SplitPaneManager.destroy(terminalPanelEl);
   TerminalRegistry.hideAll(terminalPanelEl);
   DrawerManager.hideAll();
+  SidebarManager.hideAll();
   AICapsuleManager.hideAll();
   removeSSHConnectingPlaceholder();
   hideReclaimButton();
@@ -143,8 +146,25 @@ export async function activateTab(tabId: string): Promise<void> {
   const focusedSessionId = focusedLeaf?.sessionId || leaves[0].sessionId;
 
   if (DrawerManager.has(focusedSessionId)) {
-    DrawerManager.mountTo(focusedSessionId, terminalPanelEl);
-    DrawerManager.show(focusedSessionId);
+    const fmMode = loadSettings().fileManagerMode;
+    if (fmMode === 'sidebar') {
+      if (!SidebarManager.has(focusedSessionId)) {
+        SidebarManager.create(focusedSessionId);
+      }
+      const mainContent = terminalPanelEl.parentElement;
+      if (mainContent) {
+        SidebarManager.mountTo(focusedSessionId, mainContent);
+        if (SidebarManager.isOpen(focusedSessionId)) {
+          SidebarManager.show(focusedSessionId);
+        }
+      }
+    } else {
+      // Always mount so toggle works; only show if previously open
+      DrawerManager.mountTo(focusedSessionId, terminalPanelEl);
+      if (DrawerManager.isOpen(focusedSessionId)) {
+        DrawerManager.show(focusedSessionId);
+      }
+    }
   }
   AICapsuleManager.mountTo(focusedSessionId, terminalPanelEl);
   AICapsuleManager.show(focusedSessionId);
@@ -158,6 +178,7 @@ export async function activateTab(tabId: string): Promise<void> {
   syncReclaimOverlayForActiveTab();
   syncMasterApprovalForActiveTab();
   syncLockIconForActiveTab();
+  syncPaneStatusBar();
   _renderToolbarActions();
   StatusBar.setProgress(getActiveSessionProgress());
 }
@@ -165,6 +186,23 @@ export async function activateTab(tabId: string): Promise<void> {
 export function syncLockIconForActiveTab(): void {
   const activeSessionId = TabManager.getActiveSessionId();
   StatusBar.setLocked(activeSessionId ? privateSessionIds.has(activeSessionId) : false);
+}
+
+/**
+ * Sync the status bar's pane-number capsule with the currently-
+ * active tab's focused pane. Called on tab activation and on pane
+ * focus change within a tab. Hidden automatically for single-pane
+ * tabs by StatusBar.setPane.
+ */
+export function syncPaneStatusBar(): void {
+  const tab = TabManager.tabs.find((t) => t.id === TabManager.activeTabId);
+  if (!tab) {
+    StatusBar.setPane(null, 0);
+    return;
+  }
+  const total = tab.paneNumbers.size;
+  const paneNumber = tab.paneNumbers.get(tab.focusedPaneId) ?? null;
+  StatusBar.setPane(paneNumber, total);
 }
 
 export function statusLabel(status: string): string {
@@ -182,6 +220,7 @@ export function showHomeView(): void {
   SplitPaneManager.destroy(terminalPanelEl);
   TerminalRegistry.hideAll(terminalPanelEl);
   DrawerManager.hideAll();
+  SidebarManager.hideAll();
   AICapsuleManager.hideAll();
   hideGalleryView();
   removeSSHConnectingPlaceholder();
@@ -215,6 +254,7 @@ export function showGalleryView(): void {
   SplitPaneManager.destroy(terminalPanelEl);
   TerminalRegistry.hideAll(terminalPanelEl);
   DrawerManager.hideAll();
+  SidebarManager.hideAll();
   AICapsuleManager.hideAll();
   hideHomeView();
   removeSSHConnectingPlaceholder();

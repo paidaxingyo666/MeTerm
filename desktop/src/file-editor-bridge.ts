@@ -8,6 +8,7 @@ import { encodeMessage, MsgFileReadRequest, MsgFileSaveRequest } from './protoco
 import { t } from './i18n';
 import { openEditorWindow } from './view-manager';
 import type { TerminalTransport } from './terminal-transport';
+import { isImageFile, getImageMimeType, bytesToBase64 } from './file-editor-md';
 
 const LS_PREFIX = 'meterm-editor-';
 const EDITOR_WINDOW_LABEL = 'editor';
@@ -29,6 +30,8 @@ function wrapTransport(t: TerminalTransport): EditorConnection {
 interface PendingRead {
   tabId: string;
   filePath: string;
+  isImage: boolean;
+  mimeType: string;
 }
 
 /** Maps tabId → connection (for save requests) */
@@ -171,7 +174,7 @@ export async function openFileInEditor(
   if (tabConnMap.has(tabId) && editorWindowCreated) {
     // Write pending entry to switch to this tab
     localStorage.setItem(`${LS_PREFIX}pending`, JSON.stringify([
-      { tabId, sessionId, filePath, fileName, host: host || sessionId },
+      { tabId, sessionId, filePath, fileName, host: host || 'local' },
     ]));
     const win = await WebviewWindow.getByLabel(EDITOR_WINDOW_LABEL);
     if (win) { void win.show(); void win.setFocus(); }
@@ -191,15 +194,19 @@ export async function openFileInEditor(
   // Track this tab's connection
   tabConnMap.set(tabId, wrapped);
 
+  // Detect if file is an image (binary preview instead of text editor)
+  const imgFile = isImageFile(fileName);
+  const mimeType = imgFile ? getImageMimeType(fileName) : '';
+
   // Send read request
   const encoder = new TextEncoder();
   const reqPayload = encoder.encode(JSON.stringify({ path: filePath }));
   wrapped.send(encodeMessage(MsgFileReadRequest, reqPayload));
-  pendingReads.push({ tabId, filePath });
+  pendingReads.push({ tabId, filePath, isImage: imgFile, mimeType });
 
   // Write pending file info for editor window
   localStorage.setItem(`${LS_PREFIX}pending`, JSON.stringify([
-    { tabId, sessionId, filePath, fileName, host: host || sessionId },
+    { tabId, sessionId, filePath, fileName, host: host || 'local', isImage: imgFile, mimeType },
   ]));
 
   // Ensure editor window exists
@@ -227,12 +234,25 @@ export function handleFileReadResponse(payload: Uint8Array): void {
 
   const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   const totalSize = Number(dv.getBigUint64(0));
-  const content = new TextDecoder().decode(payload.slice(8, 8 + totalSize));
+  const rawBytes = payload.slice(8, 8 + totalSize);
 
-  localStorage.setItem(`${LS_PREFIX}content-${pending.tabId}`, JSON.stringify({
-    content,
-    filePath: pending.filePath,
-  }));
+  if (pending.isImage) {
+    // Binary file: encode as base64 data URL for image preview
+    const base64 = bytesToBase64(rawBytes);
+    const dataUrl = `data:${pending.mimeType};base64,${base64}`;
+    localStorage.setItem(`${LS_PREFIX}content-${pending.tabId}`, JSON.stringify({
+      content: dataUrl,
+      filePath: pending.filePath,
+      isImage: true,
+      mimeType: pending.mimeType,
+    }));
+  } else {
+    const content = new TextDecoder().decode(rawBytes);
+    localStorage.setItem(`${LS_PREFIX}content-${pending.tabId}`, JSON.stringify({
+      content,
+      filePath: pending.filePath,
+    }));
+  }
 }
 
 /**

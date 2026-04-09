@@ -723,12 +723,21 @@ export function setupTabTransferListener(
 
     // Create tab with split tree in target window
     const newTabId = payload.tabId || `tab-transfer-${Date.now().toString(36)}`;
+    const rebuiltRoot = payload.splitRoot || { type: 'leaf' as const, id: generatePaneId(), sessionId: sessions[0].sessionId };
+    const rebuiltLeaves = getAllLeaves(rebuiltRoot);
+    // Assign fresh pane numbers in the order leaves appear in the
+    // transferred split tree. The source window's numbering is not
+    // preserved across tab drag since it's window-local state.
+    const paneNumbers = new Map<string, number>();
+    rebuiltLeaves.forEach((leaf, i) => paneNumbers.set(leaf.id, i + 1));
     const tab: Tab = {
       id: newTabId,
-      splitRoot: payload.splitRoot || { type: 'leaf', id: generatePaneId(), sessionId: sessions[0].sessionId },
-      focusedPaneId: payload.focusedPaneId || (payload.splitRoot ? getAllLeaves(payload.splitRoot)[0]?.id : '') || generatePaneId(),
+      splitRoot: rebuiltRoot,
+      focusedPaneId: payload.focusedPaneId || rebuiltLeaves[0]?.id || generatePaneId(),
       title: payload.tabTitle || payload.title,
       status: 'connecting',
+      paneCounterNext: rebuiltLeaves.length + 1,
+      paneNumbers,
     };
     const idx = mergeInsertIndex;
     mergeInsertIndex = null;

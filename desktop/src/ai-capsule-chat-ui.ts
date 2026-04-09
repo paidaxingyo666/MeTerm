@@ -5,6 +5,10 @@ import { renderMarkdown } from './ai-capsule-markdown';
 import { updateSideSendButton, getSideSendButton } from './ai-capsule-layout';
 import type { AICapsuleInstance } from './ai-capsule-types';
 import type { AgentCallbacks } from './ai-agent';
+import { notifyAgentComplete, notifyAgentError } from './ai-notifications';
+import { attachLightboxClick } from './ai-image-lightbox';
+import { removeEmptyState } from './ai-empty-state';
+import { TabManager } from './tabs';
 
 export const LLM_SEND_SVG = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8L7 3.5 13.5 2.5 12.5 9 8 13.5z"/><path d="M2.5 8L6.5 6.5 9.5 9.5 8 13.5"/><circle cx="9.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg>`;
 
@@ -46,17 +50,61 @@ export function updateChatTitle(instance: AICapsuleInstance, title?: string): vo
   }
 }
 
-export function appendUserMessage(instance: AICapsuleInstance, text: string): void {
+export function appendUserMessage(
+  instance: AICapsuleInstance,
+  text: string,
+  images?: Array<{ mediaType: string; data: string; label?: string }>,
+  paneNumber?: number,
+): void {
   if (!instance.chatPanel) return;
   const container = instance.chatPanel.querySelector('.ai-chat-messages');
   if (!container) return;
+  // First real message of this session ends the empty-state card.
+  removeEmptyState(container as HTMLElement);
 
   const msg = document.createElement('div');
   msg.className = 'ai-msg ai-msg-user';
+
+  // Phase 2: pane badge on the user message. Shown only when the
+  // tab has >1 pane — a single-pane tab doesn't need the noise.
+  // The badge marks "this message was sent from Pane N, and the
+  // agent will default to that pane for the whole run".
+  const effectivePane = paneNumber ?? instance.state.activeRunTargetPaneNumber ?? undefined;
+  const tab = TabManager.tabs.find((t) => t.id === instance.tabId);
+  const hasMultiPane = !!tab && tab.paneNumbers.size >= 2;
+  if (hasMultiPane && effectivePane !== undefined && effectivePane > 0) {
+    const badge = document.createElement('span');
+    badge.className = 'ai-msg-pane-badge';
+    badge.textContent = `Pane ${effectivePane}`;
+    badge.title = `Sent from Pane ${effectivePane}`;
+    msg.appendChild(badge);
+  }
+
   const content = document.createElement('div');
   content.className = 'ai-msg-content';
-  content.textContent = text;
+  if (text) content.textContent = text;
   msg.appendChild(content);
+
+  if (images && images.length > 0) {
+    const row = document.createElement('div');
+    row.className = 'ai-user-images';
+    for (const img of images) {
+      const thumb = document.createElement('div');
+      thumb.className = 'ai-user-image-thumb';
+      if (img.label) thumb.title = img.label;
+      const el = document.createElement('img');
+      el.className = 'ai-user-image';
+      el.src = `data:${img.mediaType};base64,${img.data}`;
+      if (img.label) el.alt = img.label;
+      el.loading = 'lazy';
+      el.decoding = 'async';
+      attachLightboxClick(el);
+      thumb.appendChild(el);
+      row.appendChild(thumb);
+    }
+    msg.appendChild(row);
+  }
+
   container.appendChild(msg);
   container.scrollTop = container.scrollHeight;
 }
@@ -240,6 +288,11 @@ export function finalizeMessage(
 
   const container = instance.chatPanel?.querySelector('.ai-chat-messages');
   if (container) container.scrollTop = container.scrollHeight;
+
+  // Background notification: fire a system notification + dock bounce
+  // when the agent finishes a turn and the window isn't focused.
+  // notifyAgentComplete internally checks focus and throttles.
+  notifyAgentComplete(fullText);
 }
 
 export function finalizeThinking(
@@ -316,6 +369,9 @@ export function showError(instance: AICapsuleInstance, message: string): void {
   instance.streamMsgEl = null;
   instance.streamBuffer = '';
   instance.reasoningBuffer = '';
+
+  // Background notification on error (throttled + focus-aware inside).
+  notifyAgentError(message);
 }
 
 export function appendSystemNotice(instance: AICapsuleInstance, text: string): void {
@@ -340,6 +396,11 @@ export function buildAgentCallbacks(
     saveConversation: (inst: AICapsuleInstance) => void;
     appendToolCallCard: (inst: AICapsuleInstance, toolName: string, args: Record<string, unknown>) => void;
     updateToolResultCard: (inst: AICapsuleInstance, toolName: string, result: string, isError: boolean) => void;
+    updateToolResultImages?: (
+      inst: AICapsuleInstance,
+      toolName: string,
+      images: Array<{ mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string; label?: string }>,
+    ) => void;
     showConfirmCard: (inst: AICapsuleInstance, toolName: string, args: Record<string, unknown>) => Promise<boolean | string>;
   },
 ): AgentCallbacks {
@@ -371,6 +432,7 @@ export function buildAgentCallbacks(
     },
     onToolCall: (toolName, args) => deps.appendToolCallCard(instance, toolName, args),
     onToolResult: (toolName, result, isError) => deps.updateToolResultCard(instance, toolName, result, isError),
+    onToolImages: (toolName, images) => deps.updateToolResultImages?.(instance, toolName, images),
     onConfirmRequired: (toolName, args) => deps.showConfirmCard(instance, toolName, args),
     onAborted: (_steps) => {
       collapseActiveThinking(instance);
@@ -403,5 +465,24 @@ export function buildAgentCallbacks(
     onContextCompressed: () => {
       appendSystemNotice(instance, t('aiContextCompressed'));
     },
+    // NOTE: task-plan updates are delivered by the persistent listener
+    // installed via attachPersistentTodoListener — not through this
+    // callbacks surface. See ai-agent.ts#setTodoUpdateListener.
   };
+}
+
+/**
+ * Install a persistent listener on the agent's TodoState so plan
+ * changes from `clear()` (between turns) ALSO refresh the UI. The
+ * listener calls back into the same renderTodoBoard the in-run
+ * onTodoUpdate uses, so the board stays in sync regardless of which
+ * code path mutated the plan. Idempotent — safe to call repeatedly.
+ */
+export function attachPersistentTodoListener(
+  instance: AICapsuleInstance,
+  renderTodoBoard: (inst: AICapsuleInstance, todos: import('./ai-tools-todo').TodoItem[]) => void,
+): void {
+  instance.agent.setTodoUpdateListener((todos) => {
+    renderTodoBoard(instance, todos);
+  });
 }

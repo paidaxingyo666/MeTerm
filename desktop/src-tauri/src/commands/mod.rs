@@ -1,14 +1,15 @@
+pub mod ai;
+pub mod context_menu;
+pub mod fs;
+pub mod ipc_terminal;
+pub mod lan;
+pub mod lifecycle;
 pub mod menu;
+pub mod security;
 pub mod session;
 pub mod ssh;
-pub mod lan;
-pub mod security;
-pub mod ai;
+pub mod transfer;
 pub mod window;
-pub mod fs;
-pub mod lifecycle;
-pub mod ipc_terminal;
-pub mod context_menu;
 
 use serde::Serialize;
 
@@ -17,7 +18,10 @@ fn validate_id(id: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 128 {
         return Err("invalid id length".to_string());
     }
-    if id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         Ok(())
     } else {
         Err("invalid id format".to_string())
@@ -38,4 +42,4 @@ pub struct MeTermConnectionInfo {
 }
 
 // Re-export functions used directly (not via generate_handler!) in lib.rs
-pub use menu::{set_tray_language, set_app_menu_language};
+pub use menu::{set_app_menu_language, set_tray_language};

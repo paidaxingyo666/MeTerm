@@ -24,6 +24,11 @@ pub struct FileInfo {
     pub group: String,
     #[serde(default)]
     pub is_link: bool,
+    /// 符号链接的目标路径(仅 is_link=true 时填充)。
+    /// 注意:对于符号链接,is_dir 字段填的是 *解引用后* 的类型,以便上层
+    /// (双击/列表/树)无需特殊处理就能正确把"指向目录的符号链接"当作目录访问。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_target: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +36,12 @@ pub struct FileListRequest {
     pub path: String,
     #[serde(default)]
     pub show_hidden: bool,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// 软上限:返回的文件数超过该值时截断,并在响应里标记 truncated/total。
+    /// 0 或缺省 = 不限制。前端默认传 5000,点"全部加载"时传 0。
+    #[serde(default)]
+    pub soft_limit: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,7 +50,17 @@ pub struct FileListResponse {
     pub files: Vec<FileInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// 是否被 soft_limit 截断
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+    /// 截断前的总文件数(仅当 truncated=true 时有意义)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
 }
+
+fn is_false(b: &bool) -> bool { !*b }
 
 #[derive(Debug, Serialize)]
 pub struct FileListProgressResponse {
@@ -82,13 +103,30 @@ pub fn handle_file_list(payload: &[u8]) -> Vec<u8> {
                 path: String::new(),
                 files: Vec::new(),
                 error: Some(e.to_string()),
+                request_id: None,
+                truncated: false,
+                total: None,
             };
             let data = serde_json::to_vec(&resp).unwrap_or_default();
             return protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data);
         }
     };
 
-    let path = std::path::Path::new(&req.path);
+    // Expand ~ to home directory for local file listing
+    let resolved = if req.path == "~" || req.path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            if req.path == "~" {
+                home.display().to_string()
+            } else {
+                format!("{}{}", home.display(), &req.path[1..])
+            }
+        } else {
+            req.path.clone()
+        }
+    } else {
+        req.path.clone()
+    };
+    let path = std::path::Path::new(&resolved);
     let mut files = Vec::new();
     let mut error = None;
 
@@ -102,10 +140,29 @@ pub fn handle_file_list(payload: &[u8]) -> Vec<u8> {
                     continue;
                 }
 
+                // entry.metadata() = symlink_metadata 语义,不解引用符号链接。
+                // 用它判断 is_link 与符号链接本身的属性。
                 if let Ok(meta) = entry.metadata() {
+                    let is_link = meta.file_type().is_symlink();
+                    let mut is_dir = meta.is_dir();
+                    let mut size = meta.len() as i64;
+                    let mut link_target: Option<String> = None;
+
+                    // 符号链接:解引用一次拿到目标的 is_dir/size,并读取链接目标路径。
+                    // 解引用失败(悬空链接)时保留 is_dir=false 但仍记录 link_target。
+                    if is_link {
+                        if let Ok(target_meta) = std::fs::metadata(entry.path()) {
+                            is_dir = target_meta.is_dir();
+                            size = target_meta.len() as i64;
+                        }
+                        if let Ok(tp) = std::fs::read_link(entry.path()) {
+                            link_target = Some(tp.display().to_string());
+                        }
+                    }
+
                     files.push(FileInfo {
                         name,
-                        size: meta.len() as i64,
+                        size,
                         mode: format_mode(&meta),
                         mtime: meta
                             .modified()
@@ -113,10 +170,11 @@ pub fn handle_file_list(payload: &[u8]) -> Vec<u8> {
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| d.as_secs() as i64)
                             .unwrap_or(0),
-                        is_dir: meta.is_dir(),
+                        is_dir,
                         owner: String::new(),
                         group: String::new(),
-                        is_link: meta.file_type().is_symlink(),
+                        is_link,
+                        link_target,
                     });
                 }
             }
@@ -126,10 +184,20 @@ pub fn handle_file_list(payload: &[u8]) -> Vec<u8> {
         }
     }
 
+    // 应用 soft_limit 截断:0 = 不限制
+    let total_count = files.len();
+    let truncated = req.soft_limit > 0 && total_count > req.soft_limit;
+    if truncated {
+        files.truncate(req.soft_limit);
+    }
+
     let resp = FileListResponse {
-        path: req.path,
+        path: resolved,
         files,
         error,
+        request_id: req.request_id,
+        truncated,
+        total: if truncated { Some(total_count) } else { None },
     };
     let data = serde_json::to_vec(&resp).unwrap_or_default();
     protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data)
@@ -194,17 +262,17 @@ pub fn handle_file_operation(payload: &[u8]) -> Vec<u8> {
         }
         "stat" => {
             // Go returns {success, operation, exists, is_dir, size} for stat
-            return match std::fs::metadata(&req.path) {
-                Ok(meta) => {
-                    let resp = serde_json::json!({
-                        "success": true, "operation": "stat",
-                        "exists": true, "is_dir": meta.is_dir(), "size": meta.len(),
-                    });
-                    let data = serde_json::to_vec(&resp).unwrap_or_default();
-                    protocol::encode_message(protocol::MSG_FILE_OPERATION_RESP, &data)
-                }
-                Err(_) => encode_msg_error("NOT_FOUND", "File not found"),
+            let resp = match std::fs::metadata(&req.path) {
+                Ok(meta) => serde_json::json!({
+                    "success": true, "operation": "stat",
+                    "exists": true, "is_dir": meta.is_dir(), "size": meta.len(),
+                }),
+                Err(_) => serde_json::json!({
+                    "success": true, "operation": "stat", "exists": false,
+                }),
             };
+            let data = serde_json::to_vec(&resp).unwrap_or_default();
+            return protocol::encode_message(protocol::MSG_FILE_OPERATION_RESP, &data);
         }
         _ => {
             return encode_file_op_error(&format!("unknown operation: {}", req.operation));
@@ -327,7 +395,7 @@ pub async fn handle_sftp_file_list(payload: &[u8], sftp: &SftpSession) -> Vec<u8
     let req: FileListRequest = match serde_json::from_slice(payload) {
         Ok(r) => r,
         Err(e) => {
-            let resp = FileListResponse { path: String::new(), files: Vec::new(), error: Some(e.to_string()) };
+            let resp = FileListResponse { path: String::new(), files: Vec::new(), error: Some(e.to_string()), request_id: None, truncated: false, total: None };
             let data = serde_json::to_vec(&resp).unwrap_or_default();
             return protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data);
         }
@@ -354,15 +422,38 @@ pub async fn handle_sftp_file_list(payload: &[u8], sftp: &SftpSession) -> Vec<u8
                     continue;
                 }
                 let attrs = entry.metadata();
+                let is_link = attrs.is_symlink();
+                let mut is_dir = attrs.is_dir();
+                let mut size = attrs.size.unwrap_or(0) as i64;
+                let mut link_target: Option<String> = None;
+
+                // 符号链接:对目标做一次 stat 拿到真实 is_dir/size,并 readlink 拿到目标路径。
+                // 失败(悬空链接)时 fallback:保留原始 is_dir 与 size,但不解引用。
+                if is_link {
+                    let entry_path = if resolved_path.ends_with('/') {
+                        format!("{}{}", resolved_path, name)
+                    } else {
+                        format!("{}/{}", resolved_path, name)
+                    };
+                    if let Ok(target_attrs) = sftp.metadata(entry_path.clone()).await {
+                        is_dir = target_attrs.is_dir();
+                        size = target_attrs.size.unwrap_or(0) as i64;
+                    }
+                    if let Ok(tp) = sftp.read_link(entry_path).await {
+                        link_target = Some(tp);
+                    }
+                }
+
                 files.push(FileInfo {
                     name,
-                    size: attrs.size.unwrap_or(0) as i64,
+                    size,
                     mode: format!("{:o}", attrs.permissions.unwrap_or(0) & 0o7777),
                     mtime: attrs.mtime.unwrap_or(0) as i64,
-                    is_dir: attrs.is_dir(),
+                    is_dir,
                     owner: attrs.uid.map(|u| u.to_string()).unwrap_or_else(|| attrs.user.clone().unwrap_or_default()),
                     group: attrs.gid.map(|g| g.to_string()).unwrap_or_else(|| attrs.group.clone().unwrap_or_default()),
-                    is_link: attrs.is_symlink(),
+                    is_link,
+                    link_target,
                 });
             }
         }
@@ -371,7 +462,20 @@ pub async fn handle_sftp_file_list(payload: &[u8], sftp: &SftpSession) -> Vec<u8
         }
     }
 
-    let resp = FileListResponse { path: resolved_path, files, error };
+    let total_count = files.len();
+    let truncated = req.soft_limit > 0 && total_count > req.soft_limit;
+    if truncated {
+        files.truncate(req.soft_limit);
+    }
+
+    let resp = FileListResponse {
+        path: resolved_path,
+        files,
+        error,
+        request_id: req.request_id,
+        truncated,
+        total: if truncated { Some(total_count) } else { None },
+    };
     let data = serde_json::to_vec(&resp).unwrap_or_default();
     protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data)
 }
@@ -387,7 +491,7 @@ pub async fn handle_sftp_file_list_with_progress(
     let req: FileListRequest = match serde_json::from_slice(payload) {
         Ok(r) => r,
         Err(e) => {
-            let resp = FileListResponse { path: String::new(), files: Vec::new(), error: Some(e.to_string()) };
+            let resp = FileListResponse { path: String::new(), files: Vec::new(), error: Some(e.to_string()), request_id: None, truncated: false, total: None };
             let data = serde_json::to_vec(&resp).unwrap_or_default();
             session.send_to_client(client_id, protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data));
             return;
@@ -432,15 +536,37 @@ pub async fn handle_sftp_file_list_with_progress(
                 let name = entry.file_name();
                 if !req.show_hidden && name.starts_with('.') { continue; }
                 let attrs = entry.metadata();
+                let is_link = attrs.is_symlink();
+                let mut is_dir = attrs.is_dir();
+                let mut size = attrs.size.unwrap_or(0) as i64;
+                let mut link_target: Option<String> = None;
+
+                // 符号链接:解引用一次拿目标 is_dir/size + 链接路径(失败则保留原值)
+                if is_link {
+                    let entry_path = if resolved_path.ends_with('/') {
+                        format!("{}{}", resolved_path, name)
+                    } else {
+                        format!("{}/{}", resolved_path, name)
+                    };
+                    if let Ok(target_attrs) = sftp.metadata(entry_path.clone()).await {
+                        is_dir = target_attrs.is_dir();
+                        size = target_attrs.size.unwrap_or(0) as i64;
+                    }
+                    if let Ok(tp) = sftp.read_link(entry_path).await {
+                        link_target = Some(tp);
+                    }
+                }
+
                 files.push(FileInfo {
                     name,
-                    size: attrs.size.unwrap_or(0) as i64,
+                    size,
                     mode: format!("{:o}", attrs.permissions.unwrap_or(0) & 0o7777),
                     mtime: attrs.mtime.unwrap_or(0) as i64,
-                    is_dir: attrs.is_dir(),
+                    is_dir,
                     owner: attrs.uid.map(|u| u.to_string()).unwrap_or_else(|| attrs.user.clone().unwrap_or_default()),
                     group: attrs.gid.map(|g| g.to_string()).unwrap_or_else(|| attrs.group.clone().unwrap_or_default()),
-                    is_link: attrs.is_symlink(),
+                    is_link,
+                    link_target,
                 });
 
                 if is_large && ((i + 1) % BATCH_SIZE == 0 || i == total - 1) {
@@ -452,7 +578,20 @@ pub async fn handle_sftp_file_list_with_progress(
         Err(e) => { error = Some(format!("{}", e)); }
     }
 
-    let resp = FileListResponse { path: resolved_path, files, error };
+    let total_count = files.len();
+    let truncated = req.soft_limit > 0 && total_count > req.soft_limit;
+    if truncated {
+        files.truncate(req.soft_limit);
+    }
+
+    let resp = FileListResponse {
+        path: resolved_path,
+        files,
+        error,
+        request_id: req.request_id,
+        truncated,
+        total: if truncated { Some(total_count) } else { None },
+    };
     let data = serde_json::to_vec(&resp).unwrap_or_default();
     session.send_to_client(client_id, protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data));
 }
@@ -543,18 +682,18 @@ pub async fn handle_sftp_file_operation(payload: &[u8], sftp: &SftpSession) -> V
                 .map_err(|e| format!("{}", e))
         }
         "stat" => {
-            return match sftp.metadata(req.path.clone()).await {
-                Ok(attrs) => {
-                    let resp = serde_json::json!({
-                        "success": true, "operation": "stat",
-                        "exists": true, "is_dir": attrs.is_dir(),
-                        "size": attrs.size.unwrap_or(0),
-                    });
-                    let data = serde_json::to_vec(&resp).unwrap_or_default();
-                    protocol::encode_message(protocol::MSG_FILE_OPERATION_RESP, &data)
-                }
-                Err(_) => encode_msg_error("NOT_FOUND", "File not found"),
+            let resp = match sftp.metadata(req.path.clone()).await {
+                Ok(attrs) => serde_json::json!({
+                    "success": true, "operation": "stat",
+                    "exists": true, "is_dir": attrs.is_dir(),
+                    "size": attrs.size.unwrap_or(0),
+                }),
+                Err(_) => serde_json::json!({
+                    "success": true, "operation": "stat", "exists": false,
+                }),
             };
+            let data = serde_json::to_vec(&resp).unwrap_or_default();
+            return protocol::encode_message(protocol::MSG_FILE_OPERATION_RESP, &data);
         }
         _ => Err(format!("unsupported operation: {}", req.operation)),
     };

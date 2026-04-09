@@ -254,7 +254,9 @@
 /* ─── Agent Tool Call Cards ────────────────────────────────────── */
 
 .ai-tool-card {
+  width: 95%;
   max-width: 95%;
+  box-sizing: border-box;
   align-self: flex-start;
   margin: 3px 0;
   padding: 5px 10px;
@@ -273,6 +275,379 @@
 .ai-tool-card[data-tool="write_file"]   { border-left-color: #8B5CF6; }
 .ai-tool-card[data-tool="list_files"]   { border-left-color: #10B981; }
 .ai-tool-card[data-tool="search_files"] { border-left-color: #EC4899; }
+.ai-tool-card[data-tool="wait_for_user_input"] { border-left-color: #FBBF24; }
+.ai-tool-card[data-tool="read_screen"] { border-left-color: #A78BFA; }
+
+/* ─── Tool card attached images (read_screen, etc.) ─── */
+
+.ai-tool-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* Thumbnail tile for tool-attached screenshots.
+ *
+ * Sized so the user can actually SEE the screenshot content (a
+ * 96×64 cover crop just looks like a blob). We use object-fit:
+ * contain so the full image is visible regardless of source aspect
+ * ratio, and a min-height so very wide screenshots still get a
+ * meaningful display. Click → lightbox for full size. */
+.ai-tool-image-thumb {
+  position: relative;
+  max-width: 320px;
+  max-height: 200px;
+  min-height: 60px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.18));
+  background: rgba(0, 0, 0, 0.35);
+  flex: 0 0 auto;
+  cursor: zoom-in;
+  transition: border-color 0.12s ease-out, transform 0.12s ease-out;
+}
+.ai-tool-image-thumb:hover {
+  border-color: var(--accent, #6aa4ff);
+  transform: scale(1.01);
+}
+.ai-tool-image-thumb .ai-tool-image {
+  display: block;
+  max-width: 100%;
+  max-height: 200px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  cursor: zoom-in;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+/* Tiny "click to expand" hint badge in the corner. */
+.ai-tool-image-thumb::after {
+  content: '⤢';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+/* ─── User message attached images ─── */
+
+.ai-user-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ai-user-image-thumb {
+  position: relative;
+  max-width: 280px;
+  max-height: 180px;
+  min-height: 60px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.18));
+  background: rgba(0, 0, 0, 0.30);
+  flex: 0 0 auto;
+  cursor: zoom-in;
+  transition: border-color 0.12s ease-out, transform 0.12s ease-out;
+}
+.ai-user-image-thumb:hover {
+  border-color: var(--accent, #6aa4ff);
+  transform: scale(1.01);
+}
+.ai-user-image-thumb .ai-user-image {
+  display: block;
+  max-width: 100%;
+  max-height: 180px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  cursor: zoom-in;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.ai-user-image-thumb::after {
+  content: '⤢';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+/* Common helper class added by attachLightboxClick(). */
+.ai-img-zoomable { cursor: zoom-in; }
+
+/* ─── Image lightbox modal ─── */
+
+.ai-img-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  animation: ai-img-lightbox-fade 0.12s ease-out;
+}
+
+@keyframes ai-img-lightbox-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.ai-img-lightbox-stage {
+  position: relative;
+  max-width: 92vw;
+  max-height: 92vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+
+.ai-img-lightbox-img {
+  display: block;
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: 6px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  background: #1a1a1a;
+}
+
+.ai-img-lightbox-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.12s ease-out;
+}
+.ai-img-lightbox-close:hover {
+  background: #ef4444;
+}
+
+/* ─── Pending image strip ─── */
+
+.ai-pending-images {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Compact mode (AI bar): chips show "image1", "image2"… instead
+ * of full thumbnails, so they don't overflow the narrow bar.
+ *
+ * AI Bar is a fixed-height (30px) single-row flexbox. We can't
+ * stretch the bar — it would knock the terminal layout around. So
+ * we position the strip absolutely just ABOVE the bar, anchored to
+ * the same left/right insets, and let it wrap onto multiple rows
+ * if the user attaches a lot of images. */
+.ai-pending-images--compact {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  padding: 4px 8px;
+  border-radius: 12px;
+  background: rgba(20, 20, 24, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  z-index: 305;
+  pointer-events: auto;
+}
+[data-theme="light"] .ai-pending-images--compact {
+  background: rgba(255, 255, 255, 0.90);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+.ai-pending-image-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: rgba(106, 164, 255, 0.15);
+  border: 1px solid rgba(106, 164, 255, 0.35);
+  color: var(--text-primary);
+  max-width: 120px;
+}
+.ai-pending-image-chip-label {
+  cursor: zoom-in;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-pending-image-chip-label:hover {
+  color: var(--accent, #6aa4ff);
+}
+.ai-pending-image-chip-remove {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+}
+.ai-pending-image-chip-remove:hover {
+  background: #ef4444;
+}
+
+/* Thumbnail mode (side panel): real visual thumbnails. */
+.ai-pending-images--thumbnail {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+}
+
+.ai-pending-image-thumb {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  background: rgba(0, 0, 0, 0.25);
+  cursor: zoom-in;
+}
+.ai-pending-image-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.ai-pending-image-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.ai-pending-image-remove:hover {
+  background: #ef4444;
+}
+
+/* ─── Drag-over highlight ─── */
+
+.ai-bar.ai-bar--drop-hover {
+  outline: 2px dashed var(--accent, #6aa4ff);
+  outline-offset: -4px;
+}
+
+/* ─── Wait-for-user-input card (prominent, agent paused) ─── */
+
+.ai-tool-card.ai-wait-card {
+  max-width: 95%;
+  padding: 12px 14px;
+  background: rgba(251, 191, 36, 0.10);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-left-width: 3px;
+  border-left-color: #FBBF24;
+  border-radius: 8px;
+  box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.40);
+  animation: ai-wait-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes ai-wait-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.40); }
+  50%      { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0.00); }
+}
+
+.ai-wait-card-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: #FBBF24;
+  margin-bottom: 8px;
+}
+
+.ai-wait-card-body {
+  padding-left: 4px;
+}
+
+.ai-wait-card-reason {
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.ai-wait-card-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.ai-wait-card-buttons {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* When a wait card is resolved we strip the .ai-wait-card class
+ * entirely (see ai-capsule-tool-ui.ts onEnd handler), so the card
+ * inherits the standard .ai-tool-card styling — no pulse, no thick
+ * border, no oversized padding.  These per-status classes still
+ * tint the left border color so a quick glance distinguishes
+ * resumed / cancelled / timed-out runs. */
+.ai-tool-card.ai-wait-card-resolved-completed { border-left-color: #22C55E; }
+.ai-tool-card.ai-wait-card-resolved-aborted   { border-left-color: #F59E0B; }
+.ai-tool-card.ai-wait-card-resolved-timeout   { border-left-color: #EF4444; }
 
 .ai-tool-card-header {
   display: flex;
@@ -321,7 +696,9 @@
 }
 .ai-tool-result pre {
   margin: 0;
-  padding: 4px 0;
+  /* 右侧 14px 让出 overlay scrollbar 位置,避免 thumb 遮挡文字。
+     padding 加在 <pre> 而不是 .ai-tool-result,这样不会撑大卡片外宽。 */
+  padding: 4px 14px 4px 0;
   font-size: 11px;
   font-family: var(--mono-font);
   color: var(--text-secondary);

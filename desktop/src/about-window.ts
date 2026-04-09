@@ -6,6 +6,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { revealAfterPaint } from './window-utils';
 import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { listen } from '@tauri-apps/api/event';
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage, t } from './i18n';
 import { applyVibrancy } from './appearance';
@@ -63,6 +64,15 @@ export function initAboutWindow(): void {
     const versionEl = container.querySelector('.about-version');
     if (versionEl) versionEl.textContent = `v${version}`;
   }).catch(() => {});
+
+  // Listen for theme changes from main window
+  void listen('settings-changed', () => {
+    const s = loadSettings();
+    document.documentElement.setAttribute('data-theme', resolveThemeAttr(s.colorScheme));
+    const nativeTheme = resolveThemeAttr(s.colorScheme) === 'light' ? 'light' as const : 'dark' as const;
+    void getCurrentWindow().setTheme(nativeTheme);
+    void applyVibrancy(s.enableVibrancy);
+  });
 
   void revealAfterPaint(getCurrentWindow().label);
 }

@@ -163,15 +163,29 @@ const extColorMap: Record<string, string> = {
   zip: '#e5c07b', tar: '#e5c07b', gz: '#e5c07b',
 };
 
+/** 把基础图标包成"图标 + 右下角链接角标"的结构,用于符号链接 */
+function withSymlinkBadge(baseIcon: string): string {
+  // 角标:右下角的小箭头(↗),用 SVG 画出来,通过 CSS 绝对定位
+  const badge = `<svg class="icon-symlink-badge" viewBox="0 0 16 16" width="9" height="9" fill="#ffb13b" stroke="#1a1a1a" stroke-width="0.8"><circle cx="8" cy="8" r="7"/><path d="M5.5 10.5l5-5M6.5 5.5h4v4" fill="none" stroke="#1a1a1a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  return `<span class="icon-symlink-wrap">${baseIcon}${badge}</span>`;
+}
+
 export function getFileIcon(name: string, isDir: boolean, isLink?: boolean): string {
-  if (isDir) return fileIcons['folder'];
-  if (isLink) return fileIcons['file-symlink'];
+  // 计算基础图标(不考虑链接),最后再按需加链接角标
+  if (isDir) {
+    const folderIcon = fileIcons['folder'];
+    return isLink ? withSymlinkBadge(folderIcon) : folderIcon;
+  }
 
   const baseName = name.split('/').pop() || name;
+  const baseIcon = computeFileIcon(baseName);
+  return isLink ? withSymlinkBadge(baseIcon) : baseIcon;
+}
 
+/** 不考虑符号链接的纯文件图标计算(供 getFileIcon 内部调用) */
+function computeFileIcon(baseName: string): string {
   // Special filenames (Makefile, Dockerfile, .gitignore, etc.)
   if (nameMap[baseName]) {
-    // Use a recognizable label for special files
     const labelMap: Record<string, [string, string]> = {
       'Makefile': ['MAKE', '#e06c75'], 'Dockerfile': ['DOCK', '#2496ed'],
       'LICENSE': ['LIC', '#e5c07b'], 'README': ['READ', '#61afef'],
@@ -189,17 +203,12 @@ export function getFileIcon(name: string, isDir: boolean, isLink?: boolean): str
   const dotIdx = baseName.lastIndexOf('.');
   if (dotIdx > 0) {
     const ext = baseName.substring(dotIdx + 1).toLowerCase();
-
-    // Only show ext icon for KNOWN extensions
     if (extMap[ext] || extColorMap[ext]) {
       const color = extColorMap[ext] || '#9ca3af';
       return fileExtIcon(ext, color);
     }
-
-    // Unknown extension → show "?" with gray
     return fileExtIcon('?', '#6b7280');
   }
 
-  // No extension at all → "?"
   return fileExtIcon('?', '#6b7280');
 }

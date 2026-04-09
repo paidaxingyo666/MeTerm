@@ -67,6 +67,7 @@ id_ed25519
 # AI tools
 .sisyphus/
 CLAUDE.md
+AGENTS.md
 
 # Wrangler
 .wrangler/

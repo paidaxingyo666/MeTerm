@@ -295,6 +295,45 @@ body.drawer-splitting {
   overflow: auto;
 }
 
+/* ── 目录被 soft_limit 截断时的提示横幅 ──
+ * 作为 .file-list 的兄弟节点放在外面,不参与滚动,
+ * 避免和表格 sticky 表头争抢 top:0。
+ */
+.file-list-trunc-banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: rgba(255, 180, 0, 0.12);
+  border-bottom: 1px solid rgba(255, 180, 0, 0.3);
+  font-size: 11px;
+  color: var(--text-secondary, #ccc);
+}
+
+.file-list-trunc-msg {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-list-trunc-btn {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--accent, #6aa4ff);
+  background: transparent;
+  border: 1px solid rgba(106, 164, 255, 0.4);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.file-list-trunc-btn:hover {
+  background: rgba(106, 164, 255, 0.15);
+  border-color: var(--accent, #6aa4ff);
+}
+
 .file-list table {
   width: 100%;
   border-collapse: collapse;
@@ -380,6 +419,7 @@ body.drawer-splitting {
   margin-right: 6px;
   vertical-align: middle;
   flex-shrink: 0;
+  overflow: visible;
 }
 
 .file-icon svg {
@@ -387,6 +427,30 @@ body.drawer-splitting {
   height: 14px;
   display: block;
 }
+
+/* ── 符号链接图标角标 ── */
+.icon-symlink-wrap {
+  position: relative;
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+}
+
+.icon-symlink-wrap > svg:first-child {
+  width: 14px;
+  height: 14px;
+}
+
+/* 角标:右下角的小圆形箭头,叠在原图标之上 */
+.icon-symlink-wrap > .icon-symlink-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 9px;
+  height: 9px;
+  pointer-events: none;
+}
+
 
 .file-list tbody tr {
   cursor: pointer;
@@ -501,17 +565,27 @@ body.drawer-splitting {
 /* Context Menu Styles */
 .context-menu {
   position: fixed;
-  background: rgba(var(--bg-context-menu), 1);
-  border: none;
-  border-radius: 5px;
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
   padding: 3px 0;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   z-index: 10001;
-  min-width: 120px;
+  /* 自适应内容宽度,不强制最小宽度。
+     之前的 min-width: 120px 会让短标签("打开"/"详情")出现大片空白。 */
+  min-width: max-content;
+}
+[data-theme="light"] .context-menu {
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
 .context-menu-item {
-  padding: 4px 20px 4px 12px;
+  /* 左右对称的紧凑 padding,避免右侧出现大片空白 */
+  padding: 4px 14px;
   cursor: pointer;
   font-size: 12px;
   color: var(--text-primary);
@@ -531,7 +605,7 @@ body.drawer-splitting {
 }
 
 .context-menu-item .submenu-arrow {
-  margin-left: 12px;
+  margin-left: 10px;
   font-size: 11px;
   opacity: 0.5;
 }
@@ -572,7 +646,9 @@ body.drawer-splitting {
 .drawer-modal-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   z-index: 2000;
   display: flex;
   align-items: center;
@@ -581,15 +657,22 @@ body.drawer-splitting {
 }
 
 .drawer-modal {
-  background: rgba(var(--bg-context-menu), 1);
-  border: none;
-  border-radius: 8px;
-  padding: clamp(10px, 3%, 16px);
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  padding: clamp(12px, 3%, 18px);
   width: clamp(200px, 70%, 360px);
   max-height: 80%;
   overflow-y: auto;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   box-sizing: border-box;
+}
+[data-theme="light"] .drawer-modal {
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
 .drawer-modal-title {
@@ -660,43 +743,178 @@ body.drawer-splitting {
   gap: clamp(4px, 1.5%, 8px);
 }
 
-.drawer-modal-btn {
-  padding: clamp(3px, 0.8%, 4px) clamp(8px, 2%, 14px);
-  font-size: clamp(11px, 1.4vw, 12px);
-  border-radius: 9999px;
+/* ── 文件详情弹窗 ── */
+.file-details-modal {
+  width: clamp(300px, 80%, 480px) !important;
+  /* 覆盖 .drawer-modal 默认的 overflow-y:auto:让内部 .file-details-scroll 滚动,
+     这样 overlay 滚动条只挂在内部区域,不会跑到 modal 外面 */
+  overflow: hidden !important;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* 标题给关闭按钮留出右侧空间 */
+.file-details-title {
+  padding-right: 28px;
+}
+
+/* 右上角关闭按钮 */
+.file-details-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
   border: none;
+  border-radius: 4px;
+  color: var(--text-secondary, #999);
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.08);
+  transition: background 0.15s, color 0.15s;
+  z-index: 2;
+  padding: 0;
+}
+
+.file-details-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+/* 详情弹窗的可滚动内容区:占据剩余高度,自身才是真正的滚动容器。
+ * 右侧 padding 14px 给 overlay 滚动条留出独立槽位,避免 track/thumb 叠在
+ * "复制"按钮等内容上(track 半透明会让下层内容透出形成视觉冲突)。 */
+.file-details-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 14px;
+}
+
+.file-details-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.file-details-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+}
+
+.file-details-row:last-child {
+  border-bottom: none;
+}
+
+.file-details-label {
+  flex-shrink: 0;
+  width: 72px;
+  color: var(--text-secondary, #999);
+  font-size: 11px;
+  padding-top: 1px;
+}
+
+.file-details-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.file-details-value.mono {
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+}
+
+.file-details-copyable {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.file-details-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.file-details-copy-btn {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.file-details-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+
+.drawer-modal-btn {
+  padding: clamp(4px, 1%, 6px) clamp(10px, 2.5%, 16px);
+  font-size: clamp(11px, 1.4vw, 12px);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.06);
   color: var(--text-primary);
   white-space: nowrap;
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.2);
-  transition: background 0.15s, box-shadow 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
 
 .drawer-modal-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
 }
 
 .drawer-modal-btn.confirm {
-  background: rgba(var(--accent-rgb, 106, 164, 255), 0.28);
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.25);
   color: var(--accent);
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.15);
+  border-color: rgba(var(--accent-rgb, 106, 164, 255), 0.3);
 }
 
 .drawer-modal-btn.confirm:hover {
-  background: rgba(var(--accent-rgb, 106, 164, 255), 0.38);
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.25);
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.35);
+  border-color: rgba(var(--accent-rgb, 106, 164, 255), 0.45);
 }
 
 .drawer-modal-btn.confirm.danger {
-  background: rgba(255, 69, 58, 0.2);
+  background: rgba(255, 69, 58, 0.18);
   color: #f87171;
-  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 69, 58, 0.25);
 }
 
 .drawer-modal-btn.confirm.danger:hover {
-  background: rgba(255, 69, 58, 0.3);
+  background: rgba(255, 69, 58, 0.28);
+  border-color: rgba(255, 69, 58, 0.4);
+}
+
+[data-theme="light"] .drawer-modal-btn {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: var(--text-primary);
+}
+[data-theme="light"] .drawer-modal-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .drawer-modal-btn.confirm {
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.15);
+  border-color: rgba(var(--accent-rgb, 106, 164, 255), 0.25);
 }
 
 /* Drag and drop styles */
@@ -912,6 +1130,17 @@ body.drawer-splitting {
   margin-bottom: 6px;
 }
 
+.server-label {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(var(--accent-rgb, 106,164,255), 0.15);
+  color: var(--accent, #6aa4ff);
+  white-space: nowrap;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+
 .file-path {
   flex: 1;
   overflow: hidden;
@@ -936,8 +1165,9 @@ body.drawer-splitting {
 
 .progress-fill {
   height: 100%;
+  width: 0%;
   background: var(--accent);
-  transition: width 0.3s ease;
+  transition: width 0.5s linear;
 }
 
 .progress-text {
@@ -1206,14 +1436,15 @@ body.drawer-splitting {
 .bookmark-popup {
   position: fixed;
   z-index: 1000;
-  background: rgba(var(--bg-toolbar, 33, 33, 35), 0.97);
-  border: 1px solid rgba(128, 128, 128, 0.2);
-  border-radius: 6px;
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
   padding: 4px 0;
   min-width: 180px;
   max-width: 320px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   -webkit-backdrop-filter: blur(8px);
 }
 
@@ -1278,19 +1509,19 @@ body.drawer-splitting {
 .speed-limit-popup {
   position: fixed;
   z-index: 99999;
-  /* Liquid Glass */
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
   padding: 4px 0;
   min-width: 120px;
-  box-shadow: none;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 [data-theme="light"] .speed-limit-popup {
-  background: rgba(255, 255, 255, 0.25);
-  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
 .speed-limit-item {

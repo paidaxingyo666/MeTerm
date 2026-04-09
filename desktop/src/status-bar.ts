@@ -17,6 +17,11 @@ interface CapsuleState {
   viewerCount: number;
   transfer: TransferInfo | null;
   aiActive: boolean;
+  /** Pane number of the currently-focused pane, or null when the
+   *  active tab has only one pane (hidden in that case). */
+  paneNumber: number | null;
+  /** Total pane count of the active tab (for the "N/M" suffix). */
+  paneTotal: number;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -93,6 +98,8 @@ class StatusBarClass {
   private viewerPopup: HTMLDivElement | null = null;
   private viewerPopupCloseHandler: ((e: Event) => void) | null = null;
 
+  private paneCapsule: HTMLDivElement | null = null;
+
   private state: CapsuleState = {
     connectionStatus: 'disconnected',
     connectionLabel: 'Disconnected',
@@ -101,6 +108,8 @@ class StatusBarClass {
     viewerCount: 0,
     transfer: null,
     aiActive: false,
+    paneNumber: null,
+    paneTotal: 0,
   };
 
   // ── Initialization ──────────────────────────────────────────
@@ -146,6 +155,17 @@ class StatusBarClass {
   setLatency(ms: number | null): void {
     this.state.latencyMs = ms;
     this.renderLatencyCapsule();
+  }
+
+  /**
+   * Phase 2: show the currently-focused pane number for the active
+   * tab. Pass (null, 0) to clear. The capsule is automatically
+   * hidden when total ≤ 1 (single-pane tabs don't need it).
+   */
+  setPane(paneNumber: number | null, total: number): void {
+    this.state.paneNumber = paneNumber;
+    this.state.paneTotal = total;
+    this.renderPaneCapsule();
   }
 
   setSessionCount(count: number): void {
@@ -311,6 +331,34 @@ class StatusBarClass {
     this.connectionCapsule.title = this.getConnectionTooltip();
   }
 
+  private renderPaneCapsule(): void {
+    if (!this.leftZone) return;
+    const { paneNumber, paneTotal } = this.state;
+    // Hide when there's no multi-pane situation to describe.
+    if (!paneNumber || paneTotal < 2) {
+      if (this.paneCapsule) {
+        this.removeCapsuleAnimated(this.paneCapsule, () => {
+          this.paneCapsule = null;
+        });
+      }
+      return;
+    }
+    if (!this.paneCapsule) {
+      this.paneCapsule = document.createElement('div');
+      this.paneCapsule.className = 'status-capsule capsule-pane';
+      this.addCapsuleAnimated(this.paneCapsule);
+      // Insert after connection + lock capsules, before latency.
+      const anchor = (this.lockCapsule ?? this.connectionCapsule)?.nextSibling ?? null;
+      this.leftZone.insertBefore(this.paneCapsule, anchor);
+    }
+    // Use circled numbers ①..⑳ when possible, else Pane N.
+    const glyph = paneNumber >= 1 && paneNumber <= 20
+      ? String.fromCodePoint(0x245F + paneNumber)
+      : String(paneNumber);
+    this.paneCapsule.innerHTML = `<span class="pane-glyph">${glyph}</span><span>Pane · ${paneTotal}</span>`;
+    this.paneCapsule.title = `Pane ${paneNumber} of ${paneTotal}`;
+  }
+
   private renderLatencyCapsule(): void {
     if (!this.leftZone) return;
 
@@ -408,8 +456,6 @@ class StatusBarClass {
     const arrow =
       t.direction === 'upload' ? svgIcons.upload :
       t.direction === 'download' ? svgIcons.download : svgIcons.transfer;
-    const pct = Math.round(t.progress);
-
     if (!this.transferCapsule) {
       this.transferCapsule = document.createElement('div');
       this.transferCapsule.className = 'status-capsule capsule-transfer';
@@ -420,9 +466,19 @@ class StatusBarClass {
       );
     }
 
-    this.transferCapsule.innerHTML =
-      `<span>${arrow} ${t.fileCount} file${t.fileCount !== 1 ? 's' : ''} ${pct}%</span>` +
-      `<div class="transfer-progress-bar"><div class="transfer-progress-fill" style="width:${pct}%"></div></div>`;
+    const pct = Math.round(t.progress);
+
+    // In-place update: 保持 DOM 元素不重建，CSS transition 处理动画
+    const existingFill = this.transferCapsule.querySelector('.transfer-progress-fill') as HTMLElement | null;
+    const existingText = this.transferCapsule.querySelector('span') as HTMLElement | null;
+    if (existingFill && existingText) {
+      existingText.innerHTML = `${arrow} ${t.fileCount} file${t.fileCount !== 1 ? 's' : ''} ${pct}%`;
+      existingFill.style.width = `${t.progress}%`;
+    } else {
+      this.transferCapsule.innerHTML =
+        `<span>${arrow} ${t.fileCount} file${t.fileCount !== 1 ? 's' : ''} ${pct}%</span>` +
+        `<div class="transfer-progress-bar"><div class="transfer-progress-fill" style="width:${t.progress}%"></div></div>`;
+    }
   }
 
   private renderAICapsule(): void {

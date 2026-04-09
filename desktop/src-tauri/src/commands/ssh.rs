@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use tauri::State;
 
-use crate::server::ServerState;
 use crate::server::terminal::ssh::{SshConfig, SshTerminal};
+use crate::server::ServerState;
 
 #[tauri::command]
 pub async fn create_ssh_session(
@@ -44,22 +44,21 @@ pub async fn create_ssh_session(
 
     let session = state.session_manager.create();
     *session.executor_type.lock().unwrap() = "ssh".to_string();
+    *session.ssh_config.lock().unwrap() = Some(config.clone());
 
     match SshTerminal::connect(&config, 80, 24).await {
         Ok(terminal) => {
             let ssh_handle = terminal.session_handle.clone();
+            let sftp_config = config.clone();
             *session.ssh_exec_handle.lock().await = Some(Box::new(ssh_handle.clone()));
 
-            crate::server::session::Session::start_terminal(
-                session.clone(),
-                Box::new(terminal),
-            )
-            .await;
+            crate::server::session::Session::start_terminal(session.clone(), Box::new(terminal))
+                .await;
 
             // Initialize SFTP in background
             let session_bg = session.clone();
             tokio::spawn(async move {
-                if let Some(sftp_client) = SshTerminal::init_sftp(&ssh_handle).await {
+                if let Some(sftp_client) = SshTerminal::connect_sftp(&sftp_config).await {
                     *session_bg.sftp.lock().unwrap() = Some(sftp_client);
                 }
             });
@@ -101,7 +100,10 @@ pub async fn test_ssh_connection(
     proxy_password: Option<String>,
 ) -> Result<String, String> {
     if host.is_empty() || username.is_empty() {
-        return Ok(serde_json::json!({ "ok": false, "error": "host and username are required" }).to_string());
+        return Ok(
+            serde_json::json!({ "ok": false, "error": "host and username are required" })
+                .to_string(),
+        );
     }
 
     let config = SshConfig {

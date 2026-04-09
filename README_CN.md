@@ -62,6 +62,7 @@
 
 - AI 助手胶囊 — 浮动对话面板，支持 OpenAI 兼容 / Anthropic / Gemini 三种协议，可接入任意 LLM
 - SFTP 文件管理 — 上传/下载/断点续传/拖拽/队列/远程文件直接编辑
+  桌面端 SSH 上传和下载会走优化过的原生 SSH 传输后端，避免终端链路上的传输瓶颈
 - 命令补全 & tldr 帮助卡片
 - 主页快速搜索 — 本地命令 + Web 搜索（需自建 [SearXNG](https://github.com/searxng/searxng) 实例）
 - 背景图片 & 主题 — 8 个终端主题，5 种配色
@@ -221,7 +222,7 @@ MeTerm/
 
 | 层级 | 技术 |
 |------|------|
-| **后端** | Rust, Axum, Tokio, xpty（跨平台 PTY）, russh（SSH/SFTP）, mdns-sd |
+| **后端** | Rust, Axum, Tokio, xpty（跨平台 PTY）, russh（SSH/SFTP 终端链路）, ssh2/libssh2（桌面端 SSH 文件传输）, mdns-sd |
 | **前端** | TypeScript, Vite, xterm.js 5.x, CodeMirror 6 |
 | **桌面** | Tauri v2 (Rust + TypeScript), reqwest, keyring, rusqlite |
 | **更新** | Tauri Updater + Cloudflare Worker |
@@ -233,6 +234,7 @@ MeTerm/
 - **会话状态机** — Created → Running → Draining（环形缓冲区保存输出）→ Closed，支持无缝重连
 - **二进制协议** — WebSocket 上的自定义二进制消息传输，高效终端 I/O
 - **SFTP 自适应流水线** — 基于 RTT 动态窗口调整（2→64），实现高吞吐文件传输
+- **桌面端 SSH 传输后端** — 桌面 SSH 上传和下载可走独立原生 SSH 传输路径，避免终端链路上的传输瓶颈
 
 ---
 

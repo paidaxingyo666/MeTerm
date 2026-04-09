@@ -1,7 +1,7 @@
 import { THEMES, AppSettings, ColorScheme } from './themes';
 import { getAvailableLanguages, t, setLanguage } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
-import { FONT_REGISTRY, getFontDef } from './fonts';
+import { FONT_REGISTRY, getFontDef, getAvailableCJKFonts } from './fonts';
 import { isMacPlatform } from './app-state';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
@@ -200,6 +200,26 @@ export function createGeneralTab(
   };
   tabGeneral.appendChild(fontFamilySection);
 
+  // --- CJK Font Family ---
+  const cjkFontSection = document.createElement('div');
+  cjkFontSection.className = 'settings-section';
+  cjkFontSection.innerHTML = `<label>${t('cjkFontFamily')}</label>`;
+  const availableCJKFonts = getAvailableCJKFonts();
+  const cjkOptions = [
+    { value: '', label: t('cjkFontAuto'), selected: !current.cjkFontFamily },
+    ...availableCJKFonts.map((f) => ({
+      value: f.key,
+      label: f.displayName,
+      selected: f.key === current.cjkFontFamily,
+    })),
+  ];
+  const cjkFontSelect = createSettingsSelect(cjkOptions);
+  cjkFontSection.appendChild(cjkFontSelect.el);
+  cjkFontSelect.onchange = () => {
+    update({ cjkFontFamily: cjkFontSelect.value });
+  };
+  tabGeneral.appendChild(cjkFontSection);
+
   // --- Font Weight ---
   const fontWeightSection = document.createElement('div');
   fontWeightSection.className = 'settings-section';
@@ -347,6 +367,21 @@ export function createGeneralTab(
     update({ fileManagerFontSize });
   };
   tabGeneral.appendChild(fileManagerFontSection);
+
+  // --- File Manager Mode (drawer / sidebar) ---
+  const fmModeSection = document.createElement('div');
+  fmModeSection.className = 'settings-section';
+  fmModeSection.innerHTML = `<label>${current.language === 'zh' ? '文件管理器位置' : 'File Manager Position'}</label>`;
+  const fmModeSelect = createSettingsSelect([
+    { value: 'drawer', label: current.language === 'zh' ? '底部抽屉' : 'Bottom Drawer', selected: current.fileManagerMode === 'drawer' },
+    { value: 'sidebar', label: current.language === 'zh' ? '左侧边栏 (树形视图)' : 'Left Sidebar (Tree View)', selected: current.fileManagerMode === 'sidebar' },
+  ]);
+  fmModeSection.appendChild(fmModeSelect.el);
+  fmModeSelect.onchange = () => {
+    const fileManagerMode = fmModeSelect.value as 'drawer' | 'sidebar';
+    update({ fileManagerMode });
+  };
+  tabGeneral.appendChild(fmModeSection);
 
   // --- Thumbnail Toggle + Preview Refresh Rate ---
   const thumbSection = document.createElement('div');

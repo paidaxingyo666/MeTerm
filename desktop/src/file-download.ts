@@ -9,8 +9,8 @@ import {
 } from './protocol';
 import type { SendFn } from './file-upload';
 
-/** 下载缓冲写入批次大小 */
-export const WRITE_BATCH_SIZE = 8 * 1024 * 1024; // 8MB per disk write
+/** 下载缓冲写入批次大小 — smaller to limit memory when multiple downloads run concurrently */
+export const WRITE_BATCH_SIZE = 2 * 1024 * 1024; // 2MB per disk write
 
 /** pending 下载状态 */
 export interface PendingDownload {
@@ -32,6 +32,8 @@ export interface DownloadState {
   isDownloadPaused: boolean;
   currentDownloadId: string | null;
   lastDownloadProgressUpdate: number;
+  backendManaged: boolean;
+  backendHandle: unknown | null;
 }
 
 /** 下载队列项 */
@@ -40,8 +42,9 @@ export interface DownloadQueueItem {
   remotePath: string;
   savePath: string;
   fileSize: number;
-  transferId: string;
+  transferId: string;    // record id (string)
   isDir: boolean;
+  numTransferId: number; // numeric transfer id for protocol
 }
 
 /** 创建初始下载状态 */
@@ -56,6 +59,8 @@ export function createDownloadState(): DownloadState {
     isDownloadPaused: false,
     currentDownloadId: null,
     lastDownloadProgressUpdate: 0,
+    backendManaged: false,
+    backendHandle: null,
   };
 }
 
@@ -67,6 +72,7 @@ export async function startDownloadFromQueue(
   send: SendFn | null,
   state: DownloadState,
   callbacks: DownloadCallbacks,
+  numTransferId?: number,
 ): Promise<DownloadState> {
   if (!send) {
     callbacks.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
@@ -80,11 +86,6 @@ export async function startDownloadFromQueue(
     newState.currentDownloadId = item.transferId;
     callbacks.updateTransferProgress(newState.currentDownloadId, 0, 'inprogress');
 
-    await fsWriteFile(item.savePath, new Uint8Array(0));
-    newState.writeQueue = [];
-    newState.isWriting = false;
-    newState.writeError = null;
-
     newState.pendingDownload = {
       filename: item.filename,
       savePath: item.savePath,
@@ -93,13 +94,21 @@ export async function startDownloadFromQueue(
       receivedSize: 0,
     };
 
-    const request = JSON.stringify({ path: item.remotePath });
+    await fsWriteFile(item.savePath, new Uint8Array(0));
+    newState.downloadBuffer = [];
+    newState.downloadBufferSize = 0;
+    newState.writeQueue = [];
+    newState.isWriting = false;
+    newState.writeError = null;
+    newState.isDownloadPaused = false;
+    newState.lastDownloadProgressUpdate = 0;
+
+    const request = JSON.stringify({ path: item.remotePath, transferId: numTransferId ?? 0 });
     const message = encodeMessage(MsgFileDownloadStart, new TextEncoder().encode(request));
     try {
       send(message);
     } catch (sendErr) {
       console.error('Failed to send download request:', sendErr);
-      newState.pendingDownload = null;
       await cleanupDownloadState(newState);
       callbacks.updateTransferProgress(newState.currentDownloadId, 0, 'failed', '发送请求失败');
       newState.currentDownloadId = null;
@@ -125,6 +134,8 @@ export async function startDownloadFromQueue(
 export interface DownloadCallbacks {
   updateTransferProgress(id: string, progress: number, status: 'pending' | 'inprogress' | 'completed' | 'failed' | 'paused' | 'cancelled', error?: string): void;
   addTransferRecord(type: 'upload' | 'download', filename: string, path: string, size: number, savePath?: string): string;
+  /** 更新传输记录的文件大小（下载首个 chunk 确认 totalSize 时调用） */
+  updateTransferSize?(id: string, size: number): void;
   /** 当前下载完成或失败后调用，触发队列中下一个下载 */
   onDownloadFinished?(): void;
 }
@@ -180,13 +191,17 @@ export async function downloadFile(
     newState.currentDownloadId = callbacks.addTransferRecord('download', filename, filePath, fileSize, savePath);
     callbacks.updateTransferProgress(newState.currentDownloadId, 0, 'inprogress');
 
+    newState.pendingDownload = { filename, savePath, remotePath: filePath, totalSize: 0, receivedSize: 0 };
+
     // 创建空文件（后续以 append 模式追加写入）
     await fsWriteFile(savePath, new Uint8Array(0));
+    newState.downloadBuffer = [];
+    newState.downloadBufferSize = 0;
     newState.writeQueue = [];
     newState.isWriting = false;
     newState.writeError = null;
-
-    newState.pendingDownload = { filename, savePath, remotePath: filePath, totalSize: 0, receivedSize: 0 };
+    newState.isDownloadPaused = false;
+    newState.lastDownloadProgressUpdate = 0;
 
     // Send download request
     const request = JSON.stringify({ path: filePath });
@@ -195,7 +210,6 @@ export async function downloadFile(
       send(message);
     } catch (sendErr) {
       console.error('Failed to send download request:', sendErr);
-      newState.pendingDownload = null;
       await cleanupDownloadState(newState);
       if (newState.currentDownloadId) {
         callbacks.updateTransferProgress(newState.currentDownloadId, 0, 'failed', '发送请求失败');
@@ -231,16 +245,17 @@ export function handleDownloadChunk(
     return;
   }
 
-  // Parse chunked protocol: [8B totalSize BE][8B offset BE][chunk_data]
-  if (content.length < 16) {
+  // Parse chunked protocol: [4B transferId BE][8B totalSize BE][8B offset BE][chunk_data]
+  if (content.length < 20) {
     console.error('Invalid download chunk: too short');
     return;
   }
 
   const view = new DataView(content.buffer, content.byteOffset, content.byteLength);
-  const totalSize = Number(view.getBigUint64(0));
-  const offset = Number(view.getBigUint64(8));
-  const chunkData = content.slice(16);
+  // Skip transferId (first 4 bytes) — routing already done by caller
+  const totalSize = Number(view.getBigUint64(4));
+  const offset = Number(view.getBigUint64(12));
+  const chunkData = content.subarray(20);
 
   // Empty file: totalSize=0, no data — finalize immediately
   if (totalSize === 0 && chunkData.length === 0) {
@@ -254,9 +269,13 @@ export function handleDownloadChunk(
   // Update total size on first chunk
   if (state.pendingDownload.totalSize === 0 && totalSize > 0) {
     state.pendingDownload.totalSize = totalSize;
+    // Sync to transfer record so size displays correctly and speed tracking works
+    if (state.currentDownloadId) {
+      callbacks.updateTransferSize?.(state.currentDownloadId, totalSize);
+    }
   }
 
-  // 缓冲小 chunk，累积到 8MB 再推入写入队列
+  // 缓冲小 chunk，累积到批次阈值再推入写入队列
   if (chunkData.length > 0) {
     state.downloadBuffer.push(chunkData);
     state.downloadBufferSize += chunkData.length;
@@ -267,15 +286,15 @@ export function handleDownloadChunk(
     }
   }
 
-  // Throttled progress UI update (~200ms interval)
+  // Throttled progress UI update (~50ms interval for smooth animation)
   const isComplete = totalSize > 0 && state.pendingDownload.receivedSize >= totalSize;
   const now = Date.now();
-  if (state.currentDownloadId && !state.isDownloadPaused && (now - state.lastDownloadProgressUpdate >= 200 || isComplete)) {
+  if (state.currentDownloadId && !state.isDownloadPaused && (now - state.lastDownloadProgressUpdate >= 50 || isComplete)) {
     state.lastDownloadProgressUpdate = now;
     const progress = totalSize > 0
-      ? Math.round((state.pendingDownload.receivedSize / totalSize) * 100)
+      ? (state.pendingDownload.receivedSize / totalSize) * 100
       : 0;
-    callbacks.updateTransferProgress(state.currentDownloadId, isComplete ? 100 : Math.min(progress, 99), 'inprogress');
+    callbacks.updateTransferProgress(state.currentDownloadId, isComplete ? 100 : Math.min(progress, 99.9), 'inprogress');
   }
 
   // Download complete: flush remaining buffer（暂停时不 finalize，等恢复后处理）
@@ -372,6 +391,7 @@ export async function cleanupDownloadState(state: DownloadState): Promise<void> 
     }
   } catch { /* ignore cleanup errors */ }
   state.pendingDownload = null;
+  state.isDownloadPaused = false;
 }
 
 /** 断点续传：检查已写入磁盘的大小，从断点继续下载 */
@@ -379,6 +399,7 @@ export async function resumeDownload(
   send: SendFn | null,
   state: DownloadState,
   callbacks: DownloadCallbacks,
+  numTransferId?: number,
 ): Promise<void> {
   if (!state.pendingDownload || !send) {
     // Cannot resume, mark as failed
@@ -397,6 +418,8 @@ export async function resumeDownload(
     while (state.isWriting) {
       await new Promise(r => setTimeout(r, 50));
     }
+    state.downloadBuffer = [];
+    state.downloadBufferSize = 0;
     state.writeQueue = [];
     state.writeError = null;
 
@@ -418,7 +441,7 @@ export async function resumeDownload(
   }
 
   console.log(`Attempting download resume for ${state.pendingDownload.remotePath} from offset ${state.pendingDownload.receivedSize}`);
-  const request = JSON.stringify({ path: state.pendingDownload.remotePath, offset: state.pendingDownload.receivedSize });
+  const request = JSON.stringify({ path: state.pendingDownload.remotePath, offset: state.pendingDownload.receivedSize, transferId: numTransferId ?? 0 });
   const message = encodeMessage(MsgFileDownloadResume, new TextEncoder().encode(request));
   send(message);
 }

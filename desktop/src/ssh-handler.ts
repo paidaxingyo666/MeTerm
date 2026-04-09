@@ -49,6 +49,8 @@ export async function handleSSHConnect(config: SSHConnectionConfig): Promise<voi
       focusedPaneId: sshPaneId,
       title: `${config.name || config.host} (SSH)`,
       status: 'connecting' as const,
+      paneCounterNext: 2,
+      paneNumbers: new Map([[sshPaneId, 1]]),
     };
     TabManager.tabs.push(tab);
     TabManager.activeTabId = sshTabId;

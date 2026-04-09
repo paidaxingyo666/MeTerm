@@ -276,6 +276,23 @@ export interface AppSettings {
   // AI Agent configuration
   aiAgentTrustLevel: number;       // 0 = manual, 1 = semi-auto, 2 = full-auto
   aiAgentMaxIterations: number;    // max agentic loop steps (default 15)
+  /**
+   * Permission mode for tool execution. Fine-grained override of
+   * aiAgentTrustLevel; when set, takes precedence. Values:
+   *   'ask'         → every tool needs confirmation
+   *   'acceptSafe'  → auto-approve safe tools, prompt for destructive
+   *   'acceptAll'   → auto-approve unless catastrophic
+   *   'plan'        → read-only tools allowed, write tools denied
+   *   'bypass'      → no prompts (use with care)
+   * Defaults to undefined so existing users fall back to trust level.
+   */
+  aiPermissionMode?: 'ask' | 'acceptSafe' | 'acceptAll' | 'plan' | 'bypass';
+  /** User-defined permission rules — first match wins. Regex-based. */
+  aiPermissionRules?: Array<{
+    tool: string;
+    match?: { command?: string; path?: string };
+    action: 'allow' | 'deny' | 'ask';
+  }>;
   // SearXNG web search
   searxngUrl: string;
   searxngUsername: string;
@@ -298,6 +315,14 @@ export interface AppSettings {
   deviceName: string;
   /** Enter key sends to Agent by default (instead of terminal) */
   aiEnterSendsToAgent: boolean;
+  /** CJK font family key for Chinese/Japanese/Korean characters ('' = system default) */
+  cjkFontFamily: string;
+  /** File manager display mode: bottom drawer or left sidebar (tree view) */
+  fileManagerMode: 'drawer' | 'sidebar';
+  /** Left sidebar width in pixels */
+  sidebarWidth: number;
+  /** Default file open method for editable files: built-in editor or system default */
+  fileOpenPreference: 'builtin' | 'system';
 }
 
 const SETTINGS_KEY = 'meterm-settings';
@@ -313,7 +338,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   fontWeight: 400,
   fontSharpness: false,
   encoding: 'utf-8',
-  enableThumbnail: true,
+  enableThumbnail: false,
   previewRefreshRate: 1000,
   language: 'en',
   rememberWindowSize: true,
@@ -353,6 +378,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoNewSession: false,
   deviceName: '',
   aiEnterSendsToAgent: false,
+  cjkFontFamily: '',
+  fileManagerMode: 'drawer',
+  sidebarWidth: 240,
+  fileOpenPreference: 'builtin',
 };
 
 export function loadSettings(): AppSettings {

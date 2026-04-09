@@ -1,0 +1,271 @@
+/* ─── AI Agent: Persistent Task Plan (TodoBoard) ────────────── */
+/*
+ * Renders the agent's `todo_write` plan as a persistent inline card
+ * pinned to the bottom of the chat panel. Visual goals:
+ *   • Distinct from regular tool cards (slightly thicker border, accent bar)
+ *   • Compact when collapsed, scannable when open
+ *   • Per-row status: pending (empty box), in_progress (spinner+pulse),
+ *     completed (filled checkbox)
+ *   • Linear progress bar at the top reflecting completed/total
+ *
+ * Light/dark theming follows the surrounding chat surface variables.
+ */
+
+.ai-todo-board {
+  margin: 10px 6px 12px 6px;
+  border-radius: 10px;
+  background: var(--bg-secondary, rgba(14, 165, 233, 0.04));
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06),
+              0 0 0 1px rgba(14, 165, 233, 0.08) inset;
+  overflow: hidden;
+  position: relative;
+  font-size: 12.5px;
+  color: var(--text-primary, #1f2937);
+}
+
+[data-theme="dark"] .ai-todo-board {
+  background: rgba(14, 165, 233, 0.06);
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4),
+              0 0 0 1px rgba(56, 189, 248, 0.10) inset;
+  color: var(--text-primary, #f1f5f9);
+}
+
+.ai-todo-board::before {
+  /* Accent vertical bar on the left edge */
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, #0EA5E9 0%, #0284C7 100%);
+}
+
+/* ── Header ────────────────────────────────────────────────── */
+
+.ai-todo-board-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 8px 14px;
+  font-weight: 600;
+  font-size: 12.5px;
+  user-select: none;
+}
+
+.ai-todo-board-icon { display: inline-flex; align-items: center; }
+
+.ai-todo-board-title {
+  color: var(--text-primary, #0f172a);
+  letter-spacing: 0.1px;
+}
+
+[data-theme="dark"] .ai-todo-board-title { color: #e0f2fe; }
+
+.ai-todo-board-counts {
+  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  color: var(--text-secondary, #64748b);
+  background: rgba(14, 165, 233, 0.10);
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+[data-theme="dark"] .ai-todo-board-counts {
+  background: rgba(56, 189, 248, 0.15);
+  color: #bae6fd;
+}
+
+.ai-todo-board-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding-right: 8px;
+  font-weight: 500;
+  font-size: 11.5px;
+  color: var(--text-secondary, #64748b);
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-todo-board-active em {
+  font-style: normal;
+  color: var(--text-primary, #0f172a);
+}
+
+[data-theme="dark"] .ai-todo-board-active em { color: #e2e8f0; }
+
+.ai-todo-board-toggle {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #94a3b8);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  margin-left: auto; /* placed after active, when active absent it goes here */
+  transition: background 0.15s;
+}
+
+.ai-todo-board-active + .ai-todo-board-toggle { margin-left: 0; }
+
+.ai-todo-board-toggle:hover {
+  background: rgba(14, 165, 233, 0.12);
+  color: var(--text-primary, #0f172a);
+}
+
+[data-theme="dark"] .ai-todo-board-toggle:hover {
+  background: rgba(56, 189, 248, 0.18);
+  color: #e0f2fe;
+}
+
+/* ── Progress bar ──────────────────────────────────────────── */
+
+.ai-todo-board-progress {
+  position: relative;
+  height: 3px;
+  background: rgba(14, 165, 233, 0.10);
+  overflow: hidden;
+}
+
+[data-theme="dark"] .ai-todo-board-progress {
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.ai-todo-board-bar {
+  height: 100%;
+  background: #0EA5E9;
+  transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 6px rgba(14, 165, 233, 0.5);
+}
+
+/* ── List ──────────────────────────────────────────────────── */
+
+.ai-todo-board-list {
+  padding: 6px 12px 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-todo-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 9px;
+  align-items: center;
+  padding: 5px 6px;
+  border-radius: 6px;
+  transition: background 0.12s;
+}
+
+.ai-todo-row:hover {
+  background: rgba(14, 165, 233, 0.06);
+}
+
+[data-theme="dark"] .ai-todo-row:hover {
+  background: rgba(56, 189, 248, 0.10);
+}
+
+.ai-todo-row.completed .ai-todo-text {
+  text-decoration: line-through;
+  color: var(--text-secondary, #94a3b8);
+  opacity: 0.75;
+}
+
+.ai-todo-row.in_progress {
+  background: rgba(14, 165, 233, 0.10);
+  border: 1px solid rgba(14, 165, 233, 0.30);
+  box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.10);
+}
+
+[data-theme="dark"] .ai-todo-row.in_progress {
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.ai-todo-row.in_progress .ai-todo-text {
+  font-weight: 600;
+  color: var(--text-primary, #0f172a);
+}
+
+[data-theme="dark"] .ai-todo-row.in_progress .ai-todo-text { color: #f0f9ff; }
+
+.ai-todo-text {
+  font-size: 12.5px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.ai-todo-status {
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-secondary, #94a3b8);
+  font-variant-numeric: tabular-nums;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+}
+
+.ai-todo-row.in_progress .ai-todo-status {
+  background: rgba(14, 165, 233, 0.20);
+  color: #0369a1;
+}
+
+[data-theme="dark"] .ai-todo-row.in_progress .ai-todo-status {
+  background: rgba(56, 189, 248, 0.25);
+  color: #bae6fd;
+}
+
+.ai-todo-row.completed .ai-todo-status {
+  background: rgba(34, 197, 94, 0.18);
+  color: #15803d;
+}
+
+[data-theme="dark"] .ai-todo-row.completed .ai-todo-status {
+  background: rgba(34, 197, 94, 0.20);
+  color: #86efac;
+}
+
+/* ── Status box (checkbox-like) ───────────────────────────── */
+
+.ai-todo-box {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--border-color, #cbd5e1);
+  background: transparent;
+  flex-shrink: 0;
+}
+
+[data-theme="dark"] .ai-todo-box { border-color: #475569; }
+
+.ai-todo-box.pending { background: transparent; }
+
+.ai-todo-box.checked {
+  background: #22C55E;
+  border-color: #22C55E;
+}
+
+.ai-todo-box.active {
+  border-color: #0EA5E9;
+  background: rgba(14, 165, 233, 0.18);
+  animation: ai-todo-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ai-todo-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.55); }
+  50% { box-shadow: 0 0 0 4px rgba(14, 165, 233, 0); }
+}

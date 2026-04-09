@@ -62,6 +62,7 @@
 
 - AI Assistant Capsule — Floating dialog, supports OpenAI-compatible / Anthropic / Gemini protocols, connect any LLM
 - SFTP File Manager — Upload/download/resume/drag-and-drop/queue/remote file editing
+  Desktop SSH uploads and downloads use an optimized native SSH transfer backend to avoid terminal-path bottlenecks
 - Command completion & tldr help cards
 - Home quick search — Local commands + web search (requires self-hosted [SearXNG](https://github.com/searxng/searxng))
 - Backgrounds & Themes — 8 terminal themes, 5 color schemes
@@ -221,7 +222,7 @@ MeTerm/
 
 | Layer | Technologies |
 |-------|-------------|
-| **Backend** | Rust, Axum, Tokio, xpty (cross-platform PTY), russh (SSH/SFTP), mdns-sd |
+| **Backend** | Rust, Axum, Tokio, xpty (cross-platform PTY), russh (SSH/SFTP terminal path), ssh2/libssh2 (desktop SSH file transfer), mdns-sd |
 | **Frontend** | TypeScript, Vite, xterm.js 5.x, CodeMirror 6 |
 | **Desktop** | Tauri v2 (Rust + TypeScript), reqwest, keyring, rusqlite |
 | **Update** | Tauri Updater + Cloudflare Worker |
@@ -233,6 +234,7 @@ MeTerm/
 - **Session state machine** — Created → Running → Draining (with ring buffer) → Closed, supporting seamless reconnection
 - **Binary protocol** — Custom binary messaging over WebSocket for efficient terminal I/O
 - **Adaptive SFTP pipeline** — Dynamic window scaling (2→64) based on RTT for high-throughput file transfers
+- **Desktop SSH transfer backend** — Desktop SSH uploads and downloads can use a dedicated native transfer path to avoid terminal-path bottlenecks
 
 ---
 

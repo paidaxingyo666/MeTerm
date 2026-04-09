@@ -3,6 +3,13 @@ import { MsgInput } from './protocol';
 import { escapeHtml } from './status-bar';
 import { formatSize } from './file-utils';
 import { addBookmark } from './file-bookmarks';
+import { isEditableFile } from './icons';
+import { openFileInEditor } from './file-editor-bridge';
+import { isImageFile } from './file-editor-md';
+import { loadSettings, saveSettings } from './themes';
+import { invoke } from '@tauri-apps/api/core';
+import { t } from './i18n';
+import { showFileDetailsDialog } from './file-details-dialog';
 
 export interface DrawerContextMenuDelegate {
   sendTerminalCommand(instance: DrawerInstance, command: string): void;
@@ -30,6 +37,8 @@ type MenuItem = {
   separator?: boolean;
   children?: MenuItem[];
   checked?: boolean;
+  /** Radio-style selection (● / ○) instead of checkbox (✓) */
+  radio?: boolean;
 };
 
 function buildMenu(items: MenuItem[], parent: HTMLElement, closeMenu: () => void): void {
@@ -75,7 +84,12 @@ function buildMenu(items: MenuItem[], parent: HTMLElement, closeMenu: () => void
         }
       });
     } else {
-      menuItem.textContent = (item.checked !== undefined ? (item.checked ? '✓ ' : '   ') : '') + item.label;
+      const prefix = item.checked !== undefined
+        ? (item.radio
+          ? (item.checked ? '● ' : '○ ')
+          : (item.checked ? '✓ ' : '   '))
+        : '';
+      menuItem.textContent = prefix + item.label;
       if (!item.disabled) {
         menuItem.addEventListener('click', () => {
           item.action?.();
@@ -88,10 +102,16 @@ function buildMenu(items: MenuItem[], parent: HTMLElement, closeMenu: () => void
   });
 }
 
+export interface ContextMenuOptions {
+  /** Provide the "current directory" for the context (e.g. sidebar tree root) */
+  getCurrentDir?: () => string;
+}
+
 export function setupContextMenu(
   instance: DrawerInstance,
   listElement: HTMLElement,
   delegate?: DrawerContextMenuDelegate,
+  options?: ContextMenuOptions,
 ): void {
   const del = delegate || createDefaultDelegate();
   let contextMenu: HTMLDivElement | null = null;
@@ -115,172 +135,333 @@ export function setupContextMenu(
     const fullPath = hasFile ? fm.getFullPath(fileName) : '';
     const escapedPath = fullPath.replace(/([ '"\\$`!#&|;(){}])/g, '\\$1');
 
+    // Resolve selected items to full paths and detect which are dirs
+    const resolveSelectedInfo = (): { path: string; isDir: boolean }[] => {
+      return selected.map(f => {
+        const p = f.startsWith('/') ? f : fm.getFullPath(f);
+        const info = fm.getFileInfo(f.startsWith('/') ? (f.split('/').pop() || f) : f);
+        return { path: p, isDir: info?.is_dir ?? false };
+      });
+    };
+
+    // Directory for "new file/folder" operations:
+    // - Right-clicked a directory → create inside it
+    // - Right-clicked a file → its parent directory
+    // - Blank area → sidebar root or drawer current path
+    const newFileDir = hasFile && isDir
+      ? fullPath
+      : (options?.getCurrentDir?.() ?? fm.getCurrentPath());
+
     const items: MenuItem[] = [];
+    const isLocal = instance.executorType === 'local';
+    const settings = loadSettings();
 
-    if (multiSelect) {
-      items.push({
-        label: `下载 ${selected.length} 个文件`,
-        action: () => { for (const f of selected) (fm as any).downloadFile(f); },
-      });
-    } else {
-      items.push({
-        label: hasFile && isDir ? '下载文件夹' : '下载',
-        action: hasFile ? () => (fm as any).downloadFile(fileName, isDir) : undefined,
-        disabled: !hasFile
-      });
-    }
-
-    if (hasFile && isDir) {
-      items.push({
-        label: '上传',
-        children: [
-          {
-            label: '上传到此文件夹',
-            action: () => fm.triggerUpload(fullPath)
-          },
-          {
-            label: '上传到当前路径',
-            action: () => fm.triggerUpload()
-          }
-        ]
-      });
-    } else {
-      items.push({
-        label: '上传',
-        action: () => fm.triggerUpload()
-      });
-    }
-
-    items.push({ separator: true, label: '' });
-
-    items.push({
-      label: '新建文件',
-      action: () => showCreateFileDialog(instance)
-    });
-    items.push({
-      label: '新建文件夹',
-      action: () => showMkdirDialog(instance)
-    });
-
-    items.push({ separator: true, label: '' });
-
-    items.push({
-      label: '复制路径',
-      disabled: !hasFile,
-      children: hasFile ? [
+    // ── 复用的"视图 ▶"子菜单(刷新 / 隐藏文件 / 收藏) ──
+    const viewSubmenu: MenuItem = {
+      label: t('ctxMenuView'),
+      children: [
         {
-          label: '复制绝对路径',
-          action: () => navigator.clipboard.writeText(fullPath)
+          label: t('ctxMenuRefresh'),
+          action: () => {
+            fm.loadDirectory(fm.getCurrentPath());
+            import('./file-sidebar').then(({ SidebarManager }) => {
+              SidebarManager.refreshTree(instance.sessionId);
+            });
+          }
+        },
+        {
+          label: t('ctxMenuShowHidden'),
+          checked: fm.getShowHiddenFiles(),
+          action: () => {
+            fm.toggleShowHiddenFiles();
+            fm.loadDirectory(fm.getCurrentPath());
+            import('./file-sidebar').then(({ SidebarManager }) => {
+              SidebarManager.refreshTree(instance.sessionId);
+            });
+          }
         },
         { separator: true, label: '' },
         {
-          label: `cd ${isDir ? '' : '..'}`,
+          label: t('ctxMenuBookmark'),
           action: () => {
-            const dir = isDir ? escapedPath : escapedPath.substring(0, escapedPath.lastIndexOf('/')) || '/';
-            del.sendTerminalCommand(instance, `cd ${dir}`);
+            const info = instance.serverConnectionInfo || { host: 'local', port: 0 };
+            const curPath = options?.getCurrentDir?.() ?? fm.getCurrentPath();
+            addBookmark(info.host, info.port, curPath);
           }
         },
-        {
-          label: isDir ? 'ls' : 'cat',
-          action: () => {
-            const cmd = isDir ? `ls -la ${escapedPath}` : `cat ${escapedPath}`;
-            del.sendTerminalCommand(instance, cmd);
-          }
-        },
-        {
-          label: 'cp',
-          action: () => {
-            const ws = instance.fileManager?.getWebSocket();
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            const cmd = isDir ? `cp -r ${escapedPath} ` : `cp ${escapedPath} `;
-            const payload = new TextEncoder().encode('\x15' + cmd);
-            const msg = new Uint8Array(1 + payload.length);
-            msg[0] = MsgInput;
-            msg.set(payload, 1);
-            ws.send(msg);
-          }
-        },
-        {
-          label: 'rm',
-          action: () => {
-            const ws = instance.fileManager?.getWebSocket();
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            const cmd = isDir ? `rm -r ${escapedPath}` : `rm ${escapedPath}`;
-            const payload = new TextEncoder().encode('\x15' + cmd);
-            const msg = new Uint8Array(1 + payload.length);
-            msg[0] = MsgInput;
-            msg.set(payload, 1);
-            ws.send(msg);
-          },
-          danger: true
-        }
-      ] : undefined
-    });
+      ],
+    };
 
-    items.push({ separator: true, label: '' });
-
-    items.push({
-      label: '复制到...',
-      action: hasFile ? () => showCopyDialog(instance, fileName) : undefined,
-      disabled: !hasFile
-    });
-    items.push({
-      label: '移动到...',
-      action: hasFile ? () => showMoveDialog(instance, fileName) : undefined,
-      disabled: !hasFile
-    });
-    items.push({
-      label: '创建符号链接',
-      action: hasFile ? () => showSymlinkDialog(instance, fileName) : undefined,
-      disabled: !hasFile
-    });
-
-    items.push({ separator: true, label: '' });
-
-    items.push({
-      label: '修改权限',
-      action: hasFile ? () => showChmodDialog(instance, fileName) : undefined,
-      disabled: !hasFile
-    });
-    items.push({
-      label: '重命名',
-      action: hasFile ? () => showRenameDialog(instance, fileName) : undefined,
-      disabled: !hasFile
-    });
-    if (multiSelect) {
-      items.push({
-        label: `删除 ${selected.length} 个文件`,
-        action: () => showBatchDeleteConfirm(instance, selected),
-        danger: true,
-      });
-    } else {
-      items.push({
-        label: '删除',
-        action: hasFile ? () => showDeleteConfirm(instance, fileName, isDir) : undefined,
-        danger: true,
-        disabled: !hasFile
-      });
-    }
-
-    items.push({ separator: true, label: '' });
-
-    // 收藏当前目录
-    items.push({
-      label: '收藏当前目录',
+    // ── 复用的"新建"项(文件/文件夹) ──
+    const newFileItem: MenuItem = {
+      label: t('ctxMenuNewFile'),
       action: () => {
-        const info = instance.serverConnectionInfo || { host: 'local', port: 0 };
-        const curPath = fm.getCurrentPath();
-        if (addBookmark(info.host, info.port, curPath)) {
-          console.log('Bookmark added:', curPath);
-        }
-      }
-    });
+        fm.setCurrentPathForContext(newFileDir);
+        showCreateFileDialog(instance);
+      },
+    };
+    const newFolderItem: MenuItem = {
+      label: t('ctxMenuNewFolder'),
+      action: () => {
+        fm.setCurrentPathForContext(newFileDir);
+        showMkdirDialog(instance);
+      },
+    };
 
-    items.push({
-      label: '显示隐藏文件',
-      checked: fm.getShowHiddenFiles(),
-      action: () => fm.toggleShowHiddenFiles()
-    });
+    // ──────────────────────────────────────────────────────
+    // 分支 1:多选
+    // ──────────────────────────────────────────────────────
+    if (multiSelect) {
+      const fullPaths = selected.map(f => f.startsWith('/') ? f : fm.getFullPath(f));
+
+      items.push({
+        label: t('ctxMenuDownloadN').replace('{count}', String(selected.length)),
+        disabled: isLocal,
+        action: isLocal ? undefined : async () => {
+          const infos = resolveSelectedInfo();
+          for (const info of infos) {
+            await (fm as any).downloadFile(info.path, info.isDir);
+          }
+        },
+      });
+      items.push({ separator: true, label: '' });
+      items.push({
+        label: t('ctxMenuCopyToN').replace('{count}', String(selected.length)),
+        action: () => showBatchCopyToDialog(instance, fullPaths),
+      });
+      items.push({
+        label: t('ctxMenuMoveToN').replace('{count}', String(selected.length)),
+        action: () => showBatchMoveToDialog(instance, fullPaths),
+      });
+      items.push({ separator: true, label: '' });
+      items.push({
+        label: t('ctxMenuDeleteN').replace('{count}', String(selected.length)),
+        action: () => {
+          const displayNames = selected.map(f => f.includes('/') ? (f.split('/').pop() || f) : f);
+          showBatchDeleteConfirmByPaths(instance, displayNames, fullPaths);
+        },
+        danger: true,
+      });
+      items.push({ separator: true, label: '' });
+      items.push(viewSubmenu);
+    }
+    // ──────────────────────────────────────────────────────
+    // 分支 2:空白区域(无选中项)
+    // ──────────────────────────────────────────────────────
+    else if (!hasFile) {
+      items.push({
+        label: t('ctxMenuUpload'),
+        disabled: isLocal,
+        action: isLocal ? undefined : () => fm.triggerUpload(),
+      });
+      items.push({ separator: true, label: '' });
+      items.push(newFileItem);
+      items.push(newFolderItem);
+      items.push({ separator: true, label: '' });
+      items.push(viewSubmenu);
+    }
+    // ──────────────────────────────────────────────────────
+    // 分支 3:单选(文件或文件夹)
+    // ──────────────────────────────────────────────────────
+    else {
+      const editable = !isDir && (isEditableFile(fileName) || isImageFile(fileName));
+
+      // 打开 / 用...打开:仅文件
+      if (!isDir) {
+        items.push({
+          label: t('ctxMenuOpen'),
+          action: () => {
+            const pref = settings.fileOpenPreference;
+            if (editable && pref === 'builtin') {
+              const ws = fm.getWebSocket();
+              const transport = (fm as any).transport as import('./terminal-transport').TerminalTransport | null;
+              const conn = transport?.connected ? transport : ws;
+              if (conn) {
+                const fileInfo = fm.getFileInfo(fileName);
+                openFileInEditor(instance.sessionId, fullPath, fileName, fileInfo?.size ?? 0, conn,
+                  instance.serverConnectionInfo?.host);
+              }
+            } else if (isLocal) {
+              invoke('open_path', { path: fullPath }).catch(() => {});
+            } else {
+              (fm as any).downloadFile(fullPath, false);
+            }
+          },
+        });
+
+        if (editable) {
+          items.push({
+            label: t('ctxMenuOpenWith'),
+            children: [
+              {
+                label: t('ctxMenuBuiltinEditor'),
+                radio: true,
+                checked: settings.fileOpenPreference === 'builtin',
+                action: () => {
+                  saveSettings({ ...loadSettings(), fileOpenPreference: 'builtin' });
+                  const ws = fm.getWebSocket();
+                  const transport = (fm as any).transport as import('./terminal-transport').TerminalTransport | null;
+                  const conn = transport?.connected ? transport : ws;
+                  if (conn) {
+                    const fileInfo = fm.getFileInfo(fileName);
+                    openFileInEditor(instance.sessionId, fullPath, fileName, fileInfo?.size ?? 0, conn,
+                      instance.serverConnectionInfo?.host);
+                  }
+                }
+              },
+              {
+                label: t('ctxMenuSystemDefault'),
+                radio: true,
+                checked: settings.fileOpenPreference === 'system',
+                action: () => {
+                  saveSettings({ ...loadSettings(), fileOpenPreference: 'system' });
+                  if (isLocal) {
+                    invoke('open_path', { path: fullPath }).catch(() => {});
+                  } else {
+                    (fm as any).downloadFile(fullPath, false);
+                  }
+                }
+              },
+            ],
+          });
+        } else if (isLocal) {
+          items.push({
+            label: t('ctxMenuOpenWith'),
+            children: [
+              { label: t('ctxMenuSystemDefault'), radio: true, checked: true, action: () => {
+                invoke('open_path', { path: fullPath }).catch(() => {});
+              }},
+            ],
+          });
+        }
+        items.push({ separator: true, label: '' });
+      }
+
+      // 下载 / 上传
+      items.push({
+        label: isDir ? t('ctxMenuDownloadFolder') : t('ctxMenuDownload'),
+        action: isLocal ? undefined : () => (fm as any).downloadFile(fullPath, isDir),
+        disabled: isLocal,
+      });
+      if (isDir) {
+        items.push({
+          label: t('ctxMenuUpload'),
+          disabled: isLocal,
+          children: isLocal ? undefined : [
+            { label: t('ctxMenuUploadToFolder'), action: () => fm.triggerUpload(fullPath) },
+            { label: t('ctxMenuUploadToCurrent'), action: () => fm.triggerUpload() },
+          ],
+        });
+      } else {
+        items.push({
+          label: t('ctxMenuUpload'),
+          disabled: isLocal,
+          action: isLocal ? undefined : () => fm.triggerUpload(),
+        });
+      }
+      items.push({ separator: true, label: '' });
+
+      // 复制路径 / 重命名 / 删除(高频)
+      items.push({
+        label: t('ctxMenuCopyAbsPath'),
+        action: () => navigator.clipboard.writeText(fullPath),
+      });
+      items.push({
+        label: t('ctxMenuRename'),
+        action: () => showRenameDialog(instance, fileName),
+      });
+      items.push({
+        label: t('ctxMenuDelete'),
+        action: () => showDeleteConfirm(instance, fileName, isDir),
+        danger: true,
+      });
+      items.push({ separator: true, label: '' });
+
+      // 更多 ▶:新建 / 复制移动 / 权限 / 链接 / 终端
+      items.push({
+        label: t('ctxMenuMore'),
+        children: [
+          newFileItem,
+          newFolderItem,
+          { separator: true, label: '' },
+          {
+            label: t('ctxMenuCopyTo'),
+            action: () => showCopyDialog(instance, fileName),
+          },
+          {
+            label: t('ctxMenuMoveTo'),
+            action: () => showMoveDialog(instance, fileName),
+          },
+          {
+            label: t('ctxMenuSymlink'),
+            action: () => showSymlinkDialog(instance, fileName),
+          },
+          {
+            label: t('ctxMenuChmod'),
+            action: () => showChmodDialog(instance, fileName),
+          },
+          { separator: true, label: '' },
+          {
+            label: t('ctxMenuTerminalOps'),
+            children: [
+              {
+                label: `cd ${isDir ? '' : '..'}`,
+                action: () => {
+                  const dir = isDir ? escapedPath : escapedPath.substring(0, escapedPath.lastIndexOf('/')) || '/';
+                  del.sendTerminalCommand(instance, `cd ${dir}`);
+                },
+              },
+              {
+                label: isDir ? 'ls' : 'cat',
+                action: () => {
+                  const cmd = isDir ? `ls -la ${escapedPath}` : `cat ${escapedPath}`;
+                  del.sendTerminalCommand(instance, cmd);
+                },
+              },
+              {
+                label: 'cp',
+                action: () => {
+                  const ws = instance.fileManager?.getWebSocket();
+                  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                  const cmd = isDir ? `cp -r ${escapedPath} ` : `cp ${escapedPath} `;
+                  const payload = new TextEncoder().encode('\x15' + cmd);
+                  const msg = new Uint8Array(1 + payload.length);
+                  msg[0] = MsgInput;
+                  msg.set(payload, 1);
+                  ws.send(msg);
+                },
+              },
+              {
+                label: 'rm',
+                action: () => {
+                  const ws = instance.fileManager?.getWebSocket();
+                  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                  const cmd = isDir ? `rm -r ${escapedPath}` : `rm ${escapedPath}`;
+                  const payload = new TextEncoder().encode('\x15' + cmd);
+                  const msg = new Uint8Array(1 + payload.length);
+                  msg[0] = MsgInput;
+                  msg.set(payload, 1);
+                  ws.send(msg);
+                },
+                danger: true,
+              },
+            ],
+          },
+        ],
+      });
+
+      // 详情
+      items.push({
+        label: t('ctxMenuProperties'),
+        action: () => {
+          const info = fm.getFileInfo(fileName);
+          if (info) showFileDetailsDialog(instance, info, fullPath);
+        },
+      });
+
+      items.push({ separator: true, label: '' });
+      items.push(viewSubmenu);
+    }
 
     contextMenu = document.createElement('div');
     contextMenu.className = 'context-menu';
@@ -290,7 +471,6 @@ export function setupContextMenu(
     buildMenu(items, contextMenu, closeMenu);
     document.body.appendChild(contextMenu);
 
-    // 边界检测
     const menuRect = contextMenu.getBoundingClientRect();
     const viewW = window.innerWidth;
     const viewH = window.innerHeight;
@@ -316,11 +496,17 @@ export function setupContextMenu(
     const e = ev as MouseEvent;
     e.preventDefault();
     e.stopPropagation();
-    const target = (e.target as HTMLElement).closest('tr') as HTMLTableRowElement;
+    const target = (e.target as HTMLElement).closest('tr, .tree-node') as HTMLElement;
 
     if (target && target.dataset.path) {
-      const fileName = target.dataset.path;
+      const rawPath = target.dataset.path;
+      const isTreeNode = target.classList.contains('tree-node');
+      const fileName = isTreeNode ? (rawPath.split('/').pop() || rawPath) : rawPath;
       const isDir = target.dataset.isDir === 'true';
+      if (isTreeNode && instance.fileManager) {
+        const parentDir = rawPath.substring(0, rawPath.lastIndexOf('/')) || '/';
+        instance.fileManager.setCurrentPathForContext(parentDir);
+      }
       createContextMenu(e.clientX, e.clientY, fileName, isDir);
     } else {
       createContextMenu(e.clientX, e.clientY, null, false);
@@ -344,6 +530,11 @@ export function showModal(options: {
 
     const overlay = document.createElement('div');
     overlay.className = 'drawer-modal-overlay';
+    // Use fixed positioning when mounted on document.body
+    if (container === document.body) {
+      overlay.style.position = 'fixed';
+      overlay.style.zIndex = '10000';
+    }
 
     const hasInput = !!options.input;
     const copyCommandHtml = options.copyCommand
@@ -400,7 +591,8 @@ export function showModal(options: {
 }
 
 async function showCreateFileDialog(instance: DrawerInstance): Promise<void> {
-  const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
   const fileName = await showModal({
     title: '新建文件',
     input: { placeholder: '文件名称' },
@@ -414,7 +606,9 @@ async function showCreateFileDialog(instance: DrawerInstance): Promise<void> {
 
 export async function showDeleteConfirm(instance: DrawerInstance, fileName: string, isDir: boolean): Promise<void> {
   const type = isDir ? '文件夹' : '文件';
-  const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
+  // Capture full path immediately (before any async delay)
   const fullPath = instance.fileManager?.getFullPath(fileName) || fileName;
   const escapedPath = fullPath.replace(/([ '"\\$`!#&|;(){}])/g, '\\$1');
   const rmCmd = isDir ? `rm -rf ${escapedPath}` : `rm ${escapedPath}`;
@@ -441,12 +635,17 @@ export async function showDeleteConfirm(instance: DrawerInstance, fileName: stri
     container,
   });
   if (result !== null && instance.fileManager) {
-    await instance.fileManager.deleteFile(fileName);
+    // Use captured full path directly (avoids _contextPath timeout)
+    await instance.fileManager.deleteFile(fullPath);
   }
 }
 
 export async function showRenameDialog(instance: DrawerInstance, oldName: string): Promise<void> {
-  const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
+  // Capture full path before async dialog
+  const fullOldPath = instance.fileManager?.getFullPath(oldName) || oldName;
+  const parentDir = fullOldPath.substring(0, fullOldPath.lastIndexOf('/')) || '/';
   const newName = await showModal({
     title: '重命名',
     input: { value: oldName },
@@ -454,12 +653,14 @@ export async function showRenameDialog(instance: DrawerInstance, oldName: string
     container,
   });
   if (newName && newName !== oldName && instance.fileManager) {
-    await instance.fileManager.renameFile(oldName, newName);
+    const fullNewPath = `${parentDir}/${newName}`;
+    await instance.fileManager.renameFile(fullOldPath, fullNewPath);
   }
 }
 
 async function showMkdirDialog(instance: DrawerInstance): Promise<void> {
-  const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
   const dirName = await showModal({
     title: '新建文件夹',
     input: { placeholder: '文件夹名称' },
@@ -492,15 +693,21 @@ const CHMOD_PRESETS = [
 ];
 
 async function showChmodDialog(instance: DrawerInstance, fileName: string): Promise<void> {
-  const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
   const fm = instance.fileManager;
   if (!fm) return;
+  const fullPath = fm.getFullPath(fileName);
   const fileInfo = fm.getFileInfo(fileName);
   const currentMode = fileInfo?.mode || '644';
 
   container.querySelector('.drawer-modal-overlay')?.remove();
   const overlay = document.createElement('div');
   overlay.className = 'drawer-modal-overlay';
+  if (container === document.body) {
+    overlay.style.position = 'fixed';
+    overlay.style.zIndex = '10000';
+  }
 
   const presetsHtml = CHMOD_PRESETS.map(p =>
     `<button class="chmod-preset${p.mode === currentMode ? ' active' : ''}" data-mode="${p.mode}" title="${p.desc}">` +
@@ -529,7 +736,7 @@ async function showChmodDialog(instance: DrawerInstance, fileName: string): Prom
       const mode = parseInt(modeStr, 8);
       if (!isNaN(mode)) {
         close();
-        await fm.chmodFile(fileName, mode);
+        await fm.chmodFile(fullPath, mode);
       }
     });
   });
@@ -538,25 +745,27 @@ async function showChmodDialog(instance: DrawerInstance, fileName: string): Prom
 }
 
 async function showCopyDialog(instance: DrawerInstance, fileName: string): Promise<void> {
-  const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
   const fm = instance.fileManager;
   if (!fm) return;
-  const currentPath = fm.getCurrentPath();
-  const defaultDest = (currentPath === '/' ? '/' : currentPath + '/') + fileName + '.copy';
+  const fullPath = fm.getFullPath(fileName);
+  const defaultDest = fullPath + '.copy';
   const destPath = await showModal({
     title: '复制到...',
-    description: `源文件: ${fm.getFullPath(fileName)}`,
+    description: `源文件: ${fullPath}`,
     input: { value: defaultDest, placeholder: '目标路径' },
     confirmText: '复制',
     container,
   });
   if (destPath) {
-    await fm.copyFile(fileName, destPath);
+    await fm.copyFile(fullPath, destPath);
   }
 }
 
 async function showMoveDialog(instance: DrawerInstance, fileName: string): Promise<void> {
-  const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
   const fm = instance.fileManager;
   if (!fm) return;
   const fullPath = fm.getFullPath(fileName);
@@ -568,12 +777,13 @@ async function showMoveDialog(instance: DrawerInstance, fileName: string): Promi
     container,
   });
   if (destPath && destPath !== fullPath) {
-    await fm.moveFile(fileName, destPath);
+    await fm.moveFile(fullPath, destPath);
   }
 }
 
 async function showSymlinkDialog(instance: DrawerInstance, fileName: string): Promise<void> {
-  const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
   const fm = instance.fileManager;
   if (!fm) return;
   const target = fm.getFullPath(fileName);
@@ -589,8 +799,57 @@ async function showSymlinkDialog(instance: DrawerInstance, fileName: string): Pr
   }
 }
 
+async function showBatchCopyToDialog(instance: DrawerInstance, sourcePaths: string[]): Promise<void> {
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
+  const fm = instance.fileManager;
+  if (!fm) return;
+  const names = sourcePaths.map(p => p.split('/').pop() || p);
+  const destDir = await showModal({
+    title: t('ctxMenuCopyToN').replace('{count}', String(sourcePaths.length)),
+    description: names.slice(0, 10).join('\n') + (names.length > 10 ? `\n...${names.length} items` : ''),
+    input: { value: fm.getCurrentPath(), placeholder: '/' },
+    confirmText: t('ctxMenuCopyTo').replace('...', ''),
+    container,
+  });
+  if (destDir) {
+    for (const src of sourcePaths) {
+      const name = src.split('/').pop() || '';
+      const dest = destDir.endsWith('/') ? `${destDir}${name}` : `${destDir}/${name}`;
+      await fm.copyFile(src, dest);
+    }
+  }
+}
+
+async function showBatchMoveToDialog(instance: DrawerInstance, sourcePaths: string[]): Promise<void> {
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
+  const fm = instance.fileManager;
+  if (!fm) return;
+  const names = sourcePaths.map(p => p.split('/').pop() || p);
+  const destDir = await showModal({
+    title: t('ctxMenuMoveToN').replace('{count}', String(sourcePaths.length)),
+    description: names.slice(0, 10).join('\n') + (names.length > 10 ? `\n...${names.length} items` : ''),
+    input: { value: fm.getCurrentPath(), placeholder: '/' },
+    confirmText: t('ctxMenuMoveTo').replace('...', ''),
+    container,
+  });
+  if (destDir) {
+    for (const src of sourcePaths) {
+      const name = src.split('/').pop() || '';
+      const dest = destDir.endsWith('/') ? `${destDir}${name}` : `${destDir}/${name}`;
+      await fm.moveFile(src, dest);
+    }
+  }
+}
+
 export async function showBatchDeleteConfirm(instance: DrawerInstance, fileNames: string[]): Promise<void> {
-  const container = instance.element.querySelector('.drawer-content') as HTMLElement || instance.element;
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
+  // Capture full paths before async dialog
+  const fullPaths = instance.fileManager
+    ? fileNames.map(n => instance.fileManager!.getFullPath(n))
+    : fileNames;
   const result = await showModal({
     title: `确定要删除 ${fileNames.length} 个文件/文件夹吗？`,
     description: fileNames.slice(0, 10).join('\n') + (fileNames.length > 10 ? `\n...等 ${fileNames.length} 项` : ''),
@@ -599,8 +858,26 @@ export async function showBatchDeleteConfirm(instance: DrawerInstance, fileNames
     container,
   });
   if (result !== null && instance.fileManager) {
-    for (const name of fileNames) {
-      await instance.fileManager.deleteFile(name);
+    for (const p of fullPaths) {
+      await instance.fileManager.deleteFile(p);
+    }
+  }
+}
+
+/** Batch delete with pre-resolved full paths (for sidebar cross-directory multi-select) */
+async function showBatchDeleteConfirmByPaths(instance: DrawerInstance, displayNames: string[], fullPaths: string[]): Promise<void> {
+  const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
+  const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
+  const result = await showModal({
+    title: `确定要删除 ${displayNames.length} 个文件/文件夹吗？`,
+    description: displayNames.slice(0, 10).join('\n') + (displayNames.length > 10 ? `\n...等 ${displayNames.length} 项` : ''),
+    confirmText: '删除',
+    danger: true,
+    container,
+  });
+  if (result !== null && instance.fileManager) {
+    for (const p of fullPaths) {
+      await instance.fileManager.deleteFile(p);
     }
   }
 }

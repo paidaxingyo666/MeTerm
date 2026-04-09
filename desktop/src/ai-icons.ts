@@ -5,13 +5,22 @@
 // ─── Tool Color Palette ──────────────────────────────────────────
 
 export const TOOL_COLORS: Record<string, string> = {
-  run_command: '#F59E0B',    // amber
-  read_terminal: '#3B82F6',  // blue
-  read_file: '#06B6D4',      // cyan
-  write_file: '#8B5CF6',     // purple
-  list_files: '#10B981',     // emerald
-  search_files: '#EC4899',   // pink
-  command_help: '#14B8A6',   // teal
+  run_command: '#F59E0B',          // amber
+  read_terminal: '#3B82F6',        // blue
+  read_file: '#06B6D4',            // cyan
+  write_file: '#8B5CF6',           // purple
+  list_files: '#10B981',           // emerald
+  search_files: '#EC4899',         // pink
+  command_help: '#14B8A6',         // teal
+  wait_for_user_input: '#FBBF24',  // bright amber (highlight "user action required")
+  read_screen: '#A78BFA',          // lavender (visual/eyes)
+  // Phase 3 — task planning + transfer + structured search
+  todo_write: '#0EA5E9',           // sky blue (planning)
+  upload_file: '#22C55E',          // green (data flowing out → server)
+  download_file: '#0EA5E9',        // sky blue (data flowing back)
+  list_directory: '#10B981',       // emerald (folder)
+  glob_search: '#EC4899',          // pink (pattern matching)
+  grep_search: '#F472B6',          // pink-400 (text matching)
 };
 
 export const STATUS_COLORS = {
@@ -82,6 +91,72 @@ export function toolIcon(toolName: string, size = 16): string {
         <line x1="5" y1="5" x2="11" y2="5" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
         <line x1="5" y1="8" x2="11" y2="8" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
         <line x1="5" y1="11" x2="8.5" y2="11" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+      </svg>`;
+
+    case 'wait_for_user_input':
+      // Hourglass-with-keyboard-cursor glyph: signals "human, type here".
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4 2h8M4 14h8M5 2v2.5c0 1.5 3 2 3 3.5s-3 2-3 3.5V14M11 2v2.5c0 1.5-3 2-3 3.5s3 2 3 3.5V14" stroke="${color}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M6 5.5h4" stroke="${color}" stroke-width="1.3" stroke-linecap="round"/>
+      </svg>`;
+
+    case 'read_screen':
+      // Eye glyph — the agent is "looking" at the terminal.
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M1.5 8s2.2-4.5 6.5-4.5S14.5 8 14.5 8s-2.2 4.5-6.5 4.5S1.5 8 1.5 8z" stroke="${color}" stroke-width="1.4" stroke-linejoin="round"/>
+        <circle cx="8" cy="8" r="2" stroke="${color}" stroke-width="1.4"/>
+      </svg>`;
+
+    case 'todo_write':
+      // Checklist clipboard
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="3" y="2" width="10" height="12.5" rx="1.2" stroke="${color}" stroke-width="1.4"/>
+        <rect x="5.5" y="1" width="5" height="2" rx="0.5" stroke="${color}" stroke-width="1.3" fill="${color}" fill-opacity="0.15"/>
+        <path d="M5 6.5L6 7.5L7.5 6" stroke="${color}" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="9" y1="6.8" x2="11.5" y2="6.8" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+        <path d="M5 9.8L6 10.8L7.5 9.3" stroke="${color}" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="9" y1="10.1" x2="11.5" y2="10.1" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+      </svg>`;
+
+    case 'upload_file':
+      // Cloud-up
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4 11.5h8a2.5 2.5 0 100-5 3.5 3.5 0 00-7-.4 2.5 2.5 0 00-1 4.9z" stroke="${color}" stroke-width="1.4" stroke-linejoin="round"/>
+        <path d="M8 14V8M5.5 10L8 7.5L10.5 10" stroke="${color}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+
+    case 'download_file':
+      // Cloud-down
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4 9.5h8a2.5 2.5 0 100-5 3.5 3.5 0 00-7-.4 2.5 2.5 0 00-1 4.9z" stroke="${color}" stroke-width="1.4" stroke-linejoin="round"/>
+        <path d="M8 8v6M5.5 11.5L8 14L10.5 11.5" stroke="${color}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+
+    case 'list_directory':
+      // Open folder with lines
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M2 4a1 1 0 011-1h3l1.5 1.5H13a1 1 0 011 1V12a1 1 0 01-1 1H3a1 1 0 01-1-1V4z" stroke="${color}" stroke-width="1.4"/>
+        <line x1="4.5" y1="7.5" x2="11.5" y2="7.5" stroke="${color}" stroke-width="1.1" stroke-linecap="round" opacity="0.7"/>
+        <line x1="4.5" y1="9.5" x2="10" y2="9.5" stroke="${color}" stroke-width="1.1" stroke-linecap="round" opacity="0.7"/>
+        <line x1="4.5" y1="11.5" x2="8.5" y2="11.5" stroke="${color}" stroke-width="1.1" stroke-linecap="round" opacity="0.7"/>
+      </svg>`;
+
+    case 'glob_search':
+      // Magnifier over a star (pattern)
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="7" cy="7" r="4.5" stroke="${color}" stroke-width="1.4"/>
+        <line x1="10.2" y1="10.2" x2="13.5" y2="13.5" stroke="${color}" stroke-width="1.4" stroke-linecap="round"/>
+        <path d="M7 5v4M5 7h4M5.5 5.5l3 3M8.5 5.5l-3 3" stroke="${color}" stroke-width="0.9" stroke-linecap="round" opacity="0.7"/>
+      </svg>`;
+
+    case 'grep_search':
+      // Magnifier over text lines
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="7" cy="7" r="4.5" stroke="${color}" stroke-width="1.4"/>
+        <line x1="10.2" y1="10.2" x2="13.5" y2="13.5" stroke="${color}" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="5" y1="6" x2="9" y2="6" stroke="${color}" stroke-width="1" stroke-linecap="round" opacity="0.8"/>
+        <line x1="5" y1="7.5" x2="8.5" y2="7.5" stroke="${color}" stroke-width="1" stroke-linecap="round" opacity="0.8"/>
+        <line x1="5" y1="9" x2="9" y2="9" stroke="${color}" stroke-width="1" stroke-linecap="round" opacity="0.8"/>
       </svg>`;
 
     default:

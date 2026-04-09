@@ -77,3 +77,4 @@ export function validateFileName(name: string): boolean {
 
   return true;
 }
+

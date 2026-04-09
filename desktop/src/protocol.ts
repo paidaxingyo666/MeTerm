@@ -98,12 +98,20 @@ export interface FileInfo {
   owner: string;
   group: string;
   is_link?: boolean;
+  /** 符号链接的目标路径(仅 is_link=true 时填充)。
+   *  注意:is_dir 字段对于符号链接已经反映了**解引用后**的类型。 */
+  link_target?: string;
 }
 
 export interface FileListResponse {
   path: string;
   files: FileInfo[];
   request_id?: string;
+  error?: string;
+  /** 后端因 soft_limit 截断了结果 */
+  truncated?: boolean;
+  /** 截断前的总文件数(仅当 truncated=true 时) */
+  total?: number;
 }
 
 export interface ServerInfoRequest {

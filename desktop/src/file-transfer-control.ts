@@ -1,3 +1,4 @@
+import { Channel, invoke } from '@tauri-apps/api/core';
 import {
   MsgFileUploadStart,
   MsgFileUploadChunk,
@@ -17,40 +18,54 @@ import {
 import {
   type DownloadState,
   type DownloadQueueItem,
+  createDownloadState,
   startDownloadFromQueue as _startDownloadFromQueue,
   handleDownloadChunk as _handleDownloadChunk,
   cleanupDownloadState as _cleanupDownloadState,
   resumeDownload as _resumeDownload,
 } from './file-download';
-import { readFile, stat as fsStat } from '@tauri-apps/plugin-fs';
+import { readFile, stat as fsStat, open as fsOpen, SeekMode } from '@tauri-apps/plugin-fs';
+import type { FileHandle } from '@tauri-apps/plugin-fs';
 
 export { _handleDownloadChunk as handleDownloadChunk };
 
+const MAX_CONCURRENT_UPLOADS = 3;
+const MAX_CONCURRENT_DOWNLOADS = 3;
+let _nextNumTransferId = 1;
+export function nextNumTransferId(): number { return _nextNumTransferId++; }
+
+export interface ActiveUpload {
+  numTransferId: number;
+  path: string;
+  content?: Uint8Array;
+  localFilePath?: string;
+  fileHandle?: FileHandle;
+  reading?: boolean;
+  offset: number;
+  totalSize: number;
+  inFlightChunks: number;
+  pipelineSize: number;
+  pipelineAckCount: number;
+  isPaused: boolean;
+  recordId: string | null;
+  backendManaged?: boolean;
+  backendHandle?: Channel<BackendUploadEvent> | null;
+}
+
 export interface TransferContext {
+  sessionId: string;
   isConnected: boolean;
   send: (data: Uint8Array) => void;
   currentPath: string;
   files: import('./protocol').FileInfo[];
+  useBackendDownload: boolean;
+  useBackendUpload: boolean;
 
-  pendingUpload: { path: string; content: Uint8Array; offset: number } | null;
-  setPendingUpload: (v: { path: string; content: Uint8Array; offset: number } | null) => void;
-  inFlightChunks: number;
-  setInFlightChunks: (v: number) => void;
-  pipelineSize: number;
-  setPipelineSize: (v: number) => void;
-  pipelineAckCount: number;
-  setPipelineAckCount: (v: number) => void;
-  isUploadPaused: boolean;
-  setIsUploadPaused: (v: boolean) => void;
-  currentUploadId: string | null;
-  setCurrentUploadId: (v: string | null) => void;
-  uploadQueue: Array<{ path: string; content: Uint8Array; filename: string; size: number; transferId: string }>;
+  activeUploads: Map<number, ActiveUpload>;
+  uploadQueue: Array<{ path: string; content?: Uint8Array; localFilePath?: string; filename: string; size: number; transferId: string; numTransferId: number }>;
 
-  dlState: DownloadState;
-  setDlState: (v: DownloadState) => void;
+  activeDownloads: Map<number, DownloadState>;
   downloadQueue: DownloadQueueItem[];
-  isProcessingDownload: boolean;
-  setIsProcessingDownload: (v: boolean) => void;
 
   pendingPartCleanup: boolean;
   setPendingPartCleanup: (v: boolean) => void;
@@ -68,6 +83,7 @@ export interface TransferContext {
 
   addTransferRecord: (type: 'upload' | 'download', filename: string, path: string, size: number, savePath?: string) => string;
   updateTransferProgress: (id: string, progress: number, status: 'pending' | 'inprogress' | 'completed' | 'failed' | 'paused' | 'cancelled', error?: string) => void;
+  updateTransferSize: (id: string, size: number) => void;
   findRecord: (id: string) => { type: 'upload' | 'download'; status: string; progress: number; path: string; size: number } | undefined;
   resetSpeedTracker: (id: string, currentBytes: number) => void;
 
@@ -76,81 +92,330 @@ export interface TransferContext {
   loadDirectory: (path: string) => Promise<void>;
 }
 
-export function adaptPipeline(ctx: TransferContext): void {
-  const result = _adaptPipeline({
-    inFlightChunks: ctx.inFlightChunks,
-    pipelineSize: ctx.pipelineSize,
-    pipelineAckCount: ctx.pipelineAckCount,
-  });
-  ctx.setPipelineSize(result.pipelineSize);
-  ctx.setPipelineAckCount(result.pipelineAckCount);
+interface BackendDownloadEvent {
+  kind: 'started' | 'progress' | 'completed' | 'failed' | 'cancelled';
+  transfer_id: number;
+  total_size?: number;
+  written?: number;
+  save_path?: string;
+  message?: string;
 }
 
-export function sendUploadChunk(ctx: TransferContext): void {
-  const CHUNK_SIZE = 1 * 1024 * 1024;
+interface BackendUploadEvent {
+  kind: 'started' | 'progress' | 'completed' | 'failed' | 'cancelled';
+  transfer_id: number;
+  total_size?: number;
+  written?: number;
+  remote_path?: string;
+  message?: string;
+}
 
-  if (ctx.isUploadPaused) return;
+/** Files larger than 50 MB use streaming read to avoid loading entire content into memory */
+const STREAM_THRESHOLD = 50 * 1024 * 1024;
 
-  // 限速模式：每次只发一个 chunk，然后 delay
-  const effectivePipeline = ctx.speedLimit > 0 ? 1 : ctx.pipelineSize;
+/** Close file handle if present and remove active upload */
+async function cleanupActiveUpload(ctx: TransferContext, numTransferId: number): Promise<void> {
+  const au = ctx.activeUploads.get(numTransferId);
+  if (au?.fileHandle) {
+    try { await au.fileHandle.close(); } catch { /* ignore */ }
+  }
+  ctx.activeUploads.delete(numTransferId);
+}
 
-  while (
-    ctx.pendingUpload &&
-    ctx.isConnected &&
-    ctx.inFlightChunks < effectivePipeline &&
-    !ctx.isUploadPaused
-  ) {
-    const totalSize = ctx.pendingUpload.content.length;
-    const offset = ctx.pendingUpload.offset;
+function isBackendUpload(au: ActiveUpload): boolean {
+  return au.backendManaged === true;
+}
 
-    if (offset >= totalSize) break;
+function isBackendDownload(ds: DownloadState): boolean {
+  return ds.backendManaged;
+}
 
-    const end = Math.min(offset + CHUNK_SIZE, totalSize);
-    const chunkData = ctx.pendingUpload.content.slice(offset, end);
+function setBackendDownloadState(state: DownloadState, item: DownloadQueueItem): void {
+  state.backendManaged = true;
+  state.backendHandle = null;
+  state.currentDownloadId = item.transferId;
+  state.pendingDownload = {
+    filename: item.filename,
+    savePath: item.savePath,
+    remotePath: item.remotePath,
+    totalSize: item.fileSize,
+    receivedSize: 0,
+  };
+  state.downloadBuffer = [];
+  state.downloadBufferSize = 0;
+  state.writeQueue = [];
+  state.isWriting = false;
+  state.writeError = null;
+  state.isDownloadPaused = false;
+  state.lastDownloadProgressUpdate = 0;
+}
 
-    const payload = new Uint8Array(16 + chunkData.length);
-    const view = new DataView(payload.buffer);
-    view.setBigUint64(0, BigInt(totalSize));
-    view.setBigUint64(8, BigInt(offset));
-    payload.set(chunkData, 16);
-
-    ctx.send(encodeMessage(MsgFileUploadChunk, payload));
-
-    ctx.pendingUpload.offset = end;
-    ctx.setInFlightChunks(ctx.inFlightChunks + 1);
-
-    const progress = totalSize > 0 ? Math.min(Math.round((end / totalSize) * 100), 99) : 99;
-    if (ctx.currentUploadId) {
-      ctx.updateTransferProgress(ctx.currentUploadId, progress, 'inprogress');
+function finalizeBackendDownload(ctx: TransferContext, numTid: number, status: 'completed' | 'failed' | 'cancelled', error?: string): void {
+  const ds = ctx.activeDownloads.get(numTid);
+  if (!ds) return;
+  const recordId = ds.currentDownloadId;
+  ctx.activeDownloads.delete(numTid);
+  if (recordId) {
+    if (status === 'completed') {
+      ctx.updateTransferProgress(recordId, 100, 'completed');
+    } else {
+      const progress = ds.pendingDownload && ds.pendingDownload.totalSize > 0
+        ? Math.min((ds.pendingDownload.receivedSize / ds.pendingDownload.totalSize) * 100, 99.9)
+        : 0;
+      ctx.updateTransferProgress(recordId, progress, status, error);
     }
+  }
+  void processNextDownload(ctx);
+}
 
-    console.log(`Sent chunk ${offset}-${end}/${totalSize} (in-flight: ${ctx.inFlightChunks}/${effectivePipeline})`);
+function handleBackendDownloadEvent(ctx: TransferContext, numTid: number, event: BackendDownloadEvent): void {
+  const ds = ctx.activeDownloads.get(numTid);
+  if (!ds || !ds.pendingDownload) return;
+  const recordId = ds.currentDownloadId;
 
-    // 限速时只发一个 chunk 后退出循环，等 ACK 回来时再 delay 发送
+  switch (event.kind) {
+    case 'started': {
+      const totalSize = event.total_size ?? ds.pendingDownload.totalSize;
+      ds.pendingDownload.totalSize = totalSize;
+      if (recordId && totalSize > 0) {
+        ctx.updateTransferSize(recordId, totalSize);
+      }
+      break;
+    }
+    case 'progress': {
+      const totalSize = event.total_size ?? ds.pendingDownload.totalSize;
+      const written = event.written ?? ds.pendingDownload.receivedSize;
+      ds.pendingDownload.totalSize = totalSize;
+      ds.pendingDownload.receivedSize = written;
+      if (recordId && !ds.isDownloadPaused && totalSize > 0) {
+        const progress = Math.min((written / totalSize) * 100, 99.9);
+        ctx.updateTransferProgress(recordId, progress, 'inprogress');
+      }
+      break;
+    }
+    case 'completed': {
+      const totalSize = event.total_size ?? ds.pendingDownload.totalSize;
+      ds.pendingDownload.totalSize = totalSize;
+      ds.pendingDownload.receivedSize = totalSize;
+      finalizeBackendDownload(ctx, numTid, 'completed');
+      break;
+    }
+    case 'cancelled': {
+      finalizeBackendDownload(ctx, numTid, 'cancelled', '用户取消');
+      break;
+    }
+    case 'failed': {
+      finalizeBackendDownload(ctx, numTid, 'failed', event.message || '下载失败');
+      break;
+    }
+  }
+}
+
+async function sendBackendDownloadControl(ctx: TransferContext, numTid: number, signal: 'pause' | 'continue' | 'cancel'): Promise<void> {
+  await invoke('control_session_file_download', {
+    sessionId: ctx.sessionId,
+    transferId: numTid,
+    signal,
+  });
+}
+
+async function sendBackendUploadControl(ctx: TransferContext, numTid: number, signal: 'pause' | 'continue' | 'cancel'): Promise<void> {
+  await invoke('control_session_file_upload', {
+    sessionId: ctx.sessionId,
+    transferId: numTid,
+    signal,
+  });
+}
+
+function finalizeBackendUpload(ctx: TransferContext, numTid: number, status: 'completed' | 'failed' | 'cancelled', error?: string): void {
+  const au = ctx.activeUploads.get(numTid);
+  if (!au) return;
+  const recordId = au.recordId;
+  ctx.activeUploads.delete(numTid);
+  if (recordId) {
+    if (status === 'completed') {
+      ctx.updateTransferProgress(recordId, 100, 'completed');
+      window.dispatchEvent(new CustomEvent('meterm-file-op-done', { detail: { sessionId: ctx.sessionId } }));
+    } else {
+      const progress = au.totalSize > 0
+        ? Math.min((au.offset / au.totalSize) * 100, 99.9)
+        : 0;
+      ctx.updateTransferProgress(recordId, progress, status, error);
+    }
+  }
+  void processNextUpload(ctx);
+}
+
+function handleBackendUploadEvent(ctx: TransferContext, numTid: number, event: BackendUploadEvent): void {
+  const au = ctx.activeUploads.get(numTid);
+  if (!au) return;
+  const recordId = au.recordId;
+
+  switch (event.kind) {
+    case 'started': {
+      const totalSize = event.total_size ?? au.totalSize;
+      au.totalSize = totalSize;
+      if (recordId && totalSize > 0) {
+        ctx.updateTransferSize(recordId, totalSize);
+      }
+      break;
+    }
+    case 'progress': {
+      const totalSize = event.total_size ?? au.totalSize;
+      const written = event.written ?? au.offset;
+      au.totalSize = totalSize;
+      au.offset = written;
+      if (recordId && !au.isPaused && totalSize > 0) {
+        const progress = Math.min((written / totalSize) * 100, 99.9);
+        ctx.updateTransferProgress(recordId, progress, 'inprogress');
+      }
+      break;
+    }
+    case 'completed': {
+      const totalSize = event.total_size ?? au.totalSize;
+      au.totalSize = totalSize;
+      au.offset = totalSize;
+      finalizeBackendUpload(ctx, numTid, 'completed');
+      break;
+    }
+    case 'cancelled': {
+      finalizeBackendUpload(ctx, numTid, 'cancelled', '用户取消');
+      break;
+    }
+    case 'failed': {
+      finalizeBackendUpload(ctx, numTid, 'failed', event.message || '上传失败');
+      break;
+    }
+  }
+}
+
+export function adaptPipeline(au: ActiveUpload): void {
+  const result = _adaptPipeline({
+    inFlightChunks: au.inFlightChunks,
+    pipelineSize: au.pipelineSize,
+    pipelineAckCount: au.pipelineAckCount,
+  });
+  au.pipelineSize = result.pipelineSize;
+  au.pipelineAckCount = result.pipelineAckCount;
+}
+
+export function sendUploadChunk(ctx: TransferContext, numTransferId: number): void {
+  const CHUNK_SIZE = 1 * 1024 * 1024;
+  const au = ctx.activeUploads.get(numTransferId);
+  if (!au || au.isPaused || !ctx.isConnected) return;
+
+  const effectivePipeline = ctx.speedLimit > 0 ? 1 : au.pipelineSize;
+
+  if (au.fileHandle) {
+    // Streaming mode: async read from file handle
+    sendStreamChunks(ctx, au, CHUNK_SIZE, effectivePipeline).catch(err => {
+      console.error('Stream upload error:', err);
+    });
+  } else if (au.content) {
+    // In-memory mode: sync
+    sendBufferChunks(ctx, au, CHUNK_SIZE, effectivePipeline);
+  }
+}
+
+/** Send chunks from Uint8Array content (synchronous, no await needed) */
+function sendBufferChunks(ctx: TransferContext, au: ActiveUpload, chunkSize: number, maxInFlight: number): void {
+  while (
+    ctx.activeUploads.has(au.numTransferId) &&
+    ctx.isConnected &&
+    au.inFlightChunks < maxInFlight &&
+    !au.isPaused
+  ) {
+    const { totalSize, offset, content } = au;
+    if (!content || offset >= totalSize) break;
+
+    const end = Math.min(offset + chunkSize, totalSize);
+    const chunkData = content.subarray(offset, end);
+
+    sendChunkPayload(ctx, au, chunkData);
+    au.offset = end;
+
     if (ctx.speedLimit > 0) break;
   }
 }
 
-export function resumeUpload(ctx: TransferContext): void {
-  if (!ctx.pendingUpload || !ctx.isConnected) {
-    if (ctx.pendingUpload) {
-      ctx.setPendingUpload(null);
-      if (ctx.currentUploadId) {
-        ctx.updateTransferProgress(ctx.currentUploadId, 0, 'failed', '连接已断开');
-        ctx.setCurrentUploadId(null);
-      }
-    }
-    return;
-  }
+/** Send chunks by streaming from a file handle (async, prevents concurrent reads via reading flag) */
+async function sendStreamChunks(ctx: TransferContext, au: ActiveUpload, chunkSize: number, maxInFlight: number): Promise<void> {
+  if (!au.fileHandle || au.reading) return;
+  au.reading = true;
 
-  console.log(`Attempting upload resume for ${ctx.pendingUpload.path}`);
-  const request = JSON.stringify({ path: ctx.pendingUpload.path, size: ctx.pendingUpload.content.length });
-  const message = encodeMessage(MsgFileUploadResume, new TextEncoder().encode(request));
-  ctx.send(message);
+  try {
+    while (
+      ctx.activeUploads.has(au.numTransferId) &&
+      ctx.isConnected &&
+      au.inFlightChunks < maxInFlight &&
+      !au.isPaused
+    ) {
+      const { totalSize, offset } = au;
+      if (offset >= totalSize) break;
+
+      const readSize = Math.min(chunkSize, totalSize - offset);
+      const buf = new Uint8Array(readSize);
+      const bytesRead = await au.fileHandle!.read(buf);
+
+      // Re-check state after await — upload may have been cancelled/failed
+      if (!ctx.activeUploads.has(au.numTransferId) || !ctx.isConnected || au.isPaused) break;
+      if (bytesRead === null || bytesRead === 0) break;
+
+      const chunkData = bytesRead < readSize ? buf.subarray(0, bytesRead) : buf;
+      sendChunkPayload(ctx, au, chunkData);
+      au.offset = offset + chunkData.length;
+
+      if (ctx.speedLimit > 0) break;
+    }
+  } finally {
+    if (ctx.activeUploads.has(au.numTransferId)) {
+      au.reading = false;
+    }
+  }
+}
+
+/** Build and send a chunk payload */
+function sendChunkPayload(ctx: TransferContext, au: ActiveUpload, chunkData: Uint8Array): void {
+  const { totalSize, offset, numTransferId } = au;
+  const payload = new Uint8Array(4 + 16 + chunkData.length);
+  const view = new DataView(payload.buffer);
+  view.setUint32(0, numTransferId);
+  view.setBigUint64(4, BigInt(totalSize));
+  view.setBigUint64(12, BigInt(offset));
+  payload.set(chunkData, 20);
+
+  ctx.send(encodeMessage(MsgFileUploadChunk, payload));
+  au.inFlightChunks++;
+
+  const progress = totalSize > 0 ? Math.min((offset + chunkData.length) / totalSize * 100, 99.9) : 99;
+  if (au.recordId) {
+    ctx.updateTransferProgress(au.recordId, progress, 'inprogress');
+  }
+}
+
+export async function resumeUpload(ctx: TransferContext): Promise<void> {
+  for (const [numTid, au] of ctx.activeUploads) {
+    if (isBackendUpload(au)) {
+      continue;
+    }
+    if (!ctx.isConnected) {
+      if (au.recordId) ctx.updateTransferProgress(au.recordId, 0, 'failed', '连接已断开');
+      ctx.activeUploads.delete(numTid);
+      continue;
+    }
+    console.log(`Attempting upload resume for ${au.path} (tid=${numTid})`);
+    const request = JSON.stringify({ path: au.path, size: au.totalSize, transferId: numTid });
+    ctx.send(encodeMessage(MsgFileUploadResume, new TextEncoder().encode(request)));
+  }
 }
 
 export async function resumeDownload(ctx: TransferContext): Promise<void> {
-  await _resumeDownload(ctx.isConnected ? (data: Uint8Array) => ctx.send(data) : null, ctx.dlState, dlCallbacks(ctx));
+  for (const [numTid, state] of ctx.activeDownloads) {
+    if (isBackendDownload(state)) {
+      continue;
+    }
+    await _resumeDownload(ctx.isConnected ? (data: Uint8Array) => ctx.send(data) : null, state, dlCallbacks(ctx, numTid), numTid);
+  }
 }
 
 export async function triggerUpload(ctx: TransferContext): Promise<void> {
@@ -164,15 +429,12 @@ export async function triggerUpload(ctx: TransferContext): Promise<void> {
     if (!selected) return;
 
     const filePaths = Array.isArray(selected) ? selected : [selected];
-    const { readFile } = await import('@tauri-apps/plugin-fs');
 
     ctx.setBatchUploadCount(filePaths.length);
 
     for (const filePath of filePaths) {
       try {
-        const content = await readFile(filePath);
-        const filename = filePath.replace(/\\/g, '/').split('/').pop() || 'file';
-        await uploadFile(ctx, filename, content);
+        await uploadLocalFile(ctx, filePath);
       } catch (err) {
         console.error(`Failed to read file ${filePath}:`, err);
       }
@@ -184,7 +446,19 @@ export async function triggerUpload(ctx: TransferContext): Promise<void> {
   }
 }
 
-export async function uploadFile(ctx: TransferContext, filename: string, content: Uint8Array, targetDir?: string): Promise<void> {
+export async function uploadLocalFile(ctx: TransferContext, localFilePath: string, targetDir?: string, skipConflictCheck?: boolean): Promise<void> {
+  const filename = localFilePath.replace(/\\/g, '/').split('/').pop() || 'file';
+  const info = await fsStat(localFilePath);
+  if (ctx.useBackendUpload || info.size > STREAM_THRESHOLD) {
+    await uploadFileStreaming(ctx, filename, localFilePath, info.size, targetDir, skipConflictCheck);
+    return;
+  }
+
+  const content = await readFile(localFilePath);
+  await uploadFile(ctx, filename, content, targetDir, skipConflictCheck);
+}
+
+export async function uploadFile(ctx: TransferContext, filename: string, content: Uint8Array, targetDir?: string, skipConflictCheck?: boolean): Promise<void> {
   const dir = targetDir || ctx.currentPath;
   let actualFilename = filename;
   let targetPath = dir === '/'
@@ -196,54 +470,153 @@ export async function uploadFile(ctx: TransferContext, filename: string, content
     return;
   }
 
-  const stat = await checkFileExists(ctx, targetPath);
-  if (stat.exists) {
-    const result = await showUploadConflictDialog(ctx, filename);
-    if (result.action === 'skip') return;
-    if (result.action === 'rename') {
-      actualFilename = result.newName!;
-      targetPath = dir === '/'
-        ? `/${actualFilename}`
-        : `${dir}/${actualFilename}`;
+  if (!skipConflictCheck) {
+    try {
+      const stat = await checkFileExists(ctx, targetPath);
+      if (stat.exists) {
+        const result = await showUploadConflictDialog(ctx, filename);
+        if (result.action === 'skip') return;
+        if (result.action === 'rename') {
+          actualFilename = result.newName!;
+          targetPath = dir === '/'
+            ? `/${actualFilename}`
+            : `${dir}/${actualFilename}`;
+        }
+      }
+    } catch {
+      // Stat check failed — proceed with upload anyway
     }
   }
 
-  const transferId = ctx.addTransferRecord('upload', actualFilename, targetPath, content.length);
-  ctx.uploadQueue.push({ path: targetPath, content, filename: actualFilename, size: content.length, transferId });
+  const fileSize = content.length;
+  const transferId = ctx.addTransferRecord('upload', actualFilename, targetPath, fileSize);
+  const numTid = nextNumTransferId();
+  ctx.uploadQueue.push({ path: targetPath, content, filename: actualFilename, size: fileSize, transferId, numTransferId: numTid });
 
-  if (!ctx.pendingUpload) {
+  if (ctx.activeUploads.size < MAX_CONCURRENT_UPLOADS) {
     processNextUpload(ctx);
   }
 }
 
-export function processNextUpload(ctx: TransferContext): void {
-  if (ctx.uploadQueue.length === 0) {
-    ctx.loadDirectory(ctx.currentPath);
-    return;
-  }
-  if (ctx.pendingUpload) return;
+/** Enqueue a large file for streaming upload (content read on-demand from disk) */
+async function uploadFileStreaming(ctx: TransferContext, filename: string, localFilePath: string, fileSize: number, targetDir?: string, skipConflictCheck?: boolean): Promise<void> {
+  const dir = targetDir || ctx.currentPath;
+  let actualFilename = filename;
+  let targetPath = dir === '/'
+    ? `/${filename}`
+    : `${dir}/${filename}`;
+
   if (!ctx.isConnected) {
-    for (const item of ctx.uploadQueue) {
-      ctx.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
-    }
-    ctx.uploadQueue.length = 0;
+    console.error('WebSocket not ready');
     return;
   }
 
-  const item = ctx.uploadQueue.shift()!;
+  if (!skipConflictCheck) {
+    try {
+      const stat = await checkFileExists(ctx, targetPath);
+      if (stat.exists) {
+        const result = await showUploadConflictDialog(ctx, filename);
+        if (result.action === 'skip') return;
+        if (result.action === 'rename') {
+          actualFilename = result.newName!;
+          targetPath = dir === '/'
+            ? `/${actualFilename}`
+            : `${dir}/${actualFilename}`;
+        }
+      }
+    } catch {
+      // Stat check failed — proceed with upload anyway
+    }
+  }
 
-  ctx.setCurrentUploadId(item.transferId);
-  ctx.updateTransferProgress(ctx.currentUploadId!, 0, 'inprogress');
+  const transferId = ctx.addTransferRecord('upload', actualFilename, targetPath, fileSize);
+  const numTid = nextNumTransferId();
+  ctx.uploadQueue.push({ path: targetPath, localFilePath, filename: actualFilename, size: fileSize, transferId, numTransferId: numTid });
 
-  ctx.setPendingUpload({ path: item.path, content: item.content, offset: 0 });
-  ctx.setInFlightChunks(0);
-  ctx.setPipelineSize(2);
-  ctx.setPipelineAckCount(0);
+  if (ctx.activeUploads.size < MAX_CONCURRENT_UPLOADS) {
+    processNextUpload(ctx);
+  }
+}
 
-  const request = JSON.stringify({ path: item.path, size: item.size });
-  const message = encodeMessage(MsgFileUploadStart, new TextEncoder().encode(request));
-  ctx.send(message);
-  console.log(`Starting upload of ${item.filename} to ${item.path}`);
+export async function processNextUpload(ctx: TransferContext): Promise<void> {
+  if (ctx.uploadQueue.length === 0) {
+    if (ctx.activeUploads.size === 0) ctx.loadDirectory(ctx.currentPath);
+    return;
+  }
+
+  // 启动多个并发上传直到达到上限
+  while (ctx.activeUploads.size < MAX_CONCURRENT_UPLOADS && ctx.uploadQueue.length > 0) {
+    if (!ctx.isConnected) {
+      for (const item of ctx.uploadQueue) {
+        ctx.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
+      }
+      ctx.uploadQueue.length = 0;
+      return;
+    }
+
+    const item = ctx.uploadQueue.shift()!;
+    const numTid = item.numTransferId;
+
+    const au: ActiveUpload = {
+      numTransferId: numTid,
+      path: item.path,
+      content: item.content,
+      localFilePath: item.localFilePath,
+      offset: 0,
+      totalSize: item.size,
+      inFlightChunks: 0,
+      pipelineSize: 2,
+      pipelineAckCount: 0,
+      isPaused: false,
+      recordId: item.transferId,
+      backendManaged: false,
+      backendHandle: null,
+    };
+
+    ctx.activeUploads.set(numTid, au);
+    ctx.updateTransferProgress(item.transferId, 0, 'inprogress');
+
+    if (ctx.useBackendUpload && item.localFilePath) {
+      au.backendManaged = true;
+      const channel = new Channel<BackendUploadEvent>();
+      channel.onmessage = (event) => {
+        handleBackendUploadEvent(ctx, numTid, event);
+      };
+      au.backendHandle = channel;
+
+      try {
+        await invoke('start_session_file_upload', {
+          sessionId: ctx.sessionId,
+          localPath: item.localFilePath,
+          remotePath: item.path,
+          transferId: numTid,
+          onEvent: channel,
+        });
+      } catch (err) {
+        ctx.activeUploads.delete(numTid);
+        ctx.updateTransferProgress(item.transferId, 0, 'failed', err instanceof Error ? err.message : String(err));
+      }
+      continue;
+    }
+
+    // Open file handle for streaming if needed
+    if (item.localFilePath && !item.content) {
+      try {
+        const fileHandle = await fsOpen(item.localFilePath, { read: true });
+        au.fileHandle = fileHandle;
+      } catch (err) {
+        console.error(`Failed to open file: ${item.localFilePath}`, err);
+        ctx.updateTransferProgress(item.transferId, 0, 'failed', `无法打开文件: ${err}`);
+        ctx.activeUploads.delete(numTid);
+        continue; // try next item
+      }
+    }
+
+    const request = JSON.stringify({ path: item.path, size: item.size, transferId: numTid });
+    const message = encodeMessage(MsgFileUploadStart, new TextEncoder().encode(request));
+    ctx.send(message);
+    console.log(`Starting upload of ${item.filename} to ${item.path} (transferId: ${numTid})`);
+  }
 }
 
 export async function uploadDirectory(ctx: TransferContext, localDirPath: string, dirName: string): Promise<void> {
@@ -280,12 +653,10 @@ export async function uploadDirectory(ctx: TransferContext, localDirPath: string
 
   for (const f of files) {
     try {
-      const content = await readFile(f.localPath);
       const targetDir = ctx.currentPath === '/'
         ? `/${dirName}/${f.relativePath}`.replace(/\/[^/]+$/, '') || '/'
         : `${ctx.currentPath}/${dirName}/${f.relativePath}`.replace(/\/[^/]+$/, '');
-      const filename = f.localPath.replace(/\\/g, '/').split('/').pop() || 'unknown';
-      await uploadFile(ctx, filename, content, targetDir);
+      await uploadLocalFile(ctx, f.localPath, targetDir);
     } catch (err) {
       console.error(`Failed to upload ${f.localPath}:`, err);
     }
@@ -314,9 +685,12 @@ function ensureRemoteDir(ctx: TransferContext, remotePath: string): Promise<void
 }
 
 export async function downloadFile(ctx: TransferContext, filename: string, isDir: boolean = false): Promise<void> {
-  const filePath = ctx.currentPath === '/'
-    ? `/${filename}`
-    : `${ctx.currentPath}/${filename}`;
+  // Support absolute paths (e.g. from sidebar multi-select which stores full paths)
+  const isAbsolute = filename.startsWith('/');
+  const filePath = isAbsolute
+    ? filename
+    : (ctx.currentPath === '/' ? `/${filename}` : `${ctx.currentPath}/${filename}`);
+  const displayName = isAbsolute ? (filename.split('/').pop() || filename) : filename;
 
   if (!ctx.isConnected) {
     console.error('WebSocket not ready');
@@ -325,7 +699,7 @@ export async function downloadFile(ctx: TransferContext, filename: string, isDir
 
   try {
     const { save } = await import('@tauri-apps/plugin-dialog');
-    const defaultName = isDir ? `${filename}.zip` : filename;
+    const defaultName = isDir ? `${displayName}.zip` : displayName;
     const savePath = await save({
       defaultPath: defaultName,
       filters: isDir
@@ -339,14 +713,15 @@ export async function downloadFile(ctx: TransferContext, filename: string, isDir
       return;
     }
 
-    const fileInfo = ctx.files.find(f => f.name === filename);
+    const fileInfo = ctx.files.find(f => f.name === displayName);
     const fileSize = fileInfo ? fileInfo.size : 0;
 
-    const transferId = ctx.addTransferRecord('download', filename, filePath, fileSize, savePath);
-    const queueItem: DownloadQueueItem = { filename, remotePath: filePath, savePath, fileSize, transferId, isDir };
+    const transferId = ctx.addTransferRecord('download', displayName, filePath, fileSize, savePath);
+    const numTid = nextNumTransferId();
+    const queueItem: DownloadQueueItem = { filename: displayName, remotePath: filePath, savePath, fileSize, transferId, isDir, numTransferId: numTid };
     ctx.downloadQueue.push(queueItem);
 
-    if (!ctx.dlState.pendingDownload && !ctx.isProcessingDownload) {
+    if (ctx.activeDownloads.size < MAX_CONCURRENT_DOWNLOADS) {
       await processNextDownload(ctx);
     }
   } catch (err) {
@@ -356,27 +731,54 @@ export async function downloadFile(ctx: TransferContext, filename: string, isDir
 }
 
 export async function processNextDownload(ctx: TransferContext): Promise<void> {
-  if (ctx.downloadQueue.length === 0) return;
-  if (ctx.dlState.pendingDownload || ctx.isProcessingDownload) return;
-  if (!ctx.isConnected) {
-    for (const item of ctx.downloadQueue) {
-      ctx.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
+  while (ctx.activeDownloads.size < MAX_CONCURRENT_DOWNLOADS && ctx.downloadQueue.length > 0) {
+    if (!ctx.isConnected) {
+      for (const item of ctx.downloadQueue) {
+        ctx.updateTransferProgress(item.transferId, 0, 'failed', '连接已断开');
+      }
+      ctx.downloadQueue.length = 0;
+      return;
     }
-    ctx.downloadQueue.length = 0;
-    return;
+    const item = ctx.downloadQueue.shift()!;
+    const numTid = item.numTransferId;
+    const state = createDownloadState();
+    ctx.activeDownloads.set(numTid, state);
+    if (ctx.useBackendDownload) {
+      setBackendDownloadState(state, item);
+      ctx.updateTransferProgress(item.transferId, 0, 'inprogress');
+
+      const channel = new Channel<BackendDownloadEvent>();
+      channel.onmessage = (event) => {
+        handleBackendDownloadEvent(ctx, numTid, event);
+      };
+      state.backendHandle = channel;
+
+      try {
+        await invoke('start_session_file_download', {
+          sessionId: ctx.sessionId,
+          remotePath: item.remotePath,
+          savePath: item.savePath,
+          transferId: numTid,
+          offset: 0,
+          onEvent: channel,
+        });
+      } catch (err) {
+        ctx.activeDownloads.delete(numTid);
+        ctx.updateTransferProgress(item.transferId, 0, 'failed', err instanceof Error ? err.message : String(err));
+      }
+      continue;
+    }
+
+    const newState = await _startDownloadFromQueue(item, ctx.isConnected ? (data: Uint8Array) => ctx.send(data) : null, state, dlCallbacks(ctx, numTid), numTid);
+    ctx.activeDownloads.set(numTid, newState);
   }
-
-  ctx.setIsProcessingDownload(true);
-  const item = ctx.downloadQueue.shift()!;
-  ctx.setDlState(await _startDownloadFromQueue(item, ctx.isConnected ? (data: Uint8Array) => ctx.send(data) : null, ctx.dlState, dlCallbacks(ctx)));
-  ctx.setIsProcessingDownload(false);
 }
 
-export async function cleanupDownload(ctx: TransferContext): Promise<void> {
-  await _cleanupDownloadState(ctx.dlState);
+export async function cleanupDownload(state: DownloadState): Promise<void> {
+  await _cleanupDownloadState(state);
 }
 
-export function dlCallbacks(ctx: TransferContext) {
+export function dlCallbacks(ctx: TransferContext, numTid: number) {
   return {
     updateTransferProgress: (id: string, progress: number, status: 'pending' | 'inprogress' | 'completed' | 'failed' | 'paused' | 'cancelled', error?: string) => {
       ctx.updateTransferProgress(id, progress, status, error);
@@ -384,7 +786,11 @@ export function dlCallbacks(ctx: TransferContext) {
     addTransferRecord: (type: 'upload' | 'download', filename: string, path: string, size: number, savePath?: string) => {
       return ctx.addTransferRecord(type, filename, path, size, savePath);
     },
+    updateTransferSize: (id: string, size: number) => {
+      ctx.updateTransferSize(id, size);
+    },
     onDownloadFinished: () => {
+      ctx.activeDownloads.delete(numTid);
       processNextDownload(ctx);
     },
   };
@@ -452,17 +858,50 @@ export function resetBatchConflictState(ctx: TransferContext): void {
   ctx.setBatchUploadCount(0);
 }
 
+function findUploadByRecordId(ctx: TransferContext, id: string): [number, ActiveUpload] | null {
+  for (const [numTid, au] of ctx.activeUploads) {
+    if (au.recordId === id) return [numTid, au];
+  }
+  return null;
+}
+
+function findDownloadByRecordId(ctx: TransferContext, id: string): [number, DownloadState] | null {
+  for (const [numTid, ds] of ctx.activeDownloads) {
+    if (ds.currentDownloadId === id) return [numTid, ds];
+  }
+  return null;
+}
+
 export function pauseTransfer(ctx: TransferContext, id: string): void {
   const record = ctx.findRecord(id);
   if (!record || record.status !== 'inprogress') return;
 
-  if (record.type === 'upload' && ctx.currentUploadId === id) {
-    ctx.setIsUploadPaused(true);
-    ctx.updateTransferProgress(id, record.progress, 'paused');
-  } else if (record.type === 'download' && ctx.dlState.currentDownloadId === id) {
-    ctx.dlState.isDownloadPaused = true;
-    sendDownloadCtrl(ctx, MsgFileDownloadPause);
-    ctx.updateTransferProgress(id, record.progress, 'paused');
+  if (record.type === 'upload') {
+    const found = findUploadByRecordId(ctx, id);
+    if (found) {
+      const [numTid, au] = found;
+      au.isPaused = true;
+      if (isBackendUpload(au)) {
+        void sendBackendUploadControl(ctx, numTid, 'pause').catch(err => {
+          console.error('Pause backend upload failed:', err);
+        });
+      }
+      ctx.updateTransferProgress(id, record.progress, 'paused');
+    }
+  } else if (record.type === 'download') {
+    const found = findDownloadByRecordId(ctx, id);
+    if (found) {
+      const [numTid, ds] = found;
+      ds.isDownloadPaused = true;
+      if (isBackendDownload(ds)) {
+        void sendBackendDownloadControl(ctx, numTid, 'pause').catch(err => {
+          console.error('Pause backend download failed:', err);
+        });
+      } else {
+        sendDownloadCtrl(ctx, MsgFileDownloadPause, numTid);
+      }
+      ctx.updateTransferProgress(id, record.progress, 'paused');
+    }
   }
 }
 
@@ -470,22 +909,42 @@ export function resumeTransfer(ctx: TransferContext, id: string): void {
   const record = ctx.findRecord(id);
   if (!record || record.status !== 'paused') return;
 
-  if (record.type === 'upload' && ctx.currentUploadId === id) {
-    ctx.setIsUploadPaused(false);
-    ctx.updateTransferProgress(id, record.progress, 'inprogress');
-    sendUploadChunk(ctx);
-  } else if (record.type === 'download' && ctx.dlState.currentDownloadId === id) {
-    ctx.dlState.isDownloadPaused = false;
-    sendDownloadCtrl(ctx, MsgFileDownloadContinue);
-
-    const dl = ctx.dlState.pendingDownload;
-    if (dl && dl.totalSize > 0) {
-      const actualProgress = Math.min(Math.round((dl.receivedSize / dl.totalSize) * 100), 99);
-      const currentBytes = Math.round(record.size * actualProgress / 100);
-      ctx.resetSpeedTracker(id, currentBytes);
-      ctx.updateTransferProgress(id, actualProgress, 'inprogress');
-    } else {
+  if (record.type === 'upload') {
+    const found = findUploadByRecordId(ctx, id);
+    if (found) {
+      const [numTid, au] = found;
+      au.isPaused = false;
       ctx.updateTransferProgress(id, record.progress, 'inprogress');
+      if (isBackendUpload(au)) {
+        void sendBackendUploadControl(ctx, numTid, 'continue').catch(err => {
+          console.error('Resume backend upload failed:', err);
+        });
+      } else {
+        sendUploadChunk(ctx, numTid);
+      }
+    }
+  } else if (record.type === 'download') {
+    const found = findDownloadByRecordId(ctx, id);
+    if (found) {
+      const [numTid, ds] = found;
+      ds.isDownloadPaused = false;
+      if (isBackendDownload(ds)) {
+        void sendBackendDownloadControl(ctx, numTid, 'continue').catch(err => {
+          console.error('Resume backend download failed:', err);
+        });
+      } else {
+        sendDownloadCtrl(ctx, MsgFileDownloadContinue, numTid);
+      }
+
+      const dl = ds.pendingDownload;
+      if (dl && dl.totalSize > 0) {
+        const actualProgress = Math.min(Math.round((dl.receivedSize / dl.totalSize) * 100), 99);
+        const currentBytes = Math.round(record.size * actualProgress / 100);
+        ctx.resetSpeedTracker(id, currentBytes);
+        ctx.updateTransferProgress(id, actualProgress, 'inprogress');
+      } else {
+        ctx.updateTransferProgress(id, record.progress, 'inprogress');
+      }
     }
   }
 }
@@ -495,13 +954,21 @@ export async function cancelTransfer(ctx: TransferContext, id: string): Promise<
   if (!record || (record.status !== 'inprogress' && record.status !== 'paused' && record.status !== 'pending')) return;
 
   if (record.type === 'upload') {
-    if (ctx.currentUploadId === id) {
-      ctx.setIsUploadPaused(false);
-      ctx.setPendingUpload(null);
-      ctx.setInFlightChunks(0);
-      ctx.setCurrentUploadId(null);
+    const found = findUploadByRecordId(ctx, id);
+    if (found) {
+      const [numTid, au] = found;
+      if (isBackendUpload(au)) {
+        try {
+          await sendBackendUploadControl(ctx, numTid, 'cancel');
+        } catch (err) {
+          console.error('Cancel backend upload failed:', err);
+        }
+      }
+      await cleanupActiveUpload(ctx, numTid);
       ctx.updateTransferProgress(id, record.progress, 'cancelled', '用户取消');
-      deleteRemotePartFile(ctx, record.path);
+      if (!isBackendUpload(au)) {
+        deleteRemotePartFile(ctx, record.path);
+      }
       processNextUpload(ctx);
     } else {
       const queueIdx = ctx.uploadQueue.findIndex(item => item.transferId === id);
@@ -511,12 +978,25 @@ export async function cancelTransfer(ctx: TransferContext, id: string): Promise<
       ctx.updateTransferProgress(id, 0, 'cancelled', '用户取消');
     }
   } else if (record.type === 'download') {
-    if (ctx.dlState.currentDownloadId === id) {
-      ctx.dlState.isDownloadPaused = false;
-      sendDownloadCtrl(ctx, MsgFileDownloadCancel);
-      ctx.dlState.currentDownloadId = null;
+    const found = findDownloadByRecordId(ctx, id);
+    if (found) {
+      const [numTid, ds] = found;
+      ds.isDownloadPaused = false;
+      if (isBackendDownload(ds)) {
+        try {
+          await sendBackendDownloadControl(ctx, numTid, 'cancel');
+        } catch (err) {
+          console.error('Cancel backend download failed:', err);
+        }
+      } else {
+        sendDownloadCtrl(ctx, MsgFileDownloadCancel, numTid);
+      }
+      ds.currentDownloadId = null;
       ctx.updateTransferProgress(id, record.progress, 'cancelled', '用户取消');
-      await cleanupDownload(ctx);
+      if (!isBackendDownload(ds)) {
+        await cleanupDownload(ds);
+      }
+      ctx.activeDownloads.delete(numTid);
       processNextDownload(ctx);
     } else {
       const queueIdx = ctx.downloadQueue.findIndex(item => item.transferId === id);
@@ -528,10 +1008,11 @@ export async function cancelTransfer(ctx: TransferContext, id: string): Promise<
   }
 }
 
-export function sendDownloadCtrl(ctx: TransferContext, msgType: number): void {
+export function sendDownloadCtrl(ctx: TransferContext, msgType: number, numTid: number): void {
   if (!ctx.isConnected) return;
   try {
-    ctx.send(encodeMessage(msgType, new Uint8Array(0)));
+    const payload = JSON.stringify({ transferId: numTid });
+    ctx.send(encodeMessage(msgType, new TextEncoder().encode(payload)));
   } catch { /* ignore */ }
 }
 
@@ -598,8 +1079,7 @@ export async function handleDragEvent(ctx: TransferContext, payload: { type: str
             console.warn(`Skipping invalid filename: ${fileName}`);
             continue;
           }
-          const content = await readFile(filePath);
-          await uploadFile(ctx, fileName, content);
+          await uploadLocalFile(ctx, filePath);
         }
       } catch (err) {
         console.error(`Failed to upload file ${filePath}:`, err);
@@ -610,26 +1090,32 @@ export async function handleDragEvent(ctx: TransferContext, payload: { type: str
   }
 }
 
-export function failAllTransfers(ctx: TransferContext, errorMessage: string): void {
-  if (ctx.dlState.pendingDownload) {
-    if (ctx.dlState.currentDownloadId) {
-      ctx.updateTransferProgress(ctx.dlState.currentDownloadId, 0, 'failed', errorMessage);
-      ctx.dlState.currentDownloadId = null;
+export async function failAllTransfers(ctx: TransferContext, errorMessage: string): Promise<void> {
+  for (const [numTid, ds] of ctx.activeDownloads) {
+    if (isBackendDownload(ds)) {
+      continue;
     }
-    cleanupDownload(ctx);
+    if (ds.currentDownloadId) {
+      ctx.updateTransferProgress(ds.currentDownloadId, 0, 'failed', errorMessage);
+    }
+    _cleanupDownloadState(ds);
+    ctx.activeDownloads.delete(numTid);
+  }
+  for (const [numTid, ds] of ctx.activeDownloads) {
+    if (!isBackendDownload(ds)) {
+      ctx.activeDownloads.delete(numTid);
+    }
   }
   for (const item of ctx.downloadQueue) {
     ctx.updateTransferProgress(item.transferId, 0, 'failed', errorMessage);
   }
   ctx.downloadQueue.length = 0;
 
-  if (ctx.pendingUpload) {
-    ctx.setPendingUpload(null);
-    if (ctx.currentUploadId) {
-      ctx.updateTransferProgress(ctx.currentUploadId, 0, 'failed', errorMessage);
-      ctx.setCurrentUploadId(null);
-    }
+  for (const [, au] of ctx.activeUploads) {
+    if (au.fileHandle) { try { await au.fileHandle.close(); } catch { /* ignore */ } }
+    if (au.recordId) ctx.updateTransferProgress(au.recordId, 0, 'failed', errorMessage);
   }
+  ctx.activeUploads.clear();
   for (const item of ctx.uploadQueue) {
     ctx.updateTransferProgress(item.transferId, 0, 'failed', errorMessage);
   }

@@ -223,6 +223,8 @@ export async function connectToAsset(
       focusedPaneId: jsPaneId,
       title: asset.name || asset.address,
       status: 'connecting' as const,
+      paneCounterNext: 2,
+      paneNumbers: new Map([[jsPaneId, 1]]),
     };
     TabManager.tabs.push(tab);
     TabManager.activeTabId = jsTabId;

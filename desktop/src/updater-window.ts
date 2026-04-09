@@ -2,7 +2,7 @@ import { check } from '@tauri-apps/plugin-updater';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
-import { emit } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import { revealAfterPaint } from './window-utils';
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage, t } from './i18n';
@@ -155,6 +155,15 @@ export function initUpdaterWindow(): void {
     dragRegion.setAttribute('data-tauri-drag-region', '');
     appendTarget.insertBefore(dragRegion, container);
   }
+
+  // Listen for theme changes from main window
+  void listen('settings-changed', () => {
+    const s = loadSettings();
+    document.documentElement.dataset.theme = resolveThemeAttr(s.colorScheme);
+    const nativeTheme = resolveThemeAttr(s.colorScheme) === 'light' ? 'light' as const : 'dark' as const;
+    void getCurrentWindow().setTheme(nativeTheme);
+    void applyVibrancy(s.enableVibrancy);
+  });
 
   void revealAfterPaint(getCurrentWindow().label);
 }

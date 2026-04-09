@@ -9,13 +9,27 @@ use tokio::sync::mpsc;
 use super::state::ClientRole;
 use crate::server::protocol;
 
-/// Channel capacity for the send buffer (matches Go's 256).
-const SEND_CHANNEL_SIZE: usize = 256;
+/// Capacity for terminal/control messages. This path must stay low-latency.
+const PRIORITY_SEND_CHANNEL_SIZE: usize = 1024;
+/// Capacity for bulk transfer messages such as file download chunks.
+const BULK_SEND_CHANNEL_SIZE: usize = 64;
+
+/// WebSocket downstream channels.
+pub struct WsDownstream {
+    priority_tx: mpsc::Sender<Vec<u8>>,
+    bulk_tx: mpsc::Sender<Vec<u8>>,
+}
+
+/// WebSocket receivers returned to the WS write pump.
+pub struct WsReceivers {
+    pub priority_rx: mpsc::Receiver<Vec<u8>>,
+    pub bulk_rx: mpsc::Receiver<Vec<u8>>,
+}
 
 /// Downstream transport for sending data to a client.
 enum DownStream {
     /// WebSocket client: push to mpsc channel, WS handler reads from receiver.
-    Mpsc(mpsc::Sender<Vec<u8>>),
+    Mpsc(WsDownstream),
     /// Local IPC client: push directly to Tauri Channel (no intermediate buffer).
     IpcChannel(tauri::ipc::Channel<Vec<u8>>),
 }
@@ -46,18 +60,28 @@ pub struct ClientInfo {
 
 impl Client {
     /// Create a new WebSocket client with a fresh mpsc send channel.
-    pub fn new(id: String, remote_addr: String, role: ClientRole) -> (Self, mpsc::Receiver<Vec<u8>>) {
-        let (tx, rx) = mpsc::channel(SEND_CHANNEL_SIZE);
+    pub fn new(id: String, remote_addr: String, role: ClientRole) -> (Self, WsReceivers) {
+        let (priority_tx, priority_rx) = mpsc::channel(PRIORITY_SEND_CHANNEL_SIZE);
+        let (bulk_tx, bulk_rx) = mpsc::channel(BULK_SEND_CHANNEL_SIZE);
         let client = Self {
             id,
             role,
             connected: AtomicBool::new(true),
             remote_addr,
             last_seen: Mutex::new(Instant::now()),
-            downstream: Mutex::new(Some(DownStream::Mpsc(tx))),
+            downstream: Mutex::new(Some(DownStream::Mpsc(WsDownstream {
+                priority_tx,
+                bulk_tx,
+            }))),
             conn_gen: AtomicU64::new(0),
         };
-        (client, rx)
+        (
+            client,
+            WsReceivers {
+                priority_rx,
+                bulk_rx,
+            },
+        )
     }
 
     /// Create a new local IPC client backed by a Tauri Channel.
@@ -111,7 +135,7 @@ impl Client {
         }
         let guard = self.downstream.lock().unwrap();
         match guard.as_ref() {
-            Some(DownStream::Mpsc(tx)) => match tx.try_send(data) {
+            Some(DownStream::Mpsc(ws)) => match ws.priority_tx.try_send(data) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     drop(guard);
@@ -139,15 +163,33 @@ impl Client {
         if !self.is_connected() {
             return false;
         }
-        let downstream = {
+        let priority_tx = {
             let guard = self.downstream.lock().unwrap();
             match guard.as_ref() {
-                Some(DownStream::Mpsc(tx)) => Some(DownStream::Mpsc(tx.clone())),
+                Some(DownStream::Mpsc(ws)) => Some(ws.priority_tx.clone()),
                 _ => None,
             }
         };
-        match downstream {
-            Some(DownStream::Mpsc(tx)) => tx.send(data).await.is_ok(),
+        match priority_tx {
+            Some(tx) => tx.send(data).await.is_ok(),
+            None => self.send(data), // IPC: use non-blocking send
+        }
+    }
+
+    /// Blocking send for bulk transfers on the low-priority queue.
+    pub async fn send_bulk_async(&self, data: Vec<u8>) -> bool {
+        if !self.is_connected() {
+            return false;
+        }
+        let bulk_tx = {
+            let guard = self.downstream.lock().unwrap();
+            match guard.as_ref() {
+                Some(DownStream::Mpsc(ws)) => Some(ws.bulk_tx.clone()),
+                _ => None,
+            }
+        };
+        match bulk_tx {
+            Some(tx) => tx.send(data).await.is_ok(),
             _ => self.send(data), // IPC: use non-blocking send
         }
     }
@@ -159,17 +201,24 @@ impl Client {
         *guard = None;
     }
 
-    /// Reconnect with a new mpsc send channel. Returns the new receiver for the WS write pump.
-    pub fn reconnect(&self, _remote_addr: String) -> mpsc::Receiver<Vec<u8>> {
-        let (tx, rx) = mpsc::channel(SEND_CHANNEL_SIZE);
+    /// Reconnect with fresh WS queues. Returns new receivers for the WS write pump.
+    pub fn reconnect(&self, _remote_addr: String) -> WsReceivers {
+        let (priority_tx, priority_rx) = mpsc::channel(PRIORITY_SEND_CHANNEL_SIZE);
+        let (bulk_tx, bulk_rx) = mpsc::channel(BULK_SEND_CHANNEL_SIZE);
         {
             let mut guard = self.downstream.lock().unwrap();
-            *guard = Some(DownStream::Mpsc(tx));
+            *guard = Some(DownStream::Mpsc(WsDownstream {
+                priority_tx,
+                bulk_tx,
+            }));
         }
         self.connected.store(true, Ordering::SeqCst);
         self.conn_gen.fetch_add(1, Ordering::SeqCst);
         self.touch();
-        rx
+        WsReceivers {
+            priority_rx,
+            bulk_rx,
+        }
     }
 
     /// Build a role-change protocol message for this client.

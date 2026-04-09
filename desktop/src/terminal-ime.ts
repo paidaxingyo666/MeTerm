@@ -111,8 +111,46 @@ export function applyWKWebViewIMEFix(terminal: Terminal): void {
   // 追踪是否处于 IME keydown (keyCode 229) 周期
   let inIMEKeydown = false;
 
+  // ─── WKWebView Backspace composition 残留修复 ───
+  // WKWebView 的 IME 在 Backspace 删除最后一个 composition 字符时，
+  // 不触发 compositionend/compositionupdate/input 事件，textarea 也不更新，
+  // 导致 xterm.js compositionView 残留显示最后一个字符。
+  //
+  // 检测策略：WKWebView 中正常的 Backspace 会在 keydown 之前先触发 compositionupdate；
+  // 卡住的最后一个字符则 keydown 之前无 compositionupdate。利用此差异判断。
+  let isInComposition = false;
+  let hadCompositionUpdateBeforeKeydown = false;
+
+  textarea.addEventListener('compositionstart', () => {
+    isInComposition = true;
+  });
+  textarea.addEventListener('compositionend', () => {
+    isInComposition = false;
+  });
+  textarea.addEventListener('compositionupdate', () => {
+    hadCompositionUpdateBeforeKeydown = true;
+  });
+
   textarea.addEventListener('keydown', (ev) => {
     if (ev.keyCode === 229) inIMEKeydown = true;
+
+    if (ev.key === 'Backspace' && isInComposition) {
+      const hadUpdate = hadCompositionUpdateBeforeKeydown;
+      hadCompositionUpdateBeforeKeydown = false;
+
+      if (!hadUpdate) {
+        // keydown 之前没有 compositionupdate → WKWebView 吞掉了这次 Backspace
+        // 清空 textarea 防止 _finalizeComposition 把残留字符发送到 PTY
+        setTimeout(() => {
+          if (isInComposition) {
+            textarea.value = '';
+            textarea.dispatchEvent(new CompositionEvent('compositionend', { data: '' }));
+          }
+        }, 0);
+      }
+    } else {
+      hadCompositionUpdateBeforeKeydown = false;
+    }
   }, true);
 
   textarea.addEventListener('keyup', () => {

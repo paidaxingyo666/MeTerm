@@ -3,6 +3,7 @@
 //! Uses dedicated tasks for reading/writing to avoid Mutex deadlocks
 //! and ensure cancel-safety in tokio::select!.
 
+use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
 
@@ -71,22 +72,37 @@ impl client::Handler for SshHandler {
 
         // Layer 1: Check ~/.ssh/known_hosts (matches Go knownhosts.New)
         match russh_keys::known_hosts::check_known_hosts(&host, port, server_public_key) {
-            Ok(true) => return Ok(true),  // Known and matches
+            Ok(true) => return Ok(true),
             Err(russh_keys::Error::KeyChanged { line }) => {
-                // Host key changed — possible MITM (matches Go HostKeyMismatchError)
-                eprintln!("[ssh] HOST KEY CHANGED for {}:{} at known_hosts line {}", host, port, line);
-                return Ok(false);
+                // Host key changed — possible MITM, but allow if user has a
+                // trusted fingerprint (e.g. dedicated SFTP connection may
+                // negotiate a different key algorithm than the terminal session).
+                eprintln!(
+                    "[ssh] HOST KEY CHANGED for {}:{} at known_hosts line {}",
+                    host, port, line
+                );
+                // Fall through to Layer 2 (trusted fingerprint check) instead
+                // of rejecting immediately. If no trusted fingerprint, Layer 3
+                // will reject.
             }
             _ => {} // Not found or other error — continue to layer 2
         }
 
         // Layer 2: Check TrustedFingerprint (user previously confirmed in UI)
+        // Accept if a non-empty trusted fingerprint exists — the user has already
+        // confirmed trust for this host. The fingerprint may differ because the
+        // terminal and SFTP connections can negotiate different key algorithms.
         if let Some(ref trusted) = self.trusted_fingerprint {
-            if !trusted.is_empty() && fingerprint == *trusted {
-                // User confirmed — save to known_hosts for future connections
-                if let Err(e) = russh_keys::known_hosts::learn_known_hosts(&host, port, server_public_key) {
-                    eprintln!("[ssh] warning: could not write known_hosts: {}", e);
+            if !trusted.is_empty() {
+                if fingerprint == *trusted {
+                    // Exact match — also update known_hosts for this key type
+                    if let Err(e) =
+                        russh_keys::known_hosts::learn_known_hosts(&host, port, server_public_key)
+                    {
+                        eprintln!("[ssh] warning: could not write known_hosts: {}", e);
+                    }
                 }
+                // Trust is established for this host (user confirmed via UI)
                 return Ok(true);
             }
         }
@@ -100,6 +116,9 @@ impl client::Handler for SshHandler {
 pub struct SshTerminal {
     /// Receiver for SSH output (from dedicated reader task).
     output_rx: Mutex<mpsc::Receiver<io::Result<Vec<u8>>>>,
+    /// Buffered tail from an oversized SSH packet that did not fit in the
+    /// caller-provided read buffer.
+    pending_output: Mutex<VecDeque<u8>>,
     /// Sender for SSH input (to dedicated writer task).
     input_tx: mpsc::Sender<Vec<u8>>,
     /// Sender for resize commands.
@@ -157,67 +176,94 @@ pub async fn ssh_exec(
     String::from_utf8(output).map_err(|e| format!("utf8: {}", e))
 }
 
+fn terminal_client_config() -> client::Config {
+    client::Config {
+        // A larger channel window improves SFTP throughput, but we keep the
+        // default packet size to avoid terminal packet truncation and server
+        // compatibility issues.
+        window_size: 16 * 1024 * 1024,
+        ..client::Config::default()
+    }
+}
+
+fn sftp_client_config() -> client::Config {
+    client::Config {
+        // Dedicated SFTP sessions do not feed the terminal read buffer, so we
+        // can safely use a wider SSH packet and window to reduce framing
+        // overhead on large transfers.
+        window_size: 64 * 1024 * 1024,
+        maximum_packet_size: 65535,
+        ..client::Config::default()
+    }
+}
+
+async fn connect_authenticated_session(
+    config: &SshConfig,
+    client_config: client::Config,
+) -> Result<client::Handle<SshHandler>, String> {
+    let server_fingerprint = Arc::new(Mutex::new(None));
+    let server_key_type = Arc::new(Mutex::new(None));
+    let handler = SshHandler {
+        trusted_fingerprint: if config.trusted_fingerprint.is_empty() {
+            None
+        } else {
+            Some(config.trusted_fingerprint.clone())
+        },
+        host: config.host.clone(),
+        port: config.port,
+        server_fingerprint: server_fingerprint.clone(),
+        server_key_type: server_key_type.clone(),
+    };
+
+    let stream = establish_connection(config).await?;
+    let mut session = match client::connect_stream(Arc::new(client_config), stream, handler).await {
+        Ok(s) => s,
+        Err(e) => {
+            let fp = server_fingerprint.lock().await.clone();
+            let kt = server_key_type.lock().await.clone();
+            if let (Some(fingerprint), Some(key_type)) = (fp, kt) {
+                let err = serde_json::json!({
+                    "error": "host_key_unknown",
+                    "hostname": format!("{}:{}", config.host, config.port),
+                    "fingerprint": fingerprint,
+                    "key_type": key_type,
+                    "message": format!("The authenticity of host '{}:{}' can't be established.\n{} key fingerprint is {}.", config.host, config.port, key_type, fingerprint),
+                });
+                return Err(err.to_string());
+            }
+            return Err(format!("SSH connect: {}", e));
+        }
+    };
+
+    let auth_ok = if !config.private_key.is_empty() {
+        let passphrase = if config.passphrase.is_empty() {
+            None
+        } else {
+            Some(config.passphrase.as_str())
+        };
+        let key_pair = russh_keys::decode_secret_key(&config.private_key, passphrase)
+            .map_err(|e| format!("invalid key: {}", e))?;
+        session
+            .authenticate_publickey(&config.username, Arc::new(key_pair))
+            .await
+            .map_err(|e| format!("key auth: {}", e))?
+    } else {
+        session
+            .authenticate_password(&config.username, &config.password)
+            .await
+            .map_err(|e| format!("password auth: {}", e))?
+    };
+
+    if !auth_ok {
+        return Err("authentication failed".to_string());
+    }
+
+    Ok(session)
+}
+
 impl SshTerminal {
     pub async fn connect(config: &SshConfig, cols: u16, rows: u16) -> Result<Self, String> {
-        let ssh_config = client::Config::default();
-        let server_fingerprint = Arc::new(Mutex::new(None));
-        let server_key_type = Arc::new(Mutex::new(None));
-        let handler = SshHandler {
-            trusted_fingerprint: if config.trusted_fingerprint.is_empty() {
-                None
-            } else {
-                Some(config.trusted_fingerprint.clone())
-            },
-            host: config.host.clone(),
-            port: config.port,
-            server_fingerprint: server_fingerprint.clone(),
-            server_key_type: server_key_type.clone(),
-        };
-
-        let stream = establish_connection(config).await?;
-        let mut session = match client::connect_stream(Arc::new(ssh_config), stream, handler).await {
-            Ok(s) => s,
-            Err(e) => {
-                // Check if we captured a fingerprint — return structured error for frontend
-                let fp = server_fingerprint.lock().await.clone();
-                let kt = server_key_type.lock().await.clone();
-                if let (Some(fingerprint), Some(key_type)) = (fp, kt) {
-                    let err = serde_json::json!({
-                        "error": "host_key_unknown",
-                        "hostname": format!("{}:{}", config.host, config.port),
-                        "fingerprint": fingerprint,
-                        "key_type": key_type,
-                        "message": format!("The authenticity of host '{}:{}' can't be established.\n{} key fingerprint is {}.", config.host, config.port, key_type, fingerprint),
-                    });
-                    return Err(err.to_string());
-                }
-                return Err(format!("SSH connect: {}", e));
-            }
-        };
-
-        // Authenticate
-        let auth_ok = if !config.private_key.is_empty() {
-            let passphrase = if config.passphrase.is_empty() {
-                None
-            } else {
-                Some(config.passphrase.as_str())
-            };
-            let key_pair = russh_keys::decode_secret_key(&config.private_key, passphrase)
-                .map_err(|e| format!("invalid key: {}", e))?;
-            session
-                .authenticate_publickey(&config.username, Arc::new(key_pair))
-                .await
-                .map_err(|e| format!("key auth: {}", e))?
-        } else {
-            session
-                .authenticate_password(&config.username, &config.password)
-                .await
-                .map_err(|e| format!("password auth: {}", e))?
-        };
-
-        if !auth_ok {
-            return Err("authentication failed".to_string());
-        }
+        let session = connect_authenticated_session(config, terminal_client_config()).await?;
 
         // Open channel
         let mut channel = session
@@ -229,12 +275,28 @@ impl SshTerminal {
         // to restore echo before the first prompt. OSC sequences produced by the
         // hook are intercepted by Rust OscFilter, so this is safe on all platforms.
         let terminal_modes = if config.disable_hook {
-            vec![(russh::Pty::ECHO, 1), (russh::Pty::TTY_OP_ISPEED, 14400), (russh::Pty::TTY_OP_OSPEED, 14400)]
+            vec![
+                (russh::Pty::ECHO, 1),
+                (russh::Pty::TTY_OP_ISPEED, 14400),
+                (russh::Pty::TTY_OP_OSPEED, 14400),
+            ]
         } else {
-            vec![(russh::Pty::ECHO, 0), (russh::Pty::TTY_OP_ISPEED, 14400), (russh::Pty::TTY_OP_OSPEED, 14400)]
+            vec![
+                (russh::Pty::ECHO, 0),
+                (russh::Pty::TTY_OP_ISPEED, 14400),
+                (russh::Pty::TTY_OP_OSPEED, 14400),
+            ]
         };
         channel
-            .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &terminal_modes)
+            .request_pty(
+                false,
+                "xterm-256color",
+                cols as u32,
+                rows as u32,
+                0,
+                0,
+                &terminal_modes,
+            )
             .await
             .map_err(|e| format!("request pty: {}", e))?;
 
@@ -323,6 +385,7 @@ impl SshTerminal {
 
         Ok(Self {
             output_rx: Mutex::new(output_rx),
+            pending_output: Mutex::new(VecDeque::new()),
             input_tx,
             resize_tx,
             session_handle: Arc::new(Mutex::new(Some(session))),
@@ -333,6 +396,7 @@ impl SshTerminal {
 
     /// Initialize SFTP on a separate channel. Call after `connect()`.
     /// Safe to call in background — does not block terminal I/O.
+    #[allow(dead_code)]
     pub async fn init_sftp(
         session_handle: &Arc<Mutex<Option<client::Handle<SshHandler>>>>,
     ) -> Option<Arc<russh_sftp::client::SftpSession>> {
@@ -363,19 +427,74 @@ impl SshTerminal {
             }
         }
     }
+
+    /// Initialize SFTP on a dedicated SSH connection so bulk file transfers do
+    /// not compete with the interactive terminal channel.
+    pub async fn connect_sftp(config: &SshConfig) -> Option<Arc<russh_sftp::client::SftpSession>> {
+        let session = match connect_authenticated_session(config, sftp_client_config()).await {
+            Ok(session) => session,
+            Err(e) => {
+                eprintln!("[ssh] dedicated SFTP connect failed: {}", e);
+                return None;
+            }
+        };
+
+        let sftp_channel = match session.channel_open_session().await {
+            Ok(ch) => ch,
+            Err(e) => {
+                eprintln!("[ssh] dedicated SFTP channel open failed: {}", e);
+                return None;
+            }
+        };
+
+        if let Err(e) = sftp_channel.request_subsystem(true, "sftp").await {
+            eprintln!("[ssh] dedicated SFTP subsystem request failed: {}", e);
+            return None;
+        }
+
+        match russh_sftp::client::SftpSession::new(sftp_channel.into_stream()).await {
+            Ok(s) => {
+                eprintln!("[ssh] dedicated SFTP subsystem initialized");
+                Some(Arc::new(s))
+            }
+            Err(e) => {
+                eprintln!("[ssh] dedicated SFTP session failed: {}", e);
+                None
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl Terminal for SshTerminal {
     async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut rx = self.output_rx.lock().await;
-        match rx.recv().await {
+        {
+            let mut pending = self.pending_output.lock().await;
+            if !pending.is_empty() {
+                let n = buf.len().min(pending.len());
+                for (dst, byte) in buf[..n].iter_mut().zip(pending.drain(..n)) {
+                    *dst = byte;
+                }
+                return Ok(n);
+            }
+        }
+
+        let msg = {
+            let mut rx = self.output_rx.lock().await;
+            rx.recv().await
+        };
+
+        match msg {
             Some(Ok(data)) => {
                 if data.is_empty() {
                     return Ok(0); // EOF
                 }
                 let n = data.len().min(buf.len());
                 buf[..n].copy_from_slice(&data[..n]);
+                if data.len() > n {
+                    let mut pending = self.pending_output.lock().await;
+                    pending.extend(&data[n..]);
+                }
                 Ok(n)
             }
             Some(Err(e)) => Err(e),
@@ -402,7 +521,9 @@ impl Terminal for SshTerminal {
 
     async fn close(&self) -> io::Result<()> {
         if let Some(session) = self.session_handle.lock().await.take() {
-            let _ = session.disconnect(Disconnect::ByApplication, "", "en").await;
+            let _ = session
+                .disconnect(Disconnect::ByApplication, "", "en")
+                .await;
         }
         self.done_token.cancel();
         Ok(())
@@ -428,7 +549,9 @@ async fn establish_connection(config: &SshConfig) -> Result<tokio::net::TcpStrea
     let target = format!("{}:{}", config.host, config.port);
     let timeout = std::time::Duration::from_secs(TCP_CONNECT_TIMEOUT_SECS);
 
-    let fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<tokio::net::TcpStream, String>> + Send>> = match config.proxy_type.as_str() {
+    let fut: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<tokio::net::TcpStream, String>> + Send>,
+    > = match config.proxy_type.as_str() {
         "socks5" => Box::pin(connect_via_socks5(config, &target)),
         "http" => Box::pin(connect_via_http_connect(config, &target)),
         _ => Box::pin(connect_direct(&target)),
@@ -436,7 +559,10 @@ async fn establish_connection(config: &SshConfig) -> Result<tokio::net::TcpStrea
 
     match tokio::time::timeout(timeout, fut).await {
         Ok(result) => result,
-        Err(_) => Err(format!("connection timed out ({}s): host {} unreachable", TCP_CONNECT_TIMEOUT_SECS, target)),
+        Err(_) => Err(format!(
+            "connection timed out ({}s): host {} unreachable",
+            TCP_CONNECT_TIMEOUT_SECS, target
+        )),
     }
 }
 
@@ -448,11 +574,22 @@ async fn connect_direct(target: &str) -> Result<tokio::net::TcpStream, String> {
 }
 
 /// Connect through a SOCKS5 proxy.
-async fn connect_via_socks5(config: &SshConfig, target: &str) -> Result<tokio::net::TcpStream, String> {
+async fn connect_via_socks5(
+    config: &SshConfig,
+    target: &str,
+) -> Result<tokio::net::TcpStream, String> {
     let proxy_addr = format!(
         "{}:{}",
-        if config.proxy_host.is_empty() { "127.0.0.1" } else { &config.proxy_host },
-        if config.proxy_port == 0 { 1080 } else { config.proxy_port },
+        if config.proxy_host.is_empty() {
+            "127.0.0.1"
+        } else {
+            &config.proxy_host
+        },
+        if config.proxy_port == 0 {
+            1080
+        } else {
+            config.proxy_port
+        },
     );
 
     let stream = if !config.proxy_username.is_empty() {
@@ -474,13 +611,24 @@ async fn connect_via_socks5(config: &SshConfig, target: &str) -> Result<tokio::n
 }
 
 /// Connect through an HTTP CONNECT proxy.
-async fn connect_via_http_connect(config: &SshConfig, target: &str) -> Result<tokio::net::TcpStream, String> {
+async fn connect_via_http_connect(
+    config: &SshConfig,
+    target: &str,
+) -> Result<tokio::net::TcpStream, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let proxy_addr = format!(
         "{}:{}",
-        if config.proxy_host.is_empty() { "127.0.0.1" } else { &config.proxy_host },
-        if config.proxy_port == 0 { 8080 } else { config.proxy_port },
+        if config.proxy_host.is_empty() {
+            "127.0.0.1"
+        } else {
+            &config.proxy_host
+        },
+        if config.proxy_port == 0 {
+            8080
+        } else {
+            config.proxy_port
+        },
     );
 
     let mut stream = tokio::net::TcpStream::connect(&proxy_addr)

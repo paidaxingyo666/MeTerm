@@ -217,13 +217,20 @@ async function openFileLink(rawPath: string, ctx: FileLinkContext): Promise<void
   }
 
   if (ctx.isSSH()) {
+    // SSH: always navigate file manager
     const targetDir = looksLikeDirectory(rawPath) ? resolved : parentDir(resolved);
     ctx.onSSHNavigate(targetDir);
   } else {
     try {
       const pathType: string = await invoke('stat_path', { path: resolved });
       if (pathType === 'none') return;
-      await invoke('open_path', { path: resolved });
+      if (pathType === 'dir') {
+        // Local directory: navigate file manager instead of opening Finder
+        ctx.onSSHNavigate(resolved);
+      } else {
+        // Local file: open with system default
+        await invoke('open_path', { path: resolved });
+      }
     } catch { /* ignore */ }
   }
 }

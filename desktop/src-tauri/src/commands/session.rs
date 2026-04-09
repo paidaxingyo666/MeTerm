@@ -124,6 +124,37 @@ pub async fn delete_session(
     }
 }
 
+/// Inject a synthetic OSC marker event into a session without touching the PTY.
+/// Used by the AI agent when the shell hook (OSC 7768) is missing — e.g. nested
+/// SSH where the remote shell lacks MeTerm's precmd hook. The frontend calls this
+/// after detecting output silence; Rust broadcasts a `MSG_OSC_EVENT` containing an
+/// `OscEvent::Marker` so the existing marker resolver infrastructure resolves the
+/// agent's wait-for-completion promise.
+#[tauri::command]
+pub async fn inject_osc_marker(
+    state: State<'_, Arc<ServerState>>,
+    session_id: String,
+    marker_id: String,
+    data: String,
+) -> Result<(), String> {
+    let session = state
+        .session_manager
+        .get(&session_id)
+        .ok_or("session not found")?;
+    let event = crate::server::osc_filter::OscEvent::Marker {
+        id: marker_id,
+        data,
+    };
+    if let Ok(json) = serde_json::to_vec(&[&event]) {
+        let msg = crate::server::protocol::encode_message(
+            crate::server::protocol::MSG_OSC_EVENT,
+            &json,
+        );
+        session.broadcast(msg);
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 pub struct ShellInfo {
     pub path: String,

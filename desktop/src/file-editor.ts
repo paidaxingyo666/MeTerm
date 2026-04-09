@@ -8,10 +8,11 @@ import { confirm } from '@tauri-apps/plugin-dialog';
 import { loadSettings, resolveIsDark } from './themes';
 import { t } from './i18n';
 import { EditorView, basicSetup } from 'codemirror';
-import { EditorState, type Extension } from '@codemirror/state';
+import { EditorState, Compartment, type Extension } from '@codemirror/state';
 import { keymap } from '@codemirror/view';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { createOverlayScrollbar } from './overlay-scrollbar';
+import { renderMarkdown, isImageFile } from './file-editor-md';
 
 const LS_PREFIX = 'meterm-editor-';
 
@@ -28,6 +29,11 @@ interface TabInfo {
   content: string;
   loaded: boolean;
   forcedLang: string; // user-selected language override (empty = auto-detect)
+  isImage: boolean;   // true if this tab is an image (binary preview)
+  mimeType: string;   // MIME type for images
+  previewOpen: boolean; // MD preview panel open state
+  wrapLines: boolean;   // soft line wrap toggle (default off)
+  wrapCompartment: Compartment; // compartment for dynamic wrap reconfigure
 }
 
 function resolveThemeAttr(colorScheme: string): string {
@@ -342,6 +348,30 @@ function formatActiveTab(): void {
   setFormatBtnState('success');
 }
 
+/** Refresh MD preview pane content from current editor state. */
+function refreshMdPreview(tab: TabInfo): void {
+  if (!tab.previewOpen) return;
+  const pane = tab.wrapperEl.querySelector('.editor-md-preview-pane .editor-md-content');
+  if (!pane) return;
+  const text = tab.editorView?.state.doc.toString() ?? tab.content;
+  pane.innerHTML = renderMarkdown(text);
+}
+
+/** Toggle MD preview panel for the given tab. Rebuilds wrapperEl content. */
+async function toggleMdPreview(tab: TabInfo): Promise<void> {
+  tab.previewOpen = !tab.previewOpen;
+  // Preserve current editor content
+  if (tab.editorView) {
+    tab.content = tab.editorView.state.doc.toString();
+    tab.editorView.destroy();
+    tab.editorView = null;
+  }
+  tab.wrapperEl.innerHTML = '';
+  tab.wrapperEl.classList.remove('editor-md-split');
+  await activateTab(tab.tabId);
+  updateStatusBar();
+}
+
 /** 更新格式化按钮状态 */
 function setFormatBtnState(state: 'success' | 'error', errorMsg?: string): void {
   const btn = document.getElementById('editor-format-btn');
@@ -372,9 +402,20 @@ function buildExtensions(tab: TabInfo): Extension[] {
     EditorView.updateListener.of((update) => {
       if (update.docChanged && !tab.isDirty) { tab.isDirty = true; renderTabs(); updateWindowTitle(); }
       if (update.selectionSet || update.docChanged) updateStatusBar();
+      if (update.docChanged && tab.previewOpen) refreshMdPreview(tab);
     }),
+    tab.wrapCompartment.of(tab.wrapLines ? EditorView.lineWrapping : []),
     ...(isDark ? [oneDark] : []),
   ];
+}
+
+/** Toggle soft word-wrap for the given tab without rebuilding the editor. */
+function toggleWrapLines(tab: TabInfo): void {
+  tab.wrapLines = !tab.wrapLines;
+  tab.editorView?.dispatch({
+    effects: tab.wrapCompartment.reconfigure(tab.wrapLines ? EditorView.lineWrapping : []),
+  });
+  updateStatusBar();
 }
 
 async function activateTab(tabId: string): Promise<void> {
@@ -397,31 +438,89 @@ async function activateTab(tabId: string): Promise<void> {
     return;
   }
 
-  // Create editor if not yet created
-  if (!tab.editorView) {
+  // Create editor/viewer if not yet created
+  if (!tab.editorView && !tab.isImage) {
     tab.wrapperEl.innerHTML = '';
-    const lang = tab.forcedLang || getLang(tab.fileName, tab.content);
-    const langExt = await getLangExt(lang);
-    const exts = buildExtensions(tab);
-    if (langExt) exts.push(langExt);
-    const state = EditorState.create({ doc: tab.content, extensions: exts });
-    tab.editorView = new EditorView({ state, parent: tab.wrapperEl });
+    if (tab.previewOpen) {
+      // MD split view: editor left, divider, preview right
+      tab.wrapperEl.classList.add('editor-md-split');
+      const editorPane = document.createElement('div');
+      editorPane.className = 'editor-md-editor-pane';
+      const divider = document.createElement('div');
+      divider.className = 'editor-md-divider';
+      const previewPane = document.createElement('div');
+      previewPane.className = 'editor-md-preview-pane';
+      const previewContent = document.createElement('div');
+      previewContent.className = 'editor-md-content';
+      previewContent.innerHTML = renderMarkdown(tab.content);
+      previewContent.style.fontSize = `${getEditorFontSize()}px`;
+      previewPane.appendChild(previewContent);
+      tab.wrapperEl.appendChild(editorPane);
+      tab.wrapperEl.appendChild(divider);
+      tab.wrapperEl.appendChild(previewPane);
 
-    // Apply saved font size
-    const cmEl = tab.wrapperEl.querySelector('.cm-editor') as HTMLElement;
-    if (cmEl) cmEl.style.fontSize = `${getEditorFontSize()}px`;
+      // Drag-to-resize logic
+      divider.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const totalW = tab.wrapperEl.getBoundingClientRect().width;
+        const startLeftW = editorPane.getBoundingClientRect().width;
+        tab.wrapperEl.classList.add('editor-md-resizing');
+        const onMove = (me: MouseEvent) => {
+          const newLeft = Math.max(160, Math.min(totalW - 160, startLeftW + me.clientX - startX));
+          const pct = (newLeft / totalW * 100).toFixed(2);
+          editorPane.style.flex = `0 0 ${pct}%`;
+          previewPane.style.flex = `0 0 ${(100 - parseFloat(pct)).toFixed(2)}%`;
+        };
+        const onUp = () => {
+          tab.wrapperEl.classList.remove('editor-md-resizing');
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
 
-    // Vertical: overlay JS (4px → 10px on hover)
-    // Horizontal: native CSS 4px
-    const scroller = tab.wrapperEl.querySelector('.cm-scroller') as HTMLElement | null;
-    if (scroller) {
-      createOverlayScrollbar({ viewport: scroller, container: scroller, horizontal: true });
-      // overlay-sb-viewport hides ALL native scrollbars — that's what we want now
-      // since both vertical and horizontal are handled by overlay JS.
+      const lang = tab.forcedLang || getLang(tab.fileName, tab.content);
+      const langExt = await getLangExt(lang);
+      const exts = buildExtensions(tab);
+      if (langExt) exts.push(langExt);
+      tab.editorView = new EditorView({
+        state: EditorState.create({ doc: tab.content, extensions: exts }),
+        parent: editorPane,
+      });
+      const cmEl = editorPane.querySelector('.cm-editor') as HTMLElement;
+      if (cmEl) cmEl.style.fontSize = `${getEditorFontSize()}px`;
+      const scroller = editorPane.querySelector('.cm-scroller') as HTMLElement | null;
+      if (scroller) createOverlayScrollbar({ viewport: scroller, container: scroller, horizontal: true });
+      createOverlayScrollbar({ viewport: previewPane, container: previewPane });
+    } else {
+      // Normal editor (no preview)
+      const lang = tab.forcedLang || getLang(tab.fileName, tab.content);
+      const langExt = await getLangExt(lang);
+      const exts = buildExtensions(tab);
+      if (langExt) exts.push(langExt);
+      const state = EditorState.create({ doc: tab.content, extensions: exts });
+      tab.editorView = new EditorView({ state, parent: tab.wrapperEl });
+      const cmEl = tab.wrapperEl.querySelector('.cm-editor') as HTMLElement;
+      if (cmEl) cmEl.style.fontSize = `${getEditorFontSize()}px`;
+      const scroller = tab.wrapperEl.querySelector('.cm-scroller') as HTMLElement | null;
+      if (scroller) createOverlayScrollbar({ viewport: scroller, container: scroller, horizontal: true });
     }
+  } else if (tab.isImage && !tab.wrapperEl.querySelector('.editor-image-view')) {
+    // Image view
+    tab.wrapperEl.innerHTML = '';
+    const imageView = document.createElement('div');
+    imageView.className = 'editor-image-view';
+    const img = document.createElement('img');
+    img.src = tab.content; // data URL
+    img.alt = tab.fileName;
+    img.className = 'editor-image-preview';
+    imageView.appendChild(img);
+    tab.wrapperEl.appendChild(imageView);
   }
 
-  tab.editorView.requestMeasure();
+  tab.editorView?.requestMeasure();
   renderTabs();
   updateWindowTitle();
   updateStatusBar();
@@ -449,7 +548,7 @@ async function closeTab(tabId: string): Promise<void> {
 
 function saveTab(tabId: string): void {
   const tab = tabs.get(tabId);
-  if (!tab || !tab.filePath || !tab.editorView) return;
+  if (!tab || !tab.filePath || !tab.editorView || tab.isImage) return;
   tab.isSaving = true;
   setSaveBtnState('saving');
   localStorage.setItem(`${LS_PREFIX}savereq-${tabId}`, JSON.stringify({
@@ -504,8 +603,7 @@ function renderTabs(): void {
     trackInner.className = 'title-tab-track-inner';
     const textSpan = document.createElement('span');
     textSpan.className = 'title-tab-text';
-    const shortPath = tab.filePath.split('/').slice(-2).join('/');
-    textSpan.textContent = `${tab.isDirty ? '● ' : ''}${tab.host}:${shortPath}`;
+    textSpan.textContent = `${tab.isDirty ? '● ' : ''}${tab.host}:${tab.filePath}`;
     trackInner.appendChild(textSpan);
     trackOuter.appendChild(trackInner);
     btn.appendChild(trackOuter);
@@ -561,7 +659,19 @@ async function switchLanguage(tab: TabInfo, langId: string): Promise<void> {
 
 function updateStatusBar(): void {
   const tab = activeTabId ? tabs.get(activeTabId) : null;
-  if (!tab?.editorView) { statusBarEl.textContent = ''; return; }
+  if (!tab) { statusBarEl.textContent = ''; return; }
+
+  // Image tab: show image info only, no editor controls
+  if (tab.isImage) {
+    statusBarEl.innerHTML = '';
+    const infoSpan = document.createElement('span');
+    infoSpan.className = 'editor-info';
+    infoSpan.textContent = `${tab.mimeType}  ·  ${t('editorReadOnly')}`;
+    statusBarEl.appendChild(infoSpan);
+    return;
+  }
+
+  if (!tab.editorView) { statusBarEl.textContent = ''; return; }
   const state = tab.editorView.state;
   const cursor = state.selection.main.head;
   const line = state.doc.lineAt(cursor);
@@ -611,6 +721,28 @@ function updateStatusBar(): void {
     });
     statusBarEl.appendChild(langBtn);
 
+    // Word wrap toggle button
+    const wrapBtn = document.createElement('button');
+    wrapBtn.id = 'editor-wrap-btn';
+    wrapBtn.className = 'editor-wrap-btn';
+    wrapBtn.title = t('editorWordWrap');
+    wrapBtn.addEventListener('click', () => {
+      const currentTab = activeTabId ? tabs.get(activeTabId) : null;
+      if (currentTab) toggleWrapLines(currentTab);
+    });
+    statusBarEl.appendChild(wrapBtn);
+
+    // MD Preview toggle button
+    const previewBtn = document.createElement('button');
+    previewBtn.id = 'editor-preview-btn';
+    previewBtn.className = 'editor-preview-btn';
+    previewBtn.title = t('editorMdPreview');
+    previewBtn.addEventListener('click', () => {
+      const currentTab = activeTabId ? tabs.get(activeTabId) : null;
+      if (currentTab) void toggleMdPreview(currentTab);
+    });
+    statusBarEl.appendChild(previewBtn);
+
     // Save button
     const saveBtn = document.createElement('button');
     saveBtn.id = 'editor-save-btn';
@@ -637,6 +769,22 @@ function updateStatusBar(): void {
   // Update font size label
   const fontBtn = statusBarEl.querySelector('.editor-font-btn');
   if (fontBtn) fontBtn.textContent = `${getEditorFontSize()}px`;
+
+  // Update word wrap button state
+  const wrapBtn = document.getElementById('editor-wrap-btn');
+  if (wrapBtn) {
+    wrapBtn.textContent = t('editorWordWrap');
+    wrapBtn.classList.toggle('active', tab.wrapLines);
+  }
+
+  // Update MD preview button: show only for markdown files, indicate active state
+  const previewBtn = document.getElementById('editor-preview-btn');
+  if (previewBtn) {
+    const isMd = (tab.forcedLang || getLang(tab.fileName, tab.editorView?.state.doc.toString() ?? tab.content)) === 'md';
+    previewBtn.style.display = isMd ? '' : 'none';
+    previewBtn.textContent = tab.previewOpen ? t('editorMdPreviewOff') : t('editorMdPreview');
+    previewBtn.classList.toggle('active', tab.previewOpen);
+  }
 }
 
 // --- Editor font size ---
@@ -653,11 +801,13 @@ function getEditorFontSize(): number {
 function setEditorFontSize(size: number): void {
   size = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, size));
   localStorage.setItem(FONT_SIZE_KEY, String(size));
-  // Apply to all open editors
+  // Apply to all open editors and MD preview panes
   for (const tab of tabs.values()) {
     if (tab.wrapperEl) {
       const cm = tab.wrapperEl.querySelector('.cm-editor') as HTMLElement;
       if (cm) cm.style.fontSize = `${size}px`;
+      const mdContent = tab.wrapperEl.querySelector('.editor-md-content') as HTMLElement | null;
+      if (mdContent) mdContent.style.fontSize = `${size}px`;
     }
   }
   updateStatusBar();
@@ -747,15 +897,21 @@ function pollPendingFiles(): void {
   if (raw) {
     localStorage.removeItem(`${LS_PREFIX}pending`);
     try {
-      for (const item of JSON.parse(raw) as Array<{ tabId: string; sessionId: string; filePath: string; fileName: string; host: string }>) {
+      for (const item of JSON.parse(raw) as Array<{ tabId: string; sessionId: string; filePath: string; fileName: string; host: string; isImage?: boolean; mimeType?: string }>) {
         if (!tabs.has(item.tabId)) {
           const wrapper = document.createElement('div');
           wrapper.className = 'editor-tab-content';
           wrapper.style.display = 'none';
           contentEl.appendChild(wrapper);
+          const imgFile = item.isImage ?? isImageFile(item.fileName);
+          // MD files default to preview open; images and others default to closed
+          const isMdFile = !imgFile && (item.fileName.toLowerCase().endsWith('.md') || item.fileName.toLowerCase().endsWith('.markdown'));
           tabs.set(item.tabId, {
             ...item, editorView: null, wrapperEl: wrapper,
             isDirty: false, isSaving: false, content: '', loaded: false, forcedLang: '',
+            isImage: imgFile, mimeType: item.mimeType ?? '',
+            previewOpen: isMdFile,
+            wrapLines: false, wrapCompartment: new Compartment(),
           });
         }
         void activateTab(item.tabId);
@@ -771,8 +927,9 @@ function pollContent(): void {
     const raw = localStorage.getItem(`${LS_PREFIX}content-${tabId}`);
     if (raw) {
       localStorage.removeItem(`${LS_PREFIX}content-${tabId}`);
-      const data = JSON.parse(raw) as { content?: string; filePath?: string; error?: string };
+      const data = JSON.parse(raw) as { content?: string; filePath?: string; error?: string; isImage?: boolean; mimeType?: string };
       tab.loaded = true;
+      if (data.isImage) { tab.isImage = true; tab.mimeType = data.mimeType ?? tab.mimeType; }
       if (data.error) {
         tab.content = '';
         tab.wrapperEl.innerHTML = `<div class="editor-error">${escapeHtml(data.error)}</div>`;

@@ -1,5 +1,11 @@
 import type { DrawerInstance } from './drawer';
 import { showDeleteConfirm, showBatchDeleteConfirm, showRenameDialog } from './drawer-context-menu';
+import {
+  applyFileListFilter,
+  getVirtualFileList,
+  scrollVirtualListToIndex,
+  refreshVirtualList,
+} from './file-list-ui';
 
 export function setupBreadcrumb(
   instance: DrawerInstance,
@@ -9,13 +15,19 @@ export function setupBreadcrumb(
   if (!breadcrumb) return;
 
   const updateBreadcrumb = (path: string) => {
-    const parts = path === '/' ? [''] : path.split('/');
-    breadcrumb.innerHTML = parts.map((part, i) => {
-      const targetPath = i === 0 ? '/' : parts.slice(0, i + 1).join('/');
-      const label = i === 0 ? '/' : part;
-      const isLast = i === parts.length - 1;
-      return `<span class="breadcrumb-item${isLast ? ' active' : ''}" data-path="${targetPath}">${label}</span>`;
-    }).join('<span class="breadcrumb-sep">/</span>');
+    if (path === '/') {
+      breadcrumb.innerHTML = `<span class="breadcrumb-item active" data-path="/">/</span>`;
+      return;
+    }
+    const segments = path.split('/').filter(Boolean);
+    let html = `<span class="breadcrumb-item" data-path="/">/</span>`;
+    for (let i = 0; i < segments.length; i++) {
+      const targetPath = '/' + segments.slice(0, i + 1).join('/');
+      const isLast = i === segments.length - 1;
+      html += `<span class="breadcrumb-sep">/</span>`;
+      html += `<span class="breadcrumb-item${isLast ? ' active' : ''}" data-path="${targetPath}">${segments[i]}</span>`;
+    }
+    breadcrumb.innerHTML = html;
   };
 
   const showBreadcrumb = () => {
@@ -71,29 +83,38 @@ export function setupKeyboardNav(
       return;
     }
 
-    const rows = Array.from(listElement.querySelectorAll('tr[data-path]')) as HTMLTableRowElement[];
-    // 只取可见行（搜索过滤后）
-    const visibleRows = rows.filter(r => r.style.display !== 'none');
-    if (visibleRows.length === 0 && !['f', 'F5', 'Backspace'].includes(e.key)) return;
-    const selectedIdx = visibleRows.findIndex(r => r.classList.contains('selected'));
+    // 从虚拟滚动状态读取当前显示的文件序列(已排序+已过滤),不从 DOM 读
+    const visibleFiles = getVirtualFileList(listElement) || [];
+    if (visibleFiles.length === 0 && !['f', 'F5', 'Backspace'].includes(e.key)) return;
+
+    // 当前"光标"行:取 lastClickedFile 在 visibleFiles 中的索引(支持单选/多选场景)
+    const anchor = fm.lastClickedFile;
+    const selectedIdx = anchor ? visibleFiles.findIndex(f => f.name === anchor) : -1;
+
+    const triggerDblClick = (name: string) => {
+      const tr = listElement.querySelector(`tr[data-path="${CSS.escape(name)}"]`) as HTMLTableRowElement | null;
+      tr?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    };
 
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       let nextIdx: number;
       if (e.key === 'ArrowDown') {
-        nextIdx = selectedIdx < visibleRows.length - 1 ? selectedIdx + 1 : 0;
+        nextIdx = selectedIdx < visibleFiles.length - 1 ? selectedIdx + 1 : 0;
       } else {
-        nextIdx = selectedIdx > 0 ? selectedIdx - 1 : visibleRows.length - 1;
+        nextIdx = selectedIdx > 0 ? selectedIdx - 1 : visibleFiles.length - 1;
       }
+      const name = visibleFiles[nextIdx].name;
       fm.selectedFiles.clear();
-      rows.forEach(r => r.classList.remove('selected'));
-      visibleRows[nextIdx].classList.add('selected');
-      const name = visibleRows[nextIdx].dataset.path;
-      if (name) { fm.selectedFiles.add(name); fm.lastClickedFile = name; }
-      visibleRows[nextIdx].scrollIntoView({ block: 'nearest' });
+      fm.selectedFiles.add(name);
+      fm.lastClickedFile = name;
+      scrollVirtualListToIndex(listElement, nextIdx);
+      refreshVirtualList(listElement);
     } else if (e.key === 'Enter' && selectedIdx >= 0) {
       e.preventDefault();
-      visibleRows[selectedIdx].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      // 滚动到目标行让其进入 DOM,然后派发 dblclick
+      scrollVirtualListToIndex(listElement, selectedIdx);
+      triggerDblClick(visibleFiles[selectedIdx].name);
     } else if (e.key === 'Backspace') {
       e.preventDefault();
       backBtn.click();
@@ -109,20 +130,15 @@ export function setupKeyboardNav(
       }
     } else if (e.key === 'F2' && selectedIdx >= 0) {
       e.preventDefault();
-      const name = visibleRows[selectedIdx].dataset.path;
-      if (name) showRenameDialog(instance, name);
+      showRenameDialog(instance, visibleFiles[selectedIdx].name);
     } else if (e.key === 'F5') {
       e.preventDefault();
       fm.loadDirectory(fm.getCurrentPath());
     } else if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       fm.selectedFiles.clear();
-      rows.forEach(r => r.classList.remove('selected'));
-      visibleRows.forEach(r => {
-        r.classList.add('selected');
-        const name = r.dataset.path;
-        if (name) fm.selectedFiles.add(name);
-      });
+      visibleFiles.forEach(f => fm.selectedFiles.add(f.name));
+      refreshVirtualList(listElement);
     } else if (e.key === 'f' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       toggleSearchBar(true);
@@ -145,17 +161,14 @@ export function setupFileSearch(
     } else {
       searchBar.style.display = 'none';
       searchInput.value = '';
-      listElement.querySelectorAll('tr').forEach(r => (r as HTMLElement).style.display = '');
+      // 通过虚拟滚动状态清除过滤(直接操作 DOM 在虚拟化场景下无效)
+      applyFileListFilter(listElement, '');
     }
   };
 
   if (searchInput) {
     searchInput.addEventListener('input', () => {
-      const query = searchInput.value.toLowerCase();
-      listElement.querySelectorAll('tr').forEach(r => {
-        const name = r.getAttribute('data-path') || '';
-        (r as HTMLElement).style.display = name.toLowerCase().includes(query) ? '' : 'none';
-      });
+      applyFileListFilter(listElement, searchInput.value);
     });
     searchInput.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Escape') {

@@ -182,13 +182,14 @@
   min-width: 180px;
   max-width: 240px;
   overflow-y: auto;
-  /* Liquid Glass */
-  background: rgba(255, 255, 255, 0.04);
+  /* Semi-opaque glass — nested inside .ai-bar which has its own backdrop-filter,
+     so child backdrop-filter can't blur through to page content in WebKit. */
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
-  box-shadow: none;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   padding: 3px;
   z-index: 310;
   animation: chat-slide-up 0.15s ease-out;

@@ -48,6 +48,8 @@ export async function handleRemoteConnect(info: RemoteServerInfo, sessionId: str
     focusedPaneId: remotePaneId,
     title: remoteTitle,
     status: 'connecting' as const,
+    paneCounterNext: 2,
+    paneNumbers: new Map([[remotePaneId, 1]]),
   };
   TabManager.tabs.push(tab);
   TabManager.activeTabId = remoteTabId;

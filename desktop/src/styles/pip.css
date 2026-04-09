@@ -7,10 +7,12 @@ html.pip-mode #status {
   display: none !important;
 }
 
-/* Hide AI bar, chat panel, and file drawer */
+/* Hide AI bar, chat panel, file drawer, and file sidebar */
 html.pip-mode .ai-bar,
 html.pip-mode .ai-chat-panel,
-html.pip-mode .file-drawer {
+html.pip-mode .file-drawer,
+html.pip-mode .file-sidebar,
+html.pip-mode .sidebar-resize-handle {
   display: none !important;
 }
 

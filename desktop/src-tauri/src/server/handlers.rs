@@ -27,19 +27,46 @@ fn format_system_time(t: &std::time::SystemTime) -> String {
             let mut y = 1970i64;
             let mut remaining_days = days as i64;
             loop {
-                let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-                if remaining_days < days_in_year { break; }
+                let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+                    366
+                } else {
+                    365
+                };
+                if remaining_days < days_in_year {
+                    break;
+                }
                 remaining_days -= days_in_year;
                 y += 1;
             }
             let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-            let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+            let month_days = [
+                31,
+                if leap { 29 } else { 28 },
+                31,
+                30,
+                31,
+                30,
+                31,
+                31,
+                30,
+                31,
+                30,
+                31,
+            ];
             let mut m = 0usize;
             while m < 12 && remaining_days >= month_days[m] {
                 remaining_days -= month_days[m];
                 m += 1;
             }
-            format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m + 1, remaining_days + 1, hours, mins, s)
+            format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+                y,
+                m + 1,
+                remaining_days + 1,
+                hours,
+                mins,
+                s
+            )
         }
         Err(_) => "1970-01-01T00:00:00Z".to_string(),
     }
@@ -64,7 +91,12 @@ fn ok_json() -> impl IntoResponse {
 }
 
 fn err_json(status: StatusCode, msg: &str) -> impl IntoResponse {
-    (status, Json(ErrorResponse { error: msg.to_string() }))
+    (
+        status,
+        Json(ErrorResponse {
+            error: msg.to_string(),
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -91,8 +123,12 @@ pub struct CreateSessionRequest {
     pub rows: u16,
 }
 
-fn default_cols() -> u16 { 80 }
-fn default_rows() -> u16 { 24 }
+fn default_cols() -> u16 {
+    80
+}
+fn default_rows() -> u16 {
+    24
+}
 
 pub async fn create_session(
     Extension(state): Extension<Arc<ServerState>>,
@@ -108,9 +144,7 @@ pub async fn create_session(
     let session = state.session_manager.create();
 
     // Start the terminal via LocalShellExecutor
-    let executor = super::executor::local::LocalShellExecutor::new(
-        shell, cwd, cols, rows,
-    );
+    let executor = super::executor::local::LocalShellExecutor::new(shell, cwd, cols, rows);
     match executor.start().await {
         Ok(terminal) => {
             // Start terminal I/O loop (read output → broadcast, receive input → write)
@@ -135,9 +169,7 @@ pub async fn create_session(
     )
 }
 
-pub async fn list_sessions(
-    Extension(state): Extension<Arc<ServerState>>,
-) -> impl IntoResponse {
+pub async fn list_sessions(Extension(state): Extension<Arc<ServerState>>) -> impl IntoResponse {
     let sessions = state.session_manager.list();
     let list: Vec<serde_json::Value> = sessions
         .iter()
@@ -188,7 +220,10 @@ pub async fn delete_session(
 ) -> impl IntoResponse {
     match state.session_manager.delete(&id) {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))),
-        Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": e }))),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": e })),
+        ),
     }
 }
 
@@ -202,16 +237,23 @@ pub async fn create_ssh_session(
 ) -> impl IntoResponse {
     let config = match parse_ssh_config(&body) {
         Ok(c) => c,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e }))),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e })),
+            )
+        }
     };
 
     let session = state.session_manager.create();
     *session.executor_type.lock().unwrap() = "ssh".to_string();
+    *session.ssh_config.lock().unwrap() = Some(config.clone());
 
     // Start SSH terminal — connect first, SFTP initializes in background
     match super::terminal::ssh::SshTerminal::connect(&config, 80, 24).await {
         Ok(terminal) => {
             let ssh_handle = terminal.session_handle.clone();
+            let sftp_config = config.clone();
             *session.ssh_exec_handle.lock().await = Some(Box::new(ssh_handle.clone()));
 
             // Start terminal I/O immediately (fast path — no SFTP blocking)
@@ -220,7 +262,9 @@ pub async fn create_ssh_session(
             // Initialize SFTP in background — does not block terminal usability
             let session_bg = session.clone();
             tokio::spawn(async move {
-                if let Some(sftp_client) = super::terminal::ssh::SshTerminal::init_sftp(&ssh_handle).await {
+                if let Some(sftp_client) =
+                    super::terminal::ssh::SshTerminal::connect_sftp(&sftp_config).await
+                {
                     *session_bg.sftp.lock().unwrap() = Some(sftp_client);
                 }
             });
@@ -250,9 +294,7 @@ pub async fn create_ssh_session(
     )
 }
 
-pub async fn test_ssh_connection(
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
+pub async fn test_ssh_connection(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
     let config = match parse_ssh_config(&body) {
         Ok(c) => c,
         Err(e) => return Json(serde_json::json!({ "ok": false, "error": e })),
@@ -273,8 +315,16 @@ pub async fn test_ssh_connection(
 }
 
 fn parse_ssh_config(body: &serde_json::Value) -> Result<super::terminal::ssh::SshConfig, String> {
-    let host = body.get("host").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let username = body.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let host = body
+        .get("host")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let username = body
+        .get("username")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if host.is_empty() || username.is_empty() {
         return Err("host and username are required".to_string());
     }
@@ -282,16 +332,51 @@ fn parse_ssh_config(body: &serde_json::Value) -> Result<super::terminal::ssh::Ss
         host,
         port: body.get("port").and_then(|v| v.as_u64()).unwrap_or(22) as u16,
         username,
-        password: body.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        private_key: body.get("private_key").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        passphrase: body.get("passphrase").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        trusted_fingerprint: body.get("trusted_fingerprint").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        disable_hook: body.get("skip_shell_hook").and_then(|v| v.as_bool()).unwrap_or(false),
-        proxy_type: body.get("proxy_type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        proxy_host: body.get("proxy_host").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        password: body
+            .get("password")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        private_key: body
+            .get("private_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        passphrase: body
+            .get("passphrase")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        trusted_fingerprint: body
+            .get("trusted_fingerprint")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        disable_hook: body
+            .get("skip_shell_hook")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        proxy_type: body
+            .get("proxy_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        proxy_host: body
+            .get("proxy_host")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         proxy_port: body.get("proxy_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
-        proxy_username: body.get("proxy_username").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        proxy_password: body.get("proxy_password").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        proxy_username: body
+            .get("proxy_username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        proxy_password: body
+            .get("proxy_password")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
     })
 }
 
@@ -310,7 +395,10 @@ pub async fn request_master(
             session.forward_master_request(requester_id);
             (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
         }
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "session not found" }))),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "session not found" })),
+        ),
     }
 }
 
@@ -319,13 +407,22 @@ pub async fn set_private(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let private = body.get("private").and_then(|v| v.as_bool()).unwrap_or(false);
+    let private = body
+        .get("private")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     match state.session_manager.get(&id) {
         Some(session) => {
             let kicked = session.set_private(private);
-            (StatusCode::OK, Json(serde_json::json!({ "ok": true, "kicked": kicked })))
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "ok": true, "kicked": kicked })),
+            )
         }
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "session not found" }))),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "session not found" })),
+        ),
     }
 }
 
@@ -333,9 +430,7 @@ pub async fn set_private(
 // Clients / devices
 // ---------------------------------------------------------------------------
 
-pub async fn list_clients(
-    Extension(state): Extension<Arc<ServerState>>,
-) -> impl IntoResponse {
+pub async fn list_clients(Extension(state): Extension<Arc<ServerState>>) -> impl IntoResponse {
     let clients = state.session_manager.list_all_clients();
     Json(serde_json::json!({ "clients": clients }))
 }
@@ -349,18 +444,25 @@ pub async fn kick_client(
             let (addr, found) = session.kick_client(&client_id);
             if found {
                 // Check if ban=true in query params (simplified)
-                (StatusCode::OK, Json(serde_json::json!({ "ok": true, "remote_addr": addr })))
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({ "ok": true, "remote_addr": addr })),
+                )
             } else {
-                (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "client not found" })))
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "client not found" })),
+                )
             }
         }
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "session not found" }))),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "session not found" })),
+        ),
     }
 }
 
-pub async fn list_devices(
-    Extension(state): Extension<Arc<ServerState>>,
-) -> impl IntoResponse {
+pub async fn list_devices(Extension(state): Extension<Arc<ServerState>>) -> impl IntoResponse {
     let devices = state.session_manager.list_devices();
     Json(serde_json::json!({ "devices": devices }))
 }
@@ -383,23 +485,22 @@ pub async fn set_token(
 ) -> impl IntoResponse {
     let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("");
     if token.len() < 8 {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "token must be at least 8 characters" })));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "token must be at least 8 characters" })),
+        );
     }
     state.authenticator.set_token(token.to_string());
     (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
 }
 
-pub async fn refresh_token(
-    Extension(state): Extension<Arc<ServerState>>,
-) -> impl IntoResponse {
+pub async fn refresh_token(Extension(state): Extension<Arc<ServerState>>) -> impl IntoResponse {
     let new_token = super::generate_token();
     state.authenticator.set_token(new_token.clone());
     Json(serde_json::json!({ "ok": true, "token": new_token }))
 }
 
-pub async fn revoke_all(
-    Extension(state): Extension<Arc<ServerState>>,
-) -> impl IntoResponse {
+pub async fn revoke_all(Extension(state): Extension<Arc<ServerState>>) -> impl IntoResponse {
     let new_token = super::generate_token();
     state.authenticator.set_token(new_token.clone());
     let disconnected = state.session_manager.disconnect_all_clients();
@@ -410,9 +511,7 @@ pub async fn revoke_all(
 // IP ban management
 // ---------------------------------------------------------------------------
 
-pub async fn list_bans(
-    Extension(state): Extension<Arc<ServerState>>,
-) -> impl IntoResponse {
+pub async fn list_bans(Extension(state): Extension<Arc<ServerState>>) -> impl IntoResponse {
     let bans = state.ban_manager.list();
     Json(serde_json::json!({ "banned_ips": bans }))
 }
@@ -429,7 +528,10 @@ pub async fn ban_ip(
             state.session_manager.kick_by_ip(ip);
             (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
         }
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e })),
+        ),
     }
 }
 
@@ -451,16 +553,23 @@ pub async fn create_pair(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let remote_addr = addr.ip().to_string();
-    let device_name = body.get("device_info")
+    let device_name = body
+        .get("device_info")
         .or_else(|| body.get("device_name"))
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    match state.pairing_manager.create_request(device_name, &remote_addr) {
+    match state
+        .pairing_manager
+        .create_request(device_name, &remote_addr)
+    {
         Ok((pair_id, secret)) => (
             StatusCode::OK,
             Json(serde_json::json!({ "pair_id": pair_id, "secret": secret })),
         ),
-        Err(e) => (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": e }))),
+        Err(e) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "error": e })),
+        ),
     }
 }
 
@@ -471,12 +580,18 @@ pub async fn poll_pair(
 ) -> impl IntoResponse {
     let secret = params.get("secret").map(|s| s.as_str()).unwrap_or("");
     match state.pairing_manager.get_request(&id, secret) {
-        Some(status) => (StatusCode::OK, Json(serde_json::json!({
-            "ok": status.status == "approved",
-            "status": status.status,
-            "token": status.token,
-        }))),
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "not found" }))),
+        Some(status) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": status.status == "approved",
+                "status": status.status,
+                "token": status.token,
+            })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "not found" })),
+        ),
     }
 }
 
@@ -492,7 +607,10 @@ pub async fn respond_pair(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let approved = body.get("approved").and_then(|v| v.as_bool()).unwrap_or(false);
+    let approved = body
+        .get("approved")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     state.pairing_manager.handle_approval(approved, &id);
     Json(serde_json::json!({ "ok": true }))
 }
@@ -505,7 +623,10 @@ pub async fn toggle_discoverable(
     Extension(state): Extension<Arc<ServerState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let enabled = body
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let port = body.get("port").and_then(|v| v.as_u64()).map(|p| p as u16);
     if let Some(ref dm) = state.discovery_manager {
         let name = state.display_name();
@@ -521,7 +642,8 @@ pub async fn discover(
     Extension(state): Extension<Arc<ServerState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let timeout = params.get("timeout")
+    let timeout = params
+        .get("timeout")
         .and_then(|t| t.parse::<u64>().ok())
         .unwrap_or(5)
         .min(10);
@@ -536,9 +658,7 @@ pub async fn discover(
 // System info
 // ---------------------------------------------------------------------------
 
-pub async fn server_info(
-    Extension(state): Extension<Arc<ServerState>>,
-) -> impl IntoResponse {
+pub async fn server_info(Extension(state): Extension<Arc<ServerState>>) -> impl IntoResponse {
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -549,4 +669,3 @@ pub async fn server_info(
         "sessions": session_count,
     }))
 }
-

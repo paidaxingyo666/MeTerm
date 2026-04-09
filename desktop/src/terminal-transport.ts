@@ -14,6 +14,8 @@ export class IpcTransport implements TerminalTransport {
   private _connected = false;
   private _sessionId: string;
   private _clientId: string | null = null;
+  /** Per-transfer queues to serialize ipc_session_control invokes per transferId */
+  private _controlQueues: Map<number, Promise<void>> = new Map();
   onmessage: ((data: ArrayBuffer) => void) | null = null;
   onclose: (() => void) | null = null;
 
@@ -62,12 +64,33 @@ export class IpcTransport implements TerminalTransport {
         });
       }
     } else {
-      void invoke('ipc_session_control', {
-        sessionId: this._sessionId,
-        clientId: this._clientId,
-        msgType,
-        payload,
-      });
+      // Per-transfer queues to guarantee ordering within each transfer while
+      // allowing different transfers to proceed in parallel.
+      let queueKey = 0;
+      if ((msgType === 0x0c || msgType === 0x0d || msgType === 0x0e || msgType === 0x14 || msgType === 0x15
+           || msgType === 0x20 || msgType === 0x21 || msgType === 0x22) && payload.length >= 4) {
+        if (msgType === 0x0d) {
+          // Upload chunk: payload starts with [4B transferId]
+          queueKey = (payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3];
+        } else {
+          // JSON payloads: try parse transferId
+          try {
+            const json = JSON.parse(new TextDecoder().decode(new Uint8Array(payload)));
+            queueKey = json.transferId || 0;
+          } catch { queueKey = 0; }
+        }
+      }
+
+      let queue = this._controlQueues.get(queueKey) || Promise.resolve();
+      queue = queue.then(() =>
+        invoke('ipc_session_control', {
+          sessionId: this._sessionId,
+          clientId: this._clientId,
+          msgType,
+          payload,
+        }) as Promise<void>
+      ).catch(err => console.error('IPC control error:', err));
+      this._controlQueues.set(queueKey, queue);
     }
   }
 

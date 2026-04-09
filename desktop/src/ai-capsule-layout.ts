@@ -11,6 +11,7 @@ import { TerminalRegistry } from './terminal';
 import { t } from './i18n';
 import { LLM_SEND_SVG } from './ai-capsule-chat-ui';
 import { stopIcon } from './ai-icons';
+import { ATTACH_ICON_SVG } from './ai-capsule-bar-dom';
 import type { AICapsuleInstance, AIChatLayoutMode } from './ai-capsule-types';
 
 // ── Constants ──
@@ -124,6 +125,15 @@ export interface SideInputCallbacks {
   createTrustSwitcher: () => HTMLDivElement;
   toggleSideChatHistory: (instance: AICapsuleInstance) => void;
   toggleLayout: (instance: AICapsuleInstance) => void;
+  /**
+   * Resolve the instance that should own the *current* action
+   * (send / abort / chat history / layout toggle). Used by side
+   * panel callbacks because the side panel is tab-scoped: it lives
+   * longer than any single pane and must operate on whichever
+   * pane has the live focus right now — not the pane that created
+   * the side panel.
+   */
+  resolveCurrentInstance: (fallback: AICapsuleInstance) => AICapsuleInstance;
 }
 
 /**
@@ -188,7 +198,7 @@ export function createSideInputArea(
   chatHistBtn.title = t('aiChatHistory');
   chatHistBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12v8a1 1 0 01-1 1H5l-3 2.5V4a1 1 0 011-1z"/><line x1="5" y1="6.5" x2="11" y2="6.5"/><line x1="5" y1="9" x2="9" y2="9"/></svg>`;
   chatHistBtn.addEventListener('click', () => {
-    callbacks.toggleSideChatHistory(instance);
+    callbacks.toggleSideChatHistory(callbacks.resolveCurrentInstance(instance));
   });
 
   // Layout toggle button (switch back to bottom mode)
@@ -197,7 +207,34 @@ export function createSideInputArea(
   layoutBtn.title = t('aiLayoutBottom');
   layoutBtn.innerHTML = SVG_LAYOUT_BOTTOM;
   layoutBtn.addEventListener('click', () => {
-    callbacks.toggleLayout(instance);
+    callbacks.toggleLayout(callbacks.resolveCurrentInstance(instance));
+  });
+
+  // Attach image button — same UX as the bottom-mode AI Bar attach
+  // button: left click opens a file picker (after first trying the
+  // clipboard fallback for the system pasteboard); right click only
+  // tries the clipboard.
+  const attachBtn = document.createElement('button');
+  attachBtn.className = 'ai-side-btn ai-side-btn-attach';
+  attachBtn.title = 'Attach image (left click: pick file · right click: paste from clipboard)';
+  // Reuse the same SVG used by the bottom-mode AI bar so the visual
+  // weight matches.  Imported lazily to avoid a circular dep at the
+  // module-loading layer.
+  attachBtn.innerHTML = ATTACH_ICON_SVG;
+  attachBtn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const m = await import('./ai-capsule-image-attach');
+    const target = callbacks.resolveCurrentInstance(instance);
+    const fromClipboard = await m.triggerClipboardImagePaste(target);
+    if (fromClipboard) return;
+    await m.pickImageFiles(target);
+  });
+  attachBtn.addEventListener('contextmenu', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const m = await import('./ai-capsule-image-attach');
+    await m.triggerClipboardImagePaste(callbacks.resolveCurrentInstance(instance));
   });
 
   const textarea = document.createElement('textarea');
@@ -213,33 +250,65 @@ export function createSideInputArea(
   sendBtn.title = `${t('aiSendPrompt')} (Enter)`;
   sendBtn.innerHTML = LLM_SEND_SVG;
 
-  // Wire up send
+  // Wire up send — resolve the *current* instance each invocation
+  // so the side panel (which lives at tab scope) always targets the
+  // pane the user has focused at the moment they hit send, not the
+  // pane that happened to create the side panel DOM.
   const doSend = () => {
     const text = textarea.value.trim();
     if (!text) return;
-    callbacks.sendToLLM(instance, text);
+    const target = callbacks.resolveCurrentInstance(instance);
+    callbacks.sendToLLM(target, text);
     textarea.value = '';
     textarea.style.height = ''; // reset auto-height
   };
 
   // Abort is handled by the agent's onAborted callback which calls
-  // updateButtonHighlight → updateSideSendButton. We just call agent.abort().
+  // updateButtonHighlight → updateSideSendButton. We fire the
+  // AbortController from run() plus the legacy agent.abort() for safety.
   sendBtn.addEventListener('click', () => {
-    if (instance.isStreaming) {
-      instance.agent.abort();
+    const target = callbacks.resolveCurrentInstance(instance);
+    if (target.isStreaming) {
+      target.agentAbort?.();
+      target.agent.abort();
     } else {
       doSend();
     }
   });
 
+  // ── IME composition tracking ──
+  // Same logic as ai-capsule-input-setup.ts: track composition state
+  // ourselves and add a small grace window after compositionend so a
+  // trailing Enter (Chinese candidate confirmation) never submits.
+  let imeActive = false;
+  let imeJustEndedAt = 0;
+  const IME_GRACE_MS = 80;
+  textarea.addEventListener('compositionstart', () => { imeActive = true; });
+  textarea.addEventListener('compositionupdate', () => { imeActive = true; });
+  textarea.addEventListener('compositionend', () => {
+    imeActive = false;
+    imeJustEndedAt = Date.now();
+  });
+  const isImeKeydown = (e: KeyboardEvent): boolean => {
+    if (imeActive) return true;
+    if (e.isComposing) return true;
+    if (e.keyCode === 229) return true;
+    if (e.key === 'Enter' && (Date.now() - imeJustEndedAt) < IME_GRACE_MS) return true;
+    return false;
+  };
+
   // Keyboard: Enter=send, Shift+Enter=newline, Escape=abort
   textarea.addEventListener('keydown', (e) => {
+    // IME guard — let the browser deliver the candidate, don't submit.
+    if (isImeKeydown(e)) return;
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (instance.isStreaming) {
+      const target = callbacks.resolveCurrentInstance(instance);
+      if (target.isStreaming) {
         const text = textarea.value.trim();
         if (text) {
-          callbacks.sendToLLM(instance, text);
+          callbacks.sendToLLM(target, text);
           textarea.value = '';
           textarea.style.height = '';
         }
@@ -248,8 +317,10 @@ export function createSideInputArea(
       }
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      if (instance.isStreaming) {
-        instance.agent.abort();
+      const target = callbacks.resolveCurrentInstance(instance);
+      if (target.isStreaming) {
+        target.agentAbort?.();
+        target.agent.abort();
       }
     }
   });
@@ -268,6 +339,7 @@ export function createSideInputArea(
   toolbar.appendChild(trustSwitcher);
   toolbar.appendChild(chatHistBtn);
   toolbar.appendChild(layoutBtn);
+  toolbar.appendChild(attachBtn);
   const toolbarSpacer = document.createElement('div');
   toolbarSpacer.style.flex = '1';
   toolbar.appendChild(toolbarSpacer);
@@ -278,6 +350,13 @@ export function createSideInputArea(
   // Store references
   instance.sideInputArea = area;
   instance.sideInput = textarea;
+
+  // Register this side input area as paste-eligible so the
+  // document-level paste listener can route image clipboard data
+  // to this instance.
+  void import('./ai-capsule-image-attach').then(({ registerSidePanelForPaste }) => {
+    registerSidePanelForPaste(instance, area);
+  });
 
   return area;
 }
@@ -367,6 +446,14 @@ export function switchToSideMode(instance: AICapsuleInstance, callbacks: SideInp
   instance.layoutMode = 'side';
   saveLayoutMode('side');
 
+  // Re-render any pending images so they move from the AI bar
+  // chip strip into the side panel thumbnail strip (or vice
+  // versa). renderPendingStrip's container picker is layoutMode-
+  // aware, so calling it after the mode flips is enough.
+  void import('./ai-capsule-image-attach').then(({ renderPendingStrip }) => {
+    renderPendingStrip(instance);
+  });
+
   TerminalRegistry.resizeAll();
 }
 
@@ -395,6 +482,11 @@ export function switchToBottomMode(instance: AICapsuleInstance): void {
 
   instance.layoutMode = 'bottom';
   saveLayoutMode('bottom');
+
+  // Re-render pending images into the AI bar chip strip.
+  void import('./ai-capsule-image-attach').then(({ renderPendingStrip }) => {
+    renderPendingStrip(instance);
+  });
 
   TerminalRegistry.resizeAll();
 }

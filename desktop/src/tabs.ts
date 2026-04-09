@@ -28,6 +28,21 @@ export interface Tab {
   focusedPaneId: string;     // focused pane ID
   title: string;             // derived from focused pane's session
   status: SessionStatus;     // derived from focused pane's session
+  /**
+   * Monotonic counter used to allocate per-tab pane numbers.
+   * The FIRST pane of a new tab is always #1; each subsequent split
+   * consumes the next integer. Closed panes do NOT recycle their
+   * number — if pane #2 closes, a later split mints #5, not #2.
+   * The counter resets only when the whole tab closes.
+   */
+  paneCounterNext: number;
+  /**
+   * Map from paneId → human-facing pane number. Updated on split and
+   * on close. The UI and the agent read pane numbers from this map
+   * (not from the paneId string), so numbers survive pane creation
+   * order changes in the binary tree.
+   */
+  paneNumbers: Map<string, number>;
 }
 
 let tabIdCounter = 0;
@@ -94,6 +109,8 @@ class TabManagerClass {
       focusedPaneId: paneId,
       title: initialTitle,
       status: 'connecting',
+      paneCounterNext: 2,
+      paneNumbers: new Map([[paneId, 1]]),
     };
 
     this.tabs.push(tab);
@@ -225,6 +242,11 @@ class TabManagerClass {
     const newLeaf = allLeaves.find((l) => l.sessionId === newSessionId);
     if (!newLeaf) return null;
 
+    // Allocate a fresh pane number for the newly-split pane.
+    // Numbers are monotonic per-tab and never recycled.
+    tab.paneNumbers.set(newLeaf.id, tab.paneCounterNext);
+    tab.paneCounterNext += 1;
+
     // Create terminal for new session
     TerminalRegistry.create(
       newSessionId,
@@ -252,6 +274,10 @@ class TabManagerClass {
     const leaf = findLeafById(tab.splitRoot, paneId);
     if (!leaf) return;
 
+    // Remember the number before we delete it — the agent needs to
+    // be told "Pane N was closed" exactly once on the next iteration.
+    const closedNumber = tab.paneNumbers.get(paneId);
+
     // Destroy the session
     TerminalRegistry.destroy(leaf.sessionId);
     invoke('delete_session', { sessionId: leaf.sessionId }).catch(() => {});
@@ -260,6 +286,7 @@ class TabManagerClass {
     const newRoot = removeLeaf(tab.splitRoot, paneId);
     if (!newRoot) {
       // Last pane — close the tab
+      tab.paneNumbers.delete(paneId);
       this.tabs = this.tabs.filter((t) => t.id !== tabId);
       if (this.activeTabId === tabId) {
         this.activeTabId = this.tabs.length > 0 ? this.tabs[this.tabs.length - 1].id : null;
@@ -269,6 +296,15 @@ class TabManagerClass {
     }
 
     tab.splitRoot = newRoot;
+    tab.paneNumbers.delete(paneId);
+
+    // Notify any tab-scoped agent listeners so they can surface a
+    // one-shot "Pane N closed" system notice on the next iteration.
+    if (closedNumber !== undefined) {
+      document.dispatchEvent(new CustomEvent('meterm-pane-closed', {
+        detail: { tabId, paneNumber: closedNumber },
+      }));
+    }
 
     // Update focused pane if the closed one was focused
     if (tab.focusedPaneId === paneId) {
@@ -303,6 +339,38 @@ class TabManagerClass {
       const leaves = getAllLeaves(tab.splitRoot);
       if (leaves.some((l) => l.sessionId === sessionId)) {
         return tab;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Return the (tab, paneId, paneNumber) triple for a sessionId, or
+   * null when the session is not in any tab's split tree.
+   */
+  locateSession(sessionId: string): { tab: Tab; paneId: string; paneNumber: number } | null {
+    for (const tab of this.tabs) {
+      const leaves = getAllLeaves(tab.splitRoot);
+      const leaf = leaves.find((l) => l.sessionId === sessionId);
+      if (leaf) {
+        const n = tab.paneNumbers.get(leaf.id) ?? 0;
+        return { tab, paneId: leaf.id, paneNumber: n };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Resolve a pane number to its sessionId within a given tab.
+   * Returns null when the number doesn't exist in that tab.
+   */
+  resolvePaneNumber(tabId: string, paneNumber: number): { paneId: string; sessionId: string } | null {
+    const tab = this.tabs.find((t) => t.id === tabId);
+    if (!tab) return null;
+    for (const [paneId, num] of tab.paneNumbers.entries()) {
+      if (num === paneNumber) {
+        const leaf = findLeafById(tab.splitRoot, paneId);
+        if (leaf) return { paneId, sessionId: leaf.sessionId };
       }
     }
     return null;

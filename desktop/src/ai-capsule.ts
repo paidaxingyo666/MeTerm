@@ -3,31 +3,32 @@ import { DrawerManager } from './drawer';
 import { writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { t } from './i18n';
 import { globalCompletionIndex } from './cmd-completion-data';
-import { loadSettings, saveSettings } from './themes';
-import { injectShellHook } from './ai-tools';
-import { createOverlayScrollbar } from './overlay-scrollbar';
-import { jumpServerConfigMap, sshConfigMap, remoteInfoMap } from './app-state';
-import { AIAgent, AgentCallbacks } from './ai-agent';
-import { escapeHtml } from './status-bar';
-import { resolveActiveModel, resolveModel } from './ai-provider';
-import { thinkingIcon } from './ai-icons';
-import type { HistoryEntry, AICapsuleInstance, ConvEntry, ChatConversation, AIChatLayoutMode } from './ai-capsule-types';
+import { loadSettings } from './themes';
+import { AgentCallbacks } from './ai-agent';
+import type { HistoryEntry, AICapsuleInstance, ConvEntry, ChatConversation } from './ai-capsule-types';
+import { wireTabStateDelegation } from './ai-capsule-types';
+import { TabStateRegistry, resolveTabIdForSession } from './ai-capsule-tab-state';
+import { setSessionMetaProvider } from './ai-agent-session-meta';
 import {
-  getSavedLayoutMode, saveLayoutMode,
-  switchToSideMode, switchToBottomMode,
+  toggleChatHistory as toggleChatHistoryFn,
+  openChatHistory as openChatHistoryFn,
+  closeChatHistory as closeChatHistoryFn,
+  renderChatHistoryList as renderChatHistoryListFn,
+  handleDeleteConversation as handleDeleteConversationFn,
+  reloadChatHistoryWithFilter as reloadChatHistoryWithFilterFn,
+  type ChatHistoryPopupHost,
+} from './ai-capsule-chat-history-popup';
+import {
   hideSidePanel, showSidePanel,
-  updateSideSendButton, getSideSendButton,
-  SVG_LAYOUT_SIDE, SVG_LAYOUT_BOTTOM,
-  type SideInputCallbacks,
+  switchToSideMode,
 } from './ai-capsule-layout';
-import { renderMarkdown } from './ai-capsule-markdown';
 import { isDangerousCommand, confirmDangerousCommand } from './ai-capsule-danger';
-import { buildToolCard as buildToolCardFn, appendToolCallCard as appendToolCallCardFn, updateToolResultCard as updateToolResultCardFn, showConfirmCard as showConfirmCardFn } from './ai-capsule-tool-ui';
+import { buildToolCard as buildToolCardFn, appendToolCallCard as appendToolCallCardFn, updateToolResultCard as updateToolResultCardFn, updateToolResultImages as updateToolResultImagesFn, showConfirmCard as showConfirmCardFn } from './ai-capsule-tool-ui';
 import { bindChatContextMenu as bindChatContextMenuFn, resolveMessageIndex as resolveMessageIndexFn, showBubbleContextMenu as showBubbleContextMenuFn } from './ai-capsule-context-menu';
 import { createTrustSwitcher as createTrustSwitcherFn } from './ai-capsule-trust';
 import {
   getHistoryKey, loadHistory as loadHistoryFn,
-  addHistory as addHistoryFn, fuzzyMatch, enterSearchMode as enterSearchModeFn,
+  addHistory as addHistoryFn, enterSearchMode as enterSearchModeFn,
   exitSearchMode as exitSearchModeFn,
   renderHistoryPanel as renderHistoryPanelFn, removeHistoryEntry as removeHistoryEntryFn,
 } from './ai-capsule-history';
@@ -46,8 +47,35 @@ import {
   appendReasoningToken as appendReasoningTokenFn, finalizeMessage as finalizeMessageFn,
   finalizeThinking as finalizeThinkingFn, showError as showErrorFn,
   appendSystemNotice as appendSystemNoticeFn, buildAgentCallbacks as buildAgentCallbacksFn,
-  LLM_SEND_SVG,
 } from './ai-capsule-chat-ui';
+import {
+  PopupResizeState,
+  adjustPopupMaxHeight as adjustPopupMaxHeightFn,
+  observePopupResize as observePopupResizeFn,
+  unobservePopupResize as unobservePopupResizeFn,
+  ensurePopupResizeHandle as ensurePopupResizeHandleFn,
+} from './ai-capsule-popup-resize';
+import { updateModelLabel as updateModelLabelFn } from './ai-capsule-model-ui';
+import {
+  createBarElement as createBarElementFn,
+  syncBarPlaceholder as syncBarPlaceholderFn,
+} from './ai-capsule-bar-dom';
+import {
+  createChatPanel as createChatPanelFn,
+  openChat as openChatFn,
+  minimizeChat as minimizeChatFn,
+  closeChatAndSave as closeChatAndSaveFn,
+  sendToLLMFrom as sendToLLMFromFn,
+  restoreConversation as restoreConversationFn,
+  getSideInputCallbacks as getSideInputCallbacksFn,
+  type ChatOpsHost,
+} from './ai-capsule-chat-ops';
+import {
+  setupInput as setupInputFn,
+  type InputSetupHost,
+} from './ai-capsule-input-setup';
+import { startTerminalCapture as startTerminalCaptureFn } from './ai-capsule-terminal-capture';
+import { wireImageAttachmentHandlers, setActiveInstanceGetter } from './ai-capsule-image-attach';
 
 export type { HistoryEntry, AICapsuleInstance, ConvEntry, ChatConversation } from './ai-capsule-types';
 export { MAX_HISTORY, HISTORY_STORAGE_KEY } from './ai-capsule-types';
@@ -62,12 +90,6 @@ const PROMPT_PATTERNS = /^(what|how|why|when|where|who|can|could|would|should|is
 
 /**
  * Detect if input looks like a natural-language prompt (not a command).
- *
- * Strategy (fast to slow, with fallback):
- * 1. Path-like prefix → command (instant)
- * 2. Natural language pattern → prompt (instant regex)
- * 3. Completion index lookup → first token is known command? (Trie O(n), <1ms)
- * 4. Fallback heuristics if index not ready (Chinese chars, long text with spaces)
  */
 function looksLikePrompt(text: string): boolean {
   if (!text) return false;
@@ -75,7 +97,7 @@ function looksLikePrompt(text: string): boolean {
   // 1. Path-like → definitely a command
   if (PATH_START.test(text)) return false;
 
-  // 2. Contains Chinese characters → almost certainly a prompt (not a CLI command)
+  // 2. Contains Chinese characters → almost certainly a prompt
   if (/[\u4e00-\u9fff]/.test(text)) return true;
 
   // 3. Too short for English detection (single-word like "ls", "cd")
@@ -102,19 +124,53 @@ function looksLikePrompt(text: string): boolean {
 
 class AICapsuleManagerClass {
   private capsules = new Map<string, AICapsuleInstance>();
+  /** Tab-scoped shared agent state (see ai-capsule-tab-state.ts). */
+  private tabStates = new TabStateRegistry();
   private _barHidden = false;
   private _floatingBtn: HTMLElement | null = null;
   private _lastShownSessionId: string | null = null;
-  private _chatHistoryDir: string | null = null;
   private _deleteSkipUntil = 0; // timestamp: skip confirm until this time
   // 弹窗搜索筛选状态
   private _savedPlaceholder = new Map<string, string>();   // sessionId → 原始 placeholder
   private _savedInputValue = new Map<string, string>();    // sessionId → 原始输入值
   private _filterListener = new Map<string, () => void>(); // sessionId → input 监听器引用
-  private _popupResizeObserver: ResizeObserver | null = null;
-  private _popupResizeHandler: (() => void) | null = null;
-  private _activePopup: { panel: HTMLElement; aiBar: HTMLElement } | null = null;
-  private _popupManualHeight = false; // 手动调整后锁定，不再自适应
+  // Popup resize state (extracted into a holder object)
+  private _popupState = new PopupResizeState();
+  // 缓存已加载的对话列表，用于搜索筛选
+  private _cachedConversations = new Map<string, ChatConversation[]>();
+
+  constructor() {
+    // Subscribe to pane closures so the tab-scoped agent can
+    // surface a one-shot "Pane N was closed" notice on its next
+    // iteration. The event is dispatched from TabManager.closePane.
+    document.addEventListener('meterm-pane-closed', ((e: Event) => {
+      const detail = (e as CustomEvent<{ tabId: string; paneNumber: number }>).detail;
+      if (!detail) return;
+      this.tabStates.recordClosureNotice(detail.tabId, detail.paneNumber);
+    }) as EventListener);
+
+    // Expose tab-scoped agent metadata (locked target pane +
+    // pending closure notices) to the agent loop, which lives in
+    // ai-agent.ts and can't import UI code directly.
+    setSessionMetaProvider((sessionId) => {
+      const tabId = resolveTabIdForSession(sessionId);
+      const state = this.tabStates.get(tabId);
+      if (!state) {
+        return {
+          targetPaneNumber: null,
+          consumeClosureNotices: () => [],
+        };
+      }
+      return {
+        targetPaneNumber: state.activeRunTargetPaneNumber,
+        consumeClosureNotices: () => {
+          const notices = state.pendingClosureNotices.map((n) => n.paneNumber);
+          state.pendingClosureNotices = [];
+          return notices;
+        },
+      };
+    });
+  }
 
   create(sessionId: string): AICapsuleInstance {
     if (this.capsules.has(sessionId)) {
@@ -122,721 +178,117 @@ class AICapsuleManagerClass {
     }
 
     const isSSH = DrawerManager.has(sessionId);
-    const element = this.createBarElement(sessionId, isSSH);
+    const element = createBarElementFn(sessionId, isSSH, this._popupState, {
+      createTrustSwitcher: () => this.createTrustSwitcher(),
+      hideBar: () => this.hideBar(),
+    });
     const historyKey = getHistoryKey(sessionId);
-    const conversationId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const instance: AICapsuleInstance = {
+    const tabId = resolveTabIdForSession(sessionId);
+    const state = this.tabStates.getOrCreate(tabId);
+
+    // Per-pane fields only; the shared (TabState) fields get installed
+    // as delegating accessors right after, via wireTabStateDelegation.
+    const instance = {
       sessionId,
+      tabId,
+      state,
       historyKey,
       element,
-      messages: [],
       selectedModel: '',
       history: this.loadHistory(historyKey),
       lineBuffer: '',
       unsubInput: null,
       unsubShellIdle: null,
       historyOpen: false,
-      agent: new AIAgent(),
-      chatPanel: null,
-      chatOpen: false,
-      chatMinimized: false,
-      isStreaming: false,
-      streamBuffer: '',
-      streamMsgEl: null,
-      reasoningBuffer: '',
-      chatHistoryOpen: false,
-      chatHistoryPanel: null,
-      currentConversationId: conversationId,
-      layoutMode: getSavedLayoutMode(),
-      sidePanel: null,
-      sideResizeHandle: null,
-      sideInputArea: null,
-      sideInput: null,
-    };
+    } as AICapsuleInstance;
+    wireTabStateDelegation(instance);
 
     this.capsules.set(sessionId, instance);
     this.setupInput(instance);
     this.setupHistory(instance);
     this.setupChatHistory(instance);
     this.startTerminalCapture(instance);
-    if (isSSH) {
-      this.setupDrawerToggle(instance);
-    }
+    wireImageAttachmentHandlers(instance);
     this.syncBarPlaceholder(instance);
 
     return instance;
   }
 
-  private createBarElement(sessionId: string, isSSH: boolean): HTMLDivElement {
-    const bar = document.createElement('div');
-    bar.className = 'ai-bar';
-    bar.dataset.sessionId = sessionId;
+  // ─── Host interface (used by extracted chat-ops + input-setup) ──
 
-    // Model selector (clickable dropdown)
-    const modelSelect = document.createElement('div');
-    modelSelect.className = 'ai-bar-model-select';
-
-    const modelLabel = document.createElement('span');
-    modelLabel.className = 'ai-bar-model-label';
-    this.updateModelLabel(modelLabel);
-
-    const modelArrow = document.createElement('span');
-    modelArrow.className = 'ai-bar-model-arrow';
-    modelArrow.innerHTML = `<svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="2 3 4 5 6 3"/></svg>`;
-
-    const modelDropdown = document.createElement('div');
-    modelDropdown.className = 'ai-bar-model-dropdown styled-scrollbar';
-    modelDropdown.style.display = 'none';
-    this.buildModelDropdown(modelDropdown, modelLabel);
-
-    modelSelect.appendChild(modelLabel);
-    modelSelect.appendChild(modelArrow);
-    modelSelect.appendChild(modelDropdown);
-
-    // Toggle dropdown on click
-    modelSelect.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const isOpen = modelDropdown.style.display !== 'none';
-      if (isOpen) {
-        modelDropdown.style.display = 'none';
-        modelSelect.classList.remove('open');
-        this.unobservePopupResize();
-        this._popupManualHeight = false;
-      } else {
-        this.buildModelDropdown(modelDropdown, modelLabel);
-        modelDropdown.style.display = '';
-        modelSelect.classList.add('open');
-        const aiBar = modelSelect.closest('.ai-bar') as HTMLElement;
-        if (aiBar) {
-          this.adjustPopupMaxHeight(modelDropdown, aiBar);
-          this.observePopupResize(modelDropdown, aiBar);
-        }
-      }
-    });
-
-    // Close dropdown on outside click
-    document.addEventListener('click', () => {
-      modelDropdown.style.display = 'none';
-      modelSelect.classList.remove('open');
-      this.unobservePopupResize();
-      this._popupManualHeight = false;
-    });
-
-    // Input wrapper (for custom placeholder overlay)
-    const inputWrap = document.createElement('div');
-    inputWrap.className = 'ai-bar-input-wrap';
-
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'ai-bar-input';
-    input.placeholder = ' '; // non-empty so :placeholder-shown works
-    input.autocapitalize = 'off';
-    input.setAttribute('autocorrect', 'off');
-    input.spellcheck = false;
-
-    // Custom placeholder with SVG key icons
-    const isMac = navigator.userAgent.includes('Mac');
-    const phOverlay = document.createElement('div');
-    phOverlay.className = 'ai-bar-placeholder';
-    const enterKey = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3v4.5a1.5 1.5 0 01-1.5 1.5H4"/><polyline points="6 6 3.5 9 6 12"/></svg>`;
-    const modKey = isMac
-      ? `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><text x="7" y="11" text-anchor="middle" font-size="12" font-family="system-ui, -apple-system, sans-serif" fill="currentColor" stroke="none">⌘</text></svg>`
-      : `<svg class="key-icon key-icon-wide" viewBox="0 0 24 14" width="24" height="14"><text x="12" y="11" text-anchor="middle" font-size="10" font-family="system-ui, -apple-system, sans-serif" fill="currentColor">Ctrl</text></svg>`;
-    const cmdIcon = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 3 6 7 2 11"/><line x1="7" y1="11" x2="12" y2="11"/></svg>`;
-    const botIcon = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="10" height="7" rx="2"/><line x1="5" y1="11" x2="5" y2="13"/><line x1="9" y1="11" x2="9" y2="13"/><circle cx="5.5" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="8.5" cy="7.5" r="1" fill="currentColor" stroke="none"/><line x1="7" y1="1" x2="7" y2="4"/><circle cx="7" cy="1" r="1" fill="currentColor" stroke="none"/></svg>`;
-    // Default placeholder (will be synced properly after create via syncBarPlaceholder)
-    phOverlay.innerHTML = `<span class="ai-ph-seg">${cmdIcon}${enterKey}</span><span class="ai-ph-sep">/</span><span class="ai-ph-seg">${botIcon}${modKey}<span class="ai-ph-plus">+</span>${enterKey}</span>`;
-
-    inputWrap.appendChild(input);
-    inputWrap.appendChild(phOverlay);
-
-    // Send to terminal button (Enter)
-    const termBtn = document.createElement('button');
-    termBtn.className = 'ai-bar-btn ai-bar-btn-term';
-    termBtn.title = `${t('aiSendCommand')} (Enter)`;
-    termBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 6 8 2 12 6"/><line x1="8" y1="2" x2="8" y2="14"/></svg>`;
-
-    // Send to LLM button (Ctrl+Enter)
-    const llmBtn = document.createElement('button');
-    llmBtn.className = 'ai-bar-btn ai-bar-btn-llm';
-    llmBtn.title = `${t('aiSendPrompt')} (Ctrl+Enter)`;
-    llmBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8L7 3.5 13.5 2.5 12.5 9 8 13.5z"/><path d="M2.5 8L6.5 6.5 9.5 9.5 8 13.5"/><circle cx="9.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg>`;
-
-    // LLM chat history button
-    const chatHistBtn = document.createElement('button');
-    chatHistBtn.className = 'ai-bar-btn ai-bar-btn-chat-history';
-    chatHistBtn.title = t('aiChatHistory');
-    chatHistBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12v8a1 1 0 01-1 1H5l-3 2.5V4a1 1 0 011-1z"/><line x1="5" y1="6.5" x2="11" y2="6.5"/><line x1="5" y1="9" x2="9" y2="9"/></svg>`;
-
-    // LLM chat history panel (hidden by default)
-    const chatHistPanel = document.createElement('div');
-    chatHistPanel.className = 'ai-bar-chat-history-panel';
-    chatHistPanel.style.display = 'none';
-
-    // History button
-    const histBtn = document.createElement('button');
-    histBtn.className = 'ai-bar-btn ai-bar-btn-history';
-    histBtn.title = t('aiHistory');
-    histBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><polyline points="8 4.5 8 8 10.5 9.5"/></svg>`;
-
-    // History panel (hidden by default)
-    const histPanel = document.createElement('div');
-    histPanel.className = 'ai-bar-history-panel';
-    histPanel.style.display = 'none';
-
-    bar.appendChild(modelSelect);
-    bar.appendChild(inputWrap);
-    bar.appendChild(termBtn);
-    bar.appendChild(llmBtn);
-    bar.appendChild(chatHistBtn);
-    bar.appendChild(chatHistPanel);
-    bar.appendChild(histBtn);
-    bar.appendChild(histPanel);
-
-    // Drawer toggle button (SSH only)
-    if (isSSH) {
-      const drawerBtn = document.createElement('button');
-      drawerBtn.className = 'ai-bar-btn ai-bar-btn-drawer';
-      drawerBtn.title = t('drawerTabFiles');
-      drawerBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13V4a1 1 0 011-1h3.5l2 2H13a1 1 0 011 1v7a1 1 0 01-1 1H3a1 1 0 01-1-1z"/></svg>`;
-      bar.appendChild(drawerBtn);
-    }
-
-    // Trust level switcher
-    const trustSwitcher = this.createTrustSwitcher();
-    bar.appendChild(trustSwitcher);
-
-    // Hide AI bar button (always last)
-    const hideBtn = document.createElement('button');
-    hideBtn.className = 'ai-bar-btn ai-bar-btn-hide';
-    hideBtn.title = 'Hide';
-    hideBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
-    hideBtn.addEventListener('click', () => this.hideBar());
-    bar.appendChild(hideBtn);
-
-    return bar;
-  }
-
-  private updateModelLabel(label: HTMLSpanElement): void {
-    const settings = loadSettings();
-    const resolved = resolveActiveModel(settings.aiProviders, settings.aiActiveModel);
-    if (settings.aiActiveModel === 'auto') {
-      label.textContent = t('aiModelAuto');
-      label.title = resolved ? `Auto → ${resolved.entry.label}: ${resolved.model}` : 'Auto';
-    } else if (resolved) {
-      label.textContent = resolved.model;
-      label.title = `${resolved.entry.label} · ${resolved.model}`;
-    } else {
-      label.textContent = t('aiModelAuto');
-      label.title = 'No model configured';
-    }
-  }
-
-  private buildModelDropdown(dropdown: HTMLDivElement, label: HTMLSpanElement): void {
-    const settings = loadSettings();
-    dropdown.innerHTML = '';
-
-    const closeDropdown = () => {
-      dropdown.style.display = 'none';
-      dropdown.closest('.ai-bar-model-select')?.classList.remove('open');
+  private getChatOpsHost(): ChatOpsHost {
+    return {
+      capsules: this.capsules,
+      bindChatContextMenu: (inst, c) => this.bindChatContextMenu(inst, c),
+      buildToolCard: (msg) => this.buildToolCard(msg),
+      bindCommandButtons: (inst, c) => this.bindCommandButtons(inst, c),
+      addHistory: (inst, cmd, src) => this.addHistory(inst, cmd, src),
+      saveConversation: (inst, snap) => this.saveConversation(inst, snap),
+      deleteConversation: (id) => this.deleteConversation(id),
+      closeHistory: (inst) => this.closeHistory(inst),
+      closeChatHistory: (inst) => this.closeChatHistory(inst),
+      updateButtonHighlight: (inst) => this.updateButtonHighlight(inst),
+      updateChatTitle: (inst, title) => this.updateChatTitle(inst, title),
+      appendUserMessage: (inst, text, images) => this.appendUserMessage(inst, text, images),
+      showAgentPulse: (inst) => this.showAgentPulse(inst),
+      beginAssistantMessage: (inst) => this.beginAssistantMessage(inst),
+      buildAgentCallbacks: (inst) => this.buildAgentCallbacks(inst),
+      showNoConfigHint: (inst) => this.showNoConfigHint(inst),
+      createTrustSwitcher: () => this.createTrustSwitcher(),
+      toggleChatHistory: (inst, fromSide) => this.toggleChatHistory(inst, fromSide ?? false),
+      getActiveInstance: () => this.getActiveInstance(),
     };
-
-    // Auto option
-    const autoOption = document.createElement('div');
-    autoOption.className = 'ai-bar-model-option';
-    if (settings.aiActiveModel === 'auto') autoOption.classList.add('active');
-    autoOption.innerHTML = `<span class="ai-model-opt-name">${t('aiModelAuto')}</span><span class="ai-model-opt-desc">${t('aiModelAutoDesc')}</span>`;
-    autoOption.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const s = loadSettings();
-      s.aiActiveModel = 'auto';
-      saveSettings(s);
-      this.updateModelLabel(label);
-      closeDropdown();
-    });
-    dropdown.appendChild(autoOption);
-
-    // Models grouped by provider
-    for (const provider of settings.aiProviders) {
-      // Skip providers with no API key and no enabled models
-      if (!provider.apiKey && provider.enabledModels.length === 0) continue;
-
-      const models = provider.enabledModels.length > 0
-        ? provider.enabledModels
-        : [resolveModel(provider.type, 'auto')];  // fallback to default model
-
-      // Provider group header
-      const sep = document.createElement('div');
-      sep.className = 'ai-bar-model-separator';
-      dropdown.appendChild(sep);
-
-      const groupHeader = document.createElement('div');
-      groupHeader.className = 'ai-bar-model-group-header';
-      groupHeader.textContent = provider.label;
-      dropdown.appendChild(groupHeader);
-
-      // Model options
-      for (const model of models) {
-        const modelKey = `${provider.id}:${model}`;
-        const option = document.createElement('div');
-        option.className = 'ai-bar-model-option';
-        if (settings.aiActiveModel === modelKey) option.classList.add('active');
-        option.innerHTML = `<span class="ai-model-opt-name">${escapeHtml(model)}</span>`;
-        option.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const s = loadSettings();
-          s.aiActiveModel = modelKey;
-          saveSettings(s);
-          this.updateModelLabel(label);
-          closeDropdown();
-        });
-        dropdown.appendChild(option);
-      }
-    }
   }
 
-  // ─── Chat Panel ────────────────────────────────────────────────
-
-  private createChatPanel(instance: AICapsuleInstance): HTMLDivElement {
-    const panel = document.createElement('div');
-    panel.className = 'ai-chat-panel';
-
-    // Resize handle at the top edge
-    const resizeHandle = document.createElement('div');
-    resizeHandle.className = 'ai-chat-resize-handle';
-    this.setupChatResize(panel, resizeHandle);
-
-    // Header
-    const header = document.createElement('div');
-    header.className = 'ai-chat-header';
-
-    const title = document.createElement('span');
-    title.className = 'ai-chat-title';
-    title.textContent = t('aiCapsule');
-
-    // New chat button — save current conversation to history, then start fresh
-    const newChatBtn = document.createElement('button');
-    newChatBtn.className = 'ai-chat-clear';
-    newChatBtn.textContent = t('aiNewChat');
-    newChatBtn.addEventListener('click', () => {
-      if (instance.isStreaming) return;
-      // Save current conversation to history if it has messages
-      if (instance.messages.length > 0) {
-        const snapshot = { id: instance.currentConversationId, messages: [...instance.messages] };
-        void this.saveConversation(instance, snapshot);
-      }
-      // Reset to a fresh conversation
-      instance.agent.clear();
-      instance.messages = [];
-      instance.currentConversationId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      instance.streamMsgEl = null;
-      instance.streamBuffer = '';
-      instance.reasoningBuffer = '';
-      const msgContainer = panel.querySelector('.ai-chat-messages');
-      if (msgContainer) msgContainer.innerHTML = '';
-      this.updateChatTitle(instance);
-    });
-
-    const clearBtn = document.createElement('button');
-    clearBtn.className = 'ai-chat-clear';
-    clearBtn.textContent = t('aiClearChat');
-    clearBtn.addEventListener('click', () => {
-      if (instance.isStreaming) return;
-      // Clear without saving to history — user explicitly discards
-      // Delete persisted file for current conversation
-      void this.deleteConversation(instance.currentConversationId);
-      instance.agent.clear();
-      instance.messages = [];
-      instance.currentConversationId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const msgContainer = panel.querySelector('.ai-chat-messages');
-      if (msgContainer) msgContainer.innerHTML = '';
-      this.updateChatTitle(instance);
-    });
-
-    // Layout toggle button — switch between bottom and side panel mode
-    const layoutBtn = document.createElement('button');
-    layoutBtn.className = 'ai-chat-layout-toggle';
-    layoutBtn.innerHTML = instance.layoutMode === 'bottom' ? SVG_LAYOUT_SIDE : SVG_LAYOUT_BOTTOM;
-    layoutBtn.title = instance.layoutMode === 'bottom' ? t('aiLayoutSide') : t('aiLayoutBottom');
-    layoutBtn.addEventListener('click', () => this.toggleLayout(instance, layoutBtn));
-
-    // Minimize button — hides panel but keeps conversation alive
-    const minimizeBtn = document.createElement('button');
-    minimizeBtn.className = 'ai-chat-minimize';
-    minimizeBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="8" x2="13" y2="8"/></svg>`;
-    minimizeBtn.title = t('aiCollapse');
-    minimizeBtn.addEventListener('click', () => this.minimizeChat(instance));
-
-    // Close button — save conversation to history then reset
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'ai-chat-close';
-    closeBtn.innerHTML = '&times;';
-    closeBtn.addEventListener('click', () => this.closeChatAndSave(instance));
-
-    header.appendChild(title);
-    header.appendChild(newChatBtn);
-    header.appendChild(clearBtn);
-    header.appendChild(layoutBtn);
-    header.appendChild(minimizeBtn);
-    header.appendChild(closeBtn);
-
-    // Messages container
-    const messages = document.createElement('div');
-    messages.className = 'ai-chat-messages';
-
-    panel.style.position = 'relative';
-    panel.appendChild(resizeHandle);
-    panel.appendChild(header);
-    panel.appendChild(messages);
-    createOverlayScrollbar({ viewport: messages, container: messages });
-
-    // Bind context menu on the messages container (event delegation)
-    this.bindChatContextMenu(instance, messages);
-
-    return panel;
+  private getInputSetupHost(): InputSetupHost {
+    return {
+      looksLikePrompt: (text) => looksLikePrompt(text),
+      injectUserMessage: (inst, text) => this.injectUserMessage(inst, text),
+      collapseActiveThinking: (inst) => this.collapseActiveThinking(inst),
+      finalizeMessage: (inst, text) => this.finalizeMessage(inst, text),
+      openChat: (inst) => this.openChat(inst),
+      minimizeChat: (inst) => this.minimizeChat(inst),
+      closeHistory: (inst) => this.closeHistory(inst),
+      closeChatHistory: (inst) => this.closeChatHistory(inst),
+      showNoConfigHint: (inst) => this.showNoConfigHint(inst),
+      appendUserMessage: (inst, text, images) => this.appendUserMessage(inst, text, images),
+      beginAssistantMessage: (inst) => this.beginAssistantMessage(inst),
+      showAgentPulse: (inst) => this.showAgentPulse(inst),
+      hideAgentPulse: (inst) => this.hideAgentPulse(inst),
+      updateButtonHighlight: (inst) => this.updateButtonHighlight(inst),
+      updateChatTitle: (inst, title) => this.updateChatTitle(inst, title),
+      saveConversation: (inst) => this.saveConversation(inst),
+      syncBarPlaceholder: (inst) => this.syncBarPlaceholder(inst),
+      buildAgentCallbacks: (inst) => this.buildAgentCallbacks(inst),
+      addHistory: (inst, cmd, src) => this.addHistory(inst, cmd, src),
+      savedInputValue: this._savedInputValue,
+    };
   }
 
-  /** Wire up drag-to-resize on the chat panel's top handle. */
-  private setupChatResize(panel: HTMLDivElement, handle: HTMLDivElement): void {
-    let startY = 0;
-    let startH = 0;
+  // ─── Delegated chat panel ops ──
 
-    const onMouseMove = (e: MouseEvent) => {
-      // Dragging up → larger panel (startY - e.clientY is positive)
-      const delta = startY - e.clientY;
-      const header = panel.querySelector('.ai-chat-header') as HTMLElement | null;
-      const minH = header ? header.offsetHeight + 6 : 36; // header + resize handle
-      const maxH = window.innerHeight * 0.8;
-      const newH = Math.min(maxH, Math.max(minH, startH + delta));
-      panel.style.height = `${newH}px`;
-      panel.style.flex = 'none'; // override flex sizing during manual resize
-      TerminalRegistry.resizeAll();
-    };
-
-    const onMouseUp = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      document.body.classList.remove('ai-chat-resizing');
-    };
-
-    handle.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      startY = e.clientY;
-      startH = panel.offsetHeight;
-      document.body.classList.add('ai-chat-resizing');
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-    });
+  private syncBarPlaceholder(instance: AICapsuleInstance): void {
+    syncBarPlaceholderFn(instance);
   }
 
   private openChat(instance: AICapsuleInstance): void {
-    if (instance.chatOpen) return;
-
-    if (!instance.chatPanel) {
-      instance.chatPanel = this.createChatPanel(instance);
-    }
-
-    if (instance.layoutMode === 'side') {
-      // Side panel mode: chatPanel in side panel, AI Bar stays in terminal
-      switchToSideMode(instance, this.getSideInputCallbacks());
-      instance.chatPanel!.style.display = '';
-    } else {
-      // Bottom mode: insert chat panel into #terminal-panel (before .ai-bar)
-      const terminalPanel = instance.element.parentElement;
-      if (terminalPanel && instance.chatPanel.parentElement !== terminalPanel) {
-        terminalPanel.insertBefore(instance.chatPanel, instance.element);
-      }
-      instance.chatPanel.style.display = '';
-    }
-
-    instance.chatOpen = true;
-    instance.chatMinimized = false;
-    this.closeHistory(instance);
-    this.closeChatHistory(instance);
-    this.updateButtonHighlight(instance);
-    this.syncBarPlaceholder(instance);
-    // Refit terminal to new available height
-    TerminalRegistry.resizeAll();
+    openChatFn(instance, this.getChatOpsHost());
   }
 
-  /** Minimize: hide panel but keep conversation alive */
   private minimizeChat(instance: AICapsuleInstance): void {
-    if (!instance.chatOpen) return;
-    if (instance.chatPanel) {
-      instance.chatPanel.style.display = 'none';
-    }
-    // In side mode, hide side panel and restore AI Bar buttons
-    if (instance.layoutMode === 'side') {
-      hideSidePanel(instance);
-      instance.element.classList.remove('ai-bar--side-active');
-    }
-    instance.chatOpen = false;
-    instance.chatMinimized = true;
-    this.updateButtonHighlight(instance);
-    this.syncBarPlaceholder(instance);
-    TerminalRegistry.resizeAll();
+    minimizeChatFn(instance, this.getChatOpsHost());
   }
 
-  /** Close: save to history then reset conversation */
   private closeChatAndSave(instance: AICapsuleInstance): void {
-    // Abort streaming if active
-    if (instance.isStreaming) {
-      instance.agent.abort();
-      instance.isStreaming = false;
-      document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
-      this.updateButtonHighlight(instance);
-    }
-
-    // Snapshot messages before clearing, then save asynchronously
-    if (instance.messages.length > 0) {
-      const snapshot = { id: instance.currentConversationId, messages: [...instance.messages] };
-      void this.saveConversation(instance, snapshot);
-    }
-
-    // Close any open history panels
-    this.closeChatHistory(instance);
-    this.closeHistory(instance);
-
-    // Reset conversation immediately
-    instance.agent.clear();
-    instance.messages = [];
-    instance.currentConversationId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    if (instance.chatPanel) {
-      const msgContainer = instance.chatPanel.querySelector('.ai-chat-messages');
-      if (msgContainer) msgContainer.innerHTML = '';
-      instance.chatPanel.style.display = 'none';
-    }
-    // In side mode, hide side panel and restore AI Bar buttons
-    if (instance.layoutMode === 'side') {
-      hideSidePanel(instance);
-      instance.element.classList.remove('ai-bar--side-active');
-    }
-    instance.chatOpen = false;
-    instance.chatMinimized = false;
-    instance.streamMsgEl = null;
-    instance.streamBuffer = '';
-    instance.reasoningBuffer = '';
-    this.updateChatTitle(instance);
-    this.updateButtonHighlight(instance);
-    this.syncBarPlaceholder(instance);
-    TerminalRegistry.resizeAll();
+    closeChatAndSaveFn(instance, this.getChatOpsHost());
   }
 
-  /** Toggle between bottom and side panel layout */
-  private toggleLayout(instance: AICapsuleInstance, layoutBtn: HTMLButtonElement): void {
-    if (instance.layoutMode === 'bottom') {
-      switchToSideMode(instance, this.getSideInputCallbacks());
-      layoutBtn.innerHTML = SVG_LAYOUT_BOTTOM;
-      layoutBtn.title = t('aiLayoutBottom');
-    } else {
-      switchToBottomMode(instance);
-      layoutBtn.innerHTML = SVG_LAYOUT_SIDE;
-      layoutBtn.title = t('aiLayoutSide');
-    }
-    // Sync layout mode across all instances
-    this.capsules.forEach((inst) => {
-      if (inst !== instance) inst.layoutMode = instance.layoutMode;
-    });
-    this.syncBarPlaceholder(instance);
-  }
-
-  /** Build callbacks for the side panel input area */
-  private getSideInputCallbacks(): SideInputCallbacks {
-    return {
-      sendToLLM: (instance, text) => this.sendToLLMFrom(instance, text),
-      buildModelDropdown: (dropdown, label) => this.buildModelDropdown(dropdown, label),
-      updateModelLabel: (label) => this.updateModelLabel(label),
-      createTrustSwitcher: () => this.createTrustSwitcher(),
-      toggleSideChatHistory: (instance) => this.toggleChatHistory(instance, true),
-      toggleLayout: (instance) => {
-        const layoutBtn = instance.chatPanel?.querySelector('.ai-chat-layout-toggle') as HTMLButtonElement;
-        if (layoutBtn) this.toggleLayout(instance, layoutBtn);
-      },
-    };
-  }
-
-  /** Send text to LLM from any input source (AI Bar or side panel textarea) */
   private sendToLLMFrom(instance: AICapsuleInstance, text: string): void {
-    if (!text) return;
-
-    const settings = loadSettings();
-    const resolved = resolveActiveModel(settings.aiProviders, settings.aiActiveModel);
-    if (!resolved) {
-      this.openChat(instance);
-      this.showNoConfigHint(instance);
-      return;
-    }
-
-    this.openChat(instance);
-    this.appendUserMessage(instance, text);
-    instance.messages.push({ type: 'user', content: text, timestamp: Date.now() });
-    this.updateChatTitle(instance);
-    void this.saveConversation(instance);
-
-    instance.isStreaming = true;
-    instance.streamBuffer = '';
-    document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: true } }));
-    this.updateButtonHighlight(instance);
-    // Update side panel send button to stop icon
-    updateSideSendButton(getSideSendButton(instance), true);
-    this.beginAssistantMessage(instance);
-    this.showAgentPulse(instance);
-
-    const agentCallbacks = this.buildAgentCallbacks(instance);
-    instance.agent.send(text, instance.sessionId, agentCallbacks);
+    sendToLLMFromFn(instance, text, this.getChatOpsHost());
   }
 
-
-
-  /**
-   * Sync AI Bar placeholder based on current state:
-   * - Side mode active: command-only (Enter → terminal)
-   * - Agent mode: swapped (Enter → Agent, Ctrl+Enter → terminal)
-   * - Default: Enter → terminal, Ctrl+Enter → Agent
-   */
-  private syncBarPlaceholder(instance: AICapsuleInstance): void {
-    const ph = instance.element.querySelector('.ai-bar-placeholder') as HTMLDivElement;
-    if (!ph) return;
-
-    const isMac = navigator.userAgent.includes('Mac');
-    const enterKey = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3v4.5a1.5 1.5 0 01-1.5 1.5H4"/><polyline points="6 6 3.5 9 6 12"/></svg>`;
-    const modKey = isMac
-      ? `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><text x="7" y="11" text-anchor="middle" font-size="12" font-family="system-ui, -apple-system, sans-serif" fill="currentColor" stroke="none">⌘</text></svg>`
-      : `<svg class="key-icon key-icon-wide" viewBox="0 0 24 14" width="24" height="14"><text x="12" y="11" text-anchor="middle" font-size="10" font-family="system-ui, -apple-system, sans-serif" fill="currentColor">Ctrl</text></svg>`;
-    const cmdIcon = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 3 6 7 2 11"/><line x1="7" y1="11" x2="12" y2="11"/></svg>`;
-    const botIcon = `<svg class="key-icon" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="10" height="7" rx="2"/><line x1="5" y1="11" x2="5" y2="13"/><line x1="9" y1="11" x2="9" y2="13"/><circle cx="5.5" cy="7.5" r="1" fill="currentColor" stroke="none"/><circle cx="8.5" cy="7.5" r="1" fill="currentColor" stroke="none"/><line x1="7" y1="1" x2="7" y2="4"/><circle cx="7" cy="1" r="1" fill="currentColor" stroke="none"/></svg>`;
-
-    const sideActive = instance.element.classList.contains('ai-bar--side-active');
-    const agentMode = loadSettings().aiEnterSendsToAgent;
-    const chatActive = instance.chatOpen || instance.chatMinimized;
-
-    if (sideActive) {
-      // Side mode: AI Bar is command-only
-      ph.innerHTML = `<span class="ai-ph-seg">${cmdIcon}${t('aiPlaceholderCmd')}${enterKey}</span>`;
-    } else if (chatActive) {
-      // Chat open/minimized: Enter → Agent
-      ph.innerHTML = `<span class="ai-ph-seg">${botIcon}${t('aiPlaceholderAgentMode')}${enterKey}</span>`;
-    } else if (agentMode) {
-      // Agent mode: Enter → Agent, Ctrl+Enter → Terminal
-      ph.innerHTML = `<span class="ai-ph-seg">${botIcon}${enterKey}</span><span class="ai-ph-sep">/</span><span class="ai-ph-seg">${cmdIcon}${modKey}<span class="ai-ph-plus">+</span>${enterKey}</span>`;
-    } else {
-      // Default: Enter → Terminal, Ctrl+Enter → Agent
-      ph.innerHTML = `<span class="ai-ph-seg">${cmdIcon}${enterKey}</span><span class="ai-ph-sep">/</span><span class="ai-ph-seg">${botIcon}${modKey}<span class="ai-ph-plus">+</span>${enterKey}</span>`;
-    }
-  }
-
-  /** Restore a saved conversation into the main chat panel */
   private restoreConversation(instance: AICapsuleInstance, conv: ChatConversation): void {
-    // debug: console.log('[chat-history] restore:', conv.id, conv.messages.length);
-    // Save current conversation if it has messages
-    if (instance.messages.length > 0) {
-      const snapshot = { id: instance.currentConversationId, messages: [...instance.messages] };
-      void this.saveConversation(instance, snapshot);
-    }
-
-    // Close chat history panel
-    this.closeChatHistory(instance);
-
-    // Reset agent context
-    instance.agent.clear();
-
-    // Restore conversation state
-    instance.currentConversationId = conv.id;
-    instance.messages = conv.messages.map(m => ({ ...m }));
-    instance.reasoningBuffer = '';
-
-    // Ensure chat panel exists and is in the correct layout
-    if (!instance.chatPanel) {
-      instance.chatPanel = this.createChatPanel(instance);
-    }
-    if (instance.layoutMode === 'side') {
-      switchToSideMode(instance, this.getSideInputCallbacks());
-    } else {
-      const terminalPanel = instance.element.parentElement;
-      if (terminalPanel && instance.chatPanel.parentElement !== terminalPanel) {
-        terminalPanel.insertBefore(instance.chatPanel, instance.element);
-      }
-    }
-
-    // Clear and rebuild message UI
-    const msgContainer = instance.chatPanel.querySelector('.ai-chat-messages');
-    if (msgContainer) {
-      msgContainer.innerHTML = '';
-      const addHistory = (cmd: string) => this.addHistory(instance, cmd, 'ai');
-
-      for (const msg of instance.messages) {
-        if (msg.type === 'user') {
-          const el = document.createElement('div');
-          el.className = 'ai-msg ai-msg-user';
-          const c = document.createElement('div');
-          c.className = 'ai-msg-content';
-          c.textContent = msg.content;
-          el.appendChild(c);
-          msgContainer.appendChild(el);
-
-        } else if (msg.type === 'thinking') {
-          // Reasoning block — standalone, no bubble
-          if (msg.reasoning) {
-            const block = document.createElement('div');
-            block.className = 'ai-thinking-block';
-            const details = document.createElement('details');
-            details.className = 'ai-reasoning';
-            const summary = document.createElement('summary');
-            summary.innerHTML = `${thinkingIcon(12)} <span>${t('aiThinking')}</span>`;
-            const textEl = document.createElement('div');
-            textEl.className = 'ai-reasoning-text';
-            textEl.textContent = msg.reasoning;
-            details.appendChild(summary);
-            details.appendChild(textEl);
-            block.appendChild(details);
-            msgContainer.appendChild(block);
-          }
-          // Assistant text — render as regular bubble
-          if (msg.content) {
-            const el = document.createElement('div');
-            el.className = 'ai-msg ai-msg-assistant';
-            const c = document.createElement('div');
-            c.className = 'ai-msg-content';
-            c.innerHTML = renderMarkdown(msg.content, instance.sessionId, addHistory);
-            el.appendChild(c);
-            msgContainer.appendChild(el);
-          }
-
-        } else if (msg.type === 'tool_call') {
-          msgContainer.appendChild(this.buildToolCard(msg));
-
-        } else if (msg.type === 'assistant') {
-          const el = document.createElement('div');
-          el.className = 'ai-msg ai-msg-assistant';
-          const c = document.createElement('div');
-          c.className = 'ai-msg-content';
-          c.innerHTML = renderMarkdown(msg.content, instance.sessionId, addHistory);
-          el.appendChild(c);
-          msgContainer.appendChild(el);
-
-        } else if (msg.type === 'system') {
-          const notice = document.createElement('div');
-          notice.className = 'ai-system-notice';
-          notice.textContent = msg.content;
-          msgContainer.appendChild(notice);
-        }
-      }
-
-      this.bindCommandButtons(instance, msgContainer);
-      msgContainer.scrollTop = msgContainer.scrollHeight;
-    }
-
-    // Show chat panel
-    instance.chatPanel.style.display = '';
-    if (instance.layoutMode === 'side') showSidePanel(instance);
-    instance.chatOpen = true;
-    instance.chatMinimized = false;
-    instance.isStreaming = false;
-    instance.streamMsgEl = null;
-    instance.streamBuffer = '';
-    this.updateChatTitle(instance, conv.title);
-    this.updateButtonHighlight(instance);
-    TerminalRegistry.resizeAll();
+    restoreConversationFn(instance, conv, this.getChatOpsHost());
   }
 
   // ─── Chat UI (delegated to ai-capsule-chat-ui.ts) ──
@@ -849,8 +301,12 @@ class AICapsuleManagerClass {
     updateChatTitleFn(instance, title);
   }
 
-  private appendUserMessage(instance: AICapsuleInstance, text: string): void {
-    appendUserMessageFn(instance, text);
+  private appendUserMessage(
+    instance: AICapsuleInstance,
+    text: string,
+    images?: Array<{ mediaType: string; data: string; label?: string }>,
+  ): void {
+    appendUserMessageFn(instance, text, images);
   }
 
   private showAgentPulse(instance: AICapsuleInstance): void {
@@ -859,10 +315,6 @@ class AICapsuleManagerClass {
 
   private hideAgentPulse(instance: AICapsuleInstance): void {
     hideAgentPulseFn(instance);
-  }
-
-  private sinkAgentPulse(instance: AICapsuleInstance): void {
-    sinkAgentPulseFn(instance);
   }
 
   private beginAssistantMessage(instance: AICapsuleInstance): void {
@@ -921,6 +373,7 @@ class AICapsuleManagerClass {
       ...this._chatUiDeps(),
       appendToolCallCard: (i, tn, a) => this.appendToolCallCard(i, tn, a),
       updateToolResultCard: (i, tn, r, e) => this.updateToolResultCard(i, tn, r, e),
+      updateToolResultImages: (i, tn, imgs) => this.updateToolResultImages(i, tn, imgs),
       showConfirmCard: (i, tn, a) => this.showConfirmCard(i, tn, a),
     });
   }
@@ -937,6 +390,14 @@ class AICapsuleManagerClass {
 
   private updateToolResultCard(instance: AICapsuleInstance, toolName: string, result: string, isError: boolean): void {
     updateToolResultCardFn(instance, toolName, result, isError);
+  }
+
+  private updateToolResultImages(
+    instance: AICapsuleInstance,
+    toolName: string,
+    images: Array<{ mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string; label?: string }>,
+  ): void {
+    updateToolResultImagesFn(instance, toolName, images);
   }
 
   private showConfirmCard(instance: AICapsuleInstance, toolName: string, args: Record<string, unknown>): Promise<boolean | string> {
@@ -1005,102 +466,10 @@ class AICapsuleManagerClass {
     });
   }
 
-  // ─── Terminal command capture ──────────────────────────────────
+  // ─── Terminal command capture (delegated) ──
 
   private startTerminalCapture(instance: AICapsuleInstance): void {
-    instance.lineBuffer = '';
-    let escState: 'none' | 'esc' | 'csi' | 'ss3' | 'str_seq' | 'str_esc' = 'none';
-
-    // Track user input for lineBuffer (used by completion), but NOT for history recording.
-    // History is now recorded via shell hook (OSC 7768 lastCommand) which captures the
-    // actual executed command including shell completions.
-    instance.unsubInput = TerminalRegistry.onInput(instance.sessionId, (data) => {
-      for (const ch of data) {
-        const code = ch.charCodeAt(0);
-
-        // Inside a string-type sequence (OSC/DCS/APC/PM/SOS): wait for ST or BEL
-        if (escState === 'str_seq') {
-          if (ch === '\x07') { escState = 'none'; }          // BEL terminates
-          else if (ch === '\x1b') { escState = 'str_esc'; }  // possible ST (ESC \)
-          continue;
-        }
-        if (escState === 'str_esc') {
-          escState = ch === '\\' ? 'none' : 'str_seq';       // ST complete or continue
-          continue;
-        }
-        if (escState === 'esc') {
-          if (ch === '[') { escState = 'csi'; }
-          else if (ch === 'O') { escState = 'ss3'; }
-          else if (ch === ']' || ch === 'P' || ch === 'X' || ch === '^' || ch === '_') { escState = 'str_seq'; } // OSC ] / DCS P / SOS X / PM ^ / APC _
-          else { escState = 'none'; }
-          continue;
-        }
-        if (escState === 'csi') {
-          if (code >= 0x40 && code <= 0x7E) escState = 'none';
-          continue;
-        }
-        if (escState === 'ss3') { escState = 'none'; continue; }
-
-        if (ch === '\x1b') { escState = 'esc'; continue; }
-
-        if (ch === '\r' || ch === '\n') {
-          // Fallback history: when hook is not installed (SSH without injection),
-          // record from lineBuffer. Won't capture Tab completions but works everywhere.
-          const mt = TerminalRegistry.get(instance.sessionId);
-          if (!mt?.shellState.hookInjected && instance.lineBuffer.trim()) {
-            this.addHistory(instance, instance.lineBuffer.trim(), 'manual');
-            globalCompletionIndex.addHistoryEntry(instance.lineBuffer.trim());
-          }
-          instance.lineBuffer = '';
-        } else if (ch === '\x7f' || ch === '\b') {
-          instance.lineBuffer = instance.lineBuffer.slice(0, -1);
-        } else if (ch === '\x15') {
-          instance.lineBuffer = '';
-        } else if (ch === '\x03') {
-          instance.lineBuffer = '';
-        } else if (code >= 32) {
-          instance.lineBuffer += ch;
-        }
-      }
-    });
-
-    // Record history from shell hook — captures the actual executed command
-    // (including shell completions, unlike the lineBuffer approach).
-    instance.unsubShellIdle = TerminalRegistry.onShellIdle(instance.sessionId, () => {
-      const mt = TerminalRegistry.get(instance.sessionId);
-      const lastCmd = mt?.shellState.lastCommand?.trim();
-      if (lastCmd) {
-        this.addHistory(instance, lastCmd, 'manual');
-        globalCompletionIndex.addHistoryEntry(lastCmd);
-      }
-    });
-
-    // Shell hook injection:
-    // - Local shells: backend pre-installs hooks natively (ZDOTDIR/--rcfile on Unix,
-    //   -NoExit -Command on Windows PowerShell, PROMPT env on cmd.exe) — skip here.
-    // - SSH/remote: ONLY if user explicitly enabled in Settings > AI (default OFF)
-    // - JumpServer: never inject (Koko proxy incompatible)
-    const sid = instance.sessionId;
-    const isRemoteSession = sshConfigMap.has(sid) || remoteInfoMap.has(sid);
-    if (isRemoteSession && !jumpServerConfigMap.has(sid) && loadSettings().shellHookInjection) {
-      // User opted in — inject after shell settles (2s of output silence)
-      let idleTimer: ReturnType<typeof setTimeout> | null = null;
-      const tryInject = () => {
-        unsubOutput();
-        const mt = TerminalRegistry.get(sid);
-        if (mt && !mt.shellState.hookInjected) injectShellHook(sid);
-      };
-      const resetTimer = () => {
-        if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = setTimeout(tryInject, 2000);
-      };
-      const unsubOutput = TerminalRegistry.onOutput(sid, () => {
-        const mt = TerminalRegistry.get(sid);
-        if (mt?.shellState.hookInjected) { unsubOutput(); return; }
-        resetTimer();
-      });
-      resetTimer();
-    }
+    startTerminalCaptureFn(instance, (inst, cmd, src) => this.addHistory(inst, cmd, src));
   }
 
   // ─── History management (delegated to ai-capsule-history.ts) ──
@@ -1181,269 +550,14 @@ class AICapsuleManagerClass {
     if (panel) panel.style.display = 'none';
     if (btn) btn.classList.remove('active');
     this.unobservePopupResize();
-    this._popupManualHeight = false;
+    this._popupState.manualHeight = false;
     this.exitSearchMode(instance);
   }
 
-  // ─── Input handling ────────────────────────────────────────────
+  // ─── Input handling (delegated) ─────────────────────────────
 
   private setupInput(instance: AICapsuleInstance): void {
-    const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement;
-    const termBtn = instance.element.querySelector('.ai-bar-btn-term') as HTMLButtonElement;
-    const llmBtn = instance.element.querySelector('.ai-bar-btn-llm') as HTMLButtonElement;
-
-    // ── Prompt detection inline hint state ──
-    let pendingPromptConfirm = false;
-
-    const showPromptHint = (bar: HTMLElement) => {
-      let hint = bar.querySelector('.ai-prompt-hint') as HTMLElement;
-      if (!hint) {
-        hint = document.createElement('div');
-        hint.className = 'ai-prompt-hint';
-        hint.innerHTML = `<span class="ai-prompt-hint-text">${t('aiSendToAgentConfirm')}</span>`
-          + `<span class="ai-prompt-hint-keys">Enter → Agent &nbsp;/&nbsp; Esc → ${t('aiSendToAgentNo')}</span>`
-          + `<label class="ai-prompt-hint-check"><input type="checkbox"><span>${t('aiSendToAgentDontAsk')}</span></label>`;
-        bar.appendChild(hint);
-      }
-      hint.style.display = '';
-      bar.classList.add('ai-bar--prompt-pending');
-    };
-
-    const dismissPromptHint = () => {
-      const hint = instance.element.querySelector('.ai-prompt-hint') as HTMLElement;
-      if (hint) hint.style.display = 'none';
-      instance.element.classList.remove('ai-bar--prompt-pending');
-    };
-
-    // Dismiss hint when input changes
-    input.addEventListener('input', () => {
-      if (pendingPromptConfirm) {
-        pendingPromptConfirm = false;
-        dismissPromptHint();
-      }
-    });
-
-    const sendToTerminal = () => {
-      const text = input.value.trim();
-      if (!text) return;
-      pendingPromptConfirm = false;
-      dismissPromptHint();
-      TerminalRegistry.sendCommand(instance.sessionId, text);
-      this.addHistory(instance, text, 'manual');
-      input.value = '';
-    };
-
-    const sendToLLM = () => {
-      const text = input.value.trim();
-      if (!text) return;
-
-      // Check if AI is configured
-      const settings = loadSettings();
-      const resolved = resolveActiveModel(settings.aiProviders, settings.aiActiveModel);
-      if (!resolved) {
-        this.openChat(instance);
-        this.showNoConfigHint(instance);
-        return;
-      }
-
-      // Open chat panel and send
-      this.openChat(instance);
-      this.appendUserMessage(instance, text);
-      instance.messages.push({ type: 'user', content: text, timestamp: Date.now() });
-      this.updateChatTitle(instance);
-      void this.saveConversation(instance);
-      input.value = '';
-
-      // Start streaming
-      instance.isStreaming = true;
-      instance.streamBuffer = '';
-      document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: true } }));
-      this.updateButtonHighlight(instance);
-      this.beginAssistantMessage(instance);
-      this.showAgentPulse(instance);
-
-      const agentCallbacks = this.buildAgentCallbacks(instance);
-      instance.agent.send(text, instance.sessionId, agentCallbacks);
-    };
-
-    termBtn.addEventListener('click', sendToTerminal);
-    llmBtn.addEventListener('click', () => {
-      if (instance.isStreaming) {
-        const text = input.value.trim();
-        if (text) {
-          this.injectUserMessage(instance, text);
-          input.value = '';
-        } else {
-          instance.agent.abort();
-          this.collapseActiveThinking(instance);
-          instance.reasoningBuffer = '';
-          if (instance.streamMsgEl && instance.streamBuffer) {
-            this.finalizeMessage(instance, instance.streamBuffer);
-          } else {
-            instance.isStreaming = false;
-            instance.streamMsgEl = null;
-            instance.streamBuffer = '';
-            this.updateButtonHighlight(instance);
-            this.hideAgentPulse(instance);
-            document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
-          }
-        }
-      } else if (instance.chatOpen) {
-        // Chat is open: if text → send, if empty → minimize (toggle close)
-        const text = input.value.trim();
-        if (text) {
-          sendToLLM();
-        } else {
-          this.minimizeChat(instance);
-        }
-      } else if (instance.chatMinimized) {
-        // Restore minimized chat, send if there's text
-        this.openChat(instance);
-        const text = input.value.trim();
-        if (text) sendToLLM();
-      } else {
-        // Chat not open: if text → send (opens chat), if empty → just open chat
-        const text = input.value.trim();
-        if (text) {
-          sendToLLM();
-        } else {
-          this.openChat(instance);
-        }
-      }
-    });
-
-    input.addEventListener('keydown', (e) => {
-      // IME guard: keyCode 229 means the key event is being handled by the
-      // input method editor (composition in progress). Ignore it entirely so
-      // that Enter confirms the IME candidate instead of sending the message.
-      if (e.keyCode === 229) return;
-
-      // 弹窗搜索模式下拦截 Enter/Escape
-      if (instance.historyOpen || instance.chatHistoryOpen) {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          if (instance.historyOpen) {
-            // 选中筛选后的第一条
-            const query = input.value.trim();
-            const match = query
-              ? instance.history.find(h => fuzzyMatch(h.command, query))
-              : instance.history[0];
-            if (match) {
-              this._savedInputValue.set(instance.sessionId, match.command);
-            }
-            this.closeHistory(instance);
-          } else if (instance.chatHistoryOpen) {
-            this.closeChatHistory(instance);
-          }
-          input.focus();
-          return;
-        }
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          if (instance.historyOpen) this.closeHistory(instance);
-          if (instance.chatHistoryOpen) this.closeChatHistory(instance);
-          input.focus();
-          e.stopPropagation();
-          return;
-        }
-        e.stopPropagation();
-        return;
-      }
-
-      if (e.key === 'Enter') {
-        if (instance.layoutMode === 'side') {
-          // Side mode: AI Bar input always sends to terminal
-          // Ctrl+Enter focuses side panel input instead
-          if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-            if (instance.sideInput) {
-              this.openChat(instance);
-              instance.sideInput.focus();
-            }
-          } else {
-            sendToTerminal();
-            e.preventDefault();
-          }
-        } else if (instance.isStreaming && (instance.chatOpen || instance.chatMinimized)) {
-          // Streaming with chat open → inject message into running agent
-          const text = input.value.trim();
-          if (text) {
-            this.injectUserMessage(instance, text);
-            input.value = '';
-          }
-          e.preventDefault();
-        } else if (e.ctrlKey || e.metaKey) {
-          // Ctrl+Enter: swapped in agent mode
-          if (loadSettings().aiEnterSendsToAgent) {
-            sendToTerminal(); // agent mode: Ctrl+Enter → terminal
-          } else {
-            sendToLLM();      // default: Ctrl+Enter → LLM
-          }
-          e.preventDefault();
-        } else if (instance.chatOpen || instance.chatMinimized) {
-          sendToLLM();
-          e.preventDefault();
-        } else {
-          // Enter (no modifier, chat not open):
-          if (loadSettings().aiEnterSendsToAgent) {
-            sendToLLM();      // agent mode: Enter → LLM
-          } else if (pendingPromptConfirm) {
-            // Second Enter → confirm send to Agent
-            pendingPromptConfirm = false;
-            dismissPromptHint();
-            const dontAsk = instance.element.querySelector('.ai-prompt-hint-check input') as HTMLInputElement;
-            if (dontAsk?.checked) {
-              const s = loadSettings();
-              s.aiEnterSendsToAgent = true;
-              saveSettings(s);
-              this.syncBarPlaceholder(instance);
-            }
-            sendToLLM();
-          } else {
-            // default: Enter → terminal, but detect prompts
-            const text = input.value.trim();
-            if (text && looksLikePrompt(text)) {
-              e.preventDefault();
-              pendingPromptConfirm = true;
-              showPromptHint(instance.element);
-              return;
-            }
-            sendToTerminal();
-          }
-          e.preventDefault();
-        }
-      }
-      if (e.key === 'Escape') {
-        if (pendingPromptConfirm) {
-          // Esc during prompt confirm → send to terminal
-          pendingPromptConfirm = false;
-          dismissPromptHint();
-          sendToTerminal();
-          e.preventDefault();
-          return;
-        }
-        if (instance.isStreaming) {
-          instance.agent.abort();
-          instance.isStreaming = false;
-          this.updateButtonHighlight(instance);
-          if (instance.streamMsgEl) {
-            instance.streamMsgEl.classList.remove('streaming');
-            // Finalize whatever we have so far
-            if (instance.streamBuffer) {
-              this.finalizeMessage(instance, instance.streamBuffer);
-            }
-          }
-          document.dispatchEvent(new CustomEvent('status-bar-ai', { detail: { active: false } }));
-        } else if (instance.chatOpen) {
-          this.minimizeChat(instance);
-        }
-        this.closeHistory(instance);
-      }
-      e.stopPropagation();
-    });
-
-    input.addEventListener('keyup', (e) => e.stopPropagation());
-    input.addEventListener('keypress', (e) => e.stopPropagation());
+    setupInputFn(instance, this.getInputSetupHost());
   }
 
   private showNoConfigHint(instance: AICapsuleInstance): void {
@@ -1471,15 +585,6 @@ class AICapsuleManagerClass {
       if (!instance.element.contains(target)) {
         this.closeHistory(instance);
       }
-    });
-  }
-
-  private setupDrawerToggle(instance: AICapsuleInstance): void {
-    const btn = instance.element.querySelector('.ai-bar-btn-drawer');
-    if (!btn) return;
-    btn.addEventListener('click', () => {
-      this.closeHistory(instance);
-      DrawerManager.toggle(instance.sessionId);
     });
   }
 
@@ -1515,117 +620,43 @@ class AICapsuleManagerClass {
     });
   }
 
-  private toggleChatHistory(instance: AICapsuleInstance, fromSidePanel = false): void {
-    if (instance.chatHistoryOpen) {
-      this.closeChatHistory(instance);
-    } else {
-      this.openChatHistory(instance, fromSidePanel);
-    }
+  /** Build the host contract used by the extracted chat-history popup helpers. */
+  private getChatHistoryPopupHost(): ChatHistoryPopupHost {
+    return {
+      loadConversations: () => this.loadConversations(),
+      deleteConversation: (id) => this.deleteConversation(id),
+      confirmDeleteConversation: () => this.confirmDeleteConversation(),
+      closeHistory: (inst) => this.closeHistory(inst),
+      enterSearchMode: (inst, placeholder, onInput) => this.enterSearchMode(inst, placeholder, onInput),
+      exitSearchMode: (inst) => this.exitSearchMode(inst),
+      restoreConversation: (inst, conv) => this.restoreConversation(inst, conv),
+      minimizeChat: (inst) => this.minimizeChat(inst),
+      ensurePopupResizeHandle: (p, b) => this.ensurePopupResizeHandle(p, b),
+      observePopupResize: (p, b) => this.observePopupResize(p, b),
+      unobservePopupResize: () => this.unobservePopupResize(),
+      resetPopupManualHeight: () => { this._popupState.manualHeight = false; },
+      adjustPopupMaxHeight: (p, b) => this.adjustPopupMaxHeight(p, b),
+      getCachedConversations: (sid) => this._cachedConversations.get(sid),
+      setCachedConversations: (sid, convs) => { this._cachedConversations.set(sid, convs); },
+      deleteCachedConversations: (sid) => { this._cachedConversations.delete(sid); },
+      renderListFromCache: (inst, convs, filter) => this.renderChatHistoryListFromCache(inst, convs, filter),
+    };
   }
 
-  // 缓存已加载的对话列表，用于搜索筛选
-  private _cachedConversations = new Map<string, ChatConversation[]>();
+  private toggleChatHistory(instance: AICapsuleInstance, fromSidePanel = false): void {
+    toggleChatHistoryFn(instance, this.getChatHistoryPopupHost(), fromSidePanel);
+  }
 
   private openChatHistory(instance: AICapsuleInstance, fromSidePanel = false): void {
-    this.closeHistory(instance);
-    // Bottom mode: minimize chat panel so popups don't overlap
-    if (!fromSidePanel && instance.layoutMode !== 'side' && instance.chatOpen) {
-      this.minimizeChat(instance);
-    }
-    instance.chatHistoryOpen = true;
-
-    if (fromSidePanel && instance.chatPanel) {
-      // Side panel: show chat history inline inside the chat messages area
-      const btn = instance.sideInputArea?.querySelector('.ai-side-btn-chat-history') as HTMLButtonElement;
-      if (btn) btn.classList.add('active');
-
-      let panel = instance.chatPanel.querySelector('.ai-side-chat-history-view') as HTMLDivElement;
-      if (!panel) {
-        panel = document.createElement('div');
-        panel.className = 'ai-side-chat-history-view';
-        instance.chatPanel.appendChild(panel);
-        createOverlayScrollbar({ viewport: panel, container: panel });
-      }
-      // Hide messages, show history
-      const msgs = instance.chatPanel.querySelector('.ai-chat-messages') as HTMLElement;
-      if (msgs) msgs.style.display = 'none';
-      panel.style.display = '';
-      instance.chatHistoryPanel = panel;
-      this.renderChatHistoryList(instance);
-    } else {
-      // AI Bar popup mode (bottom mode, or side mode with chat not open)
-      const btn = instance.element.querySelector('.ai-bar-btn-chat-history') as HTMLButtonElement;
-      if (btn) btn.classList.add('active');
-
-      let panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
-      if (!panel) {
-        panel = document.createElement('div');
-        panel.className = 'ai-bar-chat-history-panel';
-        instance.element.appendChild(panel);
-      }
-      panel.style.display = '';
-      this.adjustPopupMaxHeight(panel, instance.element);
-      this.observePopupResize(panel, instance.element);
-      instance.chatHistoryPanel = panel;
-      this.renderChatHistoryList(instance);
-      // 进入搜索模式
-      this.enterSearchMode(instance, t('aiSearchChatHistory'), () => {
-        const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement;
-        const query = input?.value || '';
-        const cached = this._cachedConversations.get(instance.sessionId);
-        if (cached) {
-          this.renderChatHistoryListFromCache(instance, cached, query);
-        }
-      });
-    }
+    openChatHistoryFn(instance, this.getChatHistoryPopupHost(), fromSidePanel);
   }
 
   private closeChatHistory(instance: AICapsuleInstance): void {
-    if (!instance.chatHistoryOpen) return;
-    instance.chatHistoryOpen = false;
-
-    // Check if the history was shown inline in side panel
-    const sideHistView = instance.chatPanel?.querySelector('.ai-side-chat-history-view') as HTMLElement;
-    const isSideInline = sideHistView && sideHistView.style.display !== 'none';
-
-    if (isSideInline) {
-      // Side panel inline: restore messages view
-      const msgs = instance.chatPanel?.querySelector('.ai-chat-messages') as HTMLElement;
-      const btn = instance.sideInputArea?.querySelector('.ai-side-btn-chat-history') as HTMLButtonElement;
-      sideHistView.style.display = 'none';
-      if (msgs) msgs.style.display = '';
-      if (btn) btn.classList.remove('active');
-    } else {
-      // AI Bar popup
-      const panel = instance.element.querySelector('.ai-bar-chat-history-panel') as HTMLDivElement;
-      const btn = instance.element.querySelector('.ai-bar-btn-chat-history') as HTMLButtonElement;
-      if (panel) panel.style.display = 'none';
-      if (btn) btn.classList.remove('active');
-      this.unobservePopupResize();
-      this._popupManualHeight = false;
-      this.exitSearchMode(instance);
-    }
-    instance.chatHistoryPanel = null;
-    this._cachedConversations.delete(instance.sessionId);
+    closeChatHistoryFn(instance, this.getChatHistoryPopupHost());
   }
 
   private async renderChatHistoryList(instance: AICapsuleInstance): Promise<void> {
-    const panel = instance.chatHistoryPanel;
-    if (!panel) return;
-
-    // For side inline view, render directly; for popup, use scroll viewport
-    const isSideInline = panel.classList.contains('ai-side-chat-history-view');
-    if (isSideInline) {
-      panel.innerHTML = `<div class="ai-chat-hist-header"><span class="ai-chat-hist-title">${t('aiChatHistoryTitle')}</span></div><div class="ai-chat-hist-loading" style="padding:12px;text-align:center;color:var(--text-muted);font-size:12px;">...</div>`;
-    } else {
-      const { getPopupScrollViewport } = await import('./overlay-scrollbar');
-      const vp = getPopupScrollViewport(panel);
-      vp.innerHTML = `<div class="ai-chat-hist-header"><span class="ai-chat-hist-title">${t('aiChatHistoryTitle')}</span></div><div class="ai-chat-hist-loading" style="padding:12px;text-align:center;color:var(--text-muted);font-size:12px;">...</div>`;
-    }
-
-    const convs = await this.loadConversations();
-    this._cachedConversations.set(instance.sessionId, convs);
-    this.renderChatHistoryListFromCache(instance, convs);
+    await renderChatHistoryListFn(instance, this.getChatHistoryPopupHost());
   }
 
   private renderChatHistoryListFromCache(instance: AICapsuleInstance, convs: ChatConversation[], filter?: string): void {
@@ -1651,35 +682,39 @@ class AICapsuleManagerClass {
   }
 
   private async handleDeleteConversation(instance: AICapsuleInstance, convId: string): Promise<void> {
-    const now = Date.now();
-    if (now < this._deleteSkipUntil) {
-      await this.deleteConversation(convId);
-      await this.reloadChatHistoryWithFilter(instance);
-      return;
-    }
-
-    const confirmed = await this.confirmDeleteConversation();
-    if (confirmed) {
-      await this.deleteConversation(convId);
-      await this.reloadChatHistoryWithFilter(instance);
-    }
+    await handleDeleteConversationFn(
+      instance,
+      convId,
+      this.getChatHistoryPopupHost(),
+      () => Date.now() < this._deleteSkipUntil,
+    );
   }
 
   // 重新加载对话列表并保持当前搜索筛选
   private async reloadChatHistoryWithFilter(instance: AICapsuleInstance): Promise<void> {
-    const convs = await this.loadConversations();
-    this._cachedConversations.set(instance.sessionId, convs);
-    // In side mode there's no search filter; in bottom mode use AI Bar input
-    let query = '';
-    if (instance.layoutMode !== 'side' && instance.chatHistoryOpen) {
-      const input = instance.element.querySelector('.ai-bar-input') as HTMLInputElement;
-      query = input?.value || '';
-    }
-    this.renderChatHistoryListFromCache(instance, convs, query || undefined);
+    await reloadChatHistoryWithFilterFn(instance, this.getChatHistoryPopupHost());
   }
 
   private confirmDeleteConversation(): Promise<boolean> {
     return confirmDeleteConversationFn((ts) => { this._deleteSkipUntil = ts; });
+  }
+
+  // ─── Popup resize (delegated to ai-capsule-popup-resize.ts) ──
+
+  private adjustPopupMaxHeight(panel: HTMLElement, aiBar: HTMLElement): void {
+    adjustPopupMaxHeightFn(this._popupState, panel, aiBar);
+  }
+
+  private observePopupResize(panel: HTMLElement, aiBar: HTMLElement): void {
+    observePopupResizeFn(this._popupState, panel, aiBar);
+  }
+
+  private unobservePopupResize(): void {
+    unobservePopupResizeFn(this._popupState);
+  }
+
+  private ensurePopupResizeHandle(panel: HTMLElement, aiBar: HTMLElement): void {
+    ensurePopupResizeHandleFn(this._popupState, panel, aiBar);
   }
 
   // ─── Lifecycle ─────────────────────────────────────────────────
@@ -1698,7 +733,7 @@ class AICapsuleManagerClass {
     if (instance.layoutMode === 'side' && instance.chatOpen) {
       // Side mode: ensure side panel is set up in #main-content
       if (instance.sidePanel && !instance.sidePanel.parentElement) {
-        switchToSideMode(instance, this.getSideInputCallbacks());
+        switchToSideMode(instance, getSideInputCallbacksFn(this.getChatOpsHost()));
       }
       instance.element.classList.add('ai-bar--side-active');
     } else {
@@ -1710,13 +745,7 @@ class AICapsuleManagerClass {
   }
 
   /**
-   * Switch only the AI Bar to a different session (for split pane focus changes).
-   * Side panel stays untouched — shared within the same tab.
-   */
-  /**
    * Switch AI Bar to a different session within the same tab (split pane focus).
-   * Side panel stays untouched. The new session's bar inherits the side-active
-   * state from whichever session has chat open in side mode within this tab.
    */
   switchBarOnly(sessionId: string, container: HTMLElement): void {
     if (!this.capsules.has(sessionId)) {
@@ -1750,7 +779,36 @@ class AICapsuleManagerClass {
     inst.element.classList.toggle('ai-bar--side-active', sideActive);
     this.syncBarPlaceholder(inst);
     const label = inst.element.querySelector('.ai-bar-model-label') as HTMLSpanElement;
-    if (label) this.updateModelLabel(label);
+    if (label) updateModelLabelFn(label);
+
+    // Bottom mode: chat panel is tab-scoped and shared across all
+    // panes of the tab. After swapping which AI Bar is visible, the
+    // chat panel must be re-anchored to sit immediately above the
+    // new (visible) AI Bar — otherwise it floats above the now-
+    // hidden previous pane's bar and the layout looks broken.
+    if (inst.chatPanel && inst.layoutMode === 'bottom' && inst.chatOpen) {
+      const parent = inst.element.parentElement;
+      if (parent) {
+        parent.insertBefore(inst.chatPanel, inst.element);
+        inst.chatPanel.style.display = '';
+      }
+    }
+
+    // Restore the tab's shared draft text into the newly-visible
+    // AI Bar input so a half-typed message carries over when the
+    // user switches between panes of the same tab.
+    const barInput = inst.element.querySelector('.ai-bar-input') as HTMLInputElement | null;
+    if (barInput) barInput.value = inst.state.draftText || '';
+
+    // Re-render the pending-image strip on the newly-visible surface
+    // (AI Bar / side input area). The strip is tab-scoped via
+    // state.pendingImages but its DOM lives on per-pane elements,
+    // so switching panes needs to move the rendered strip.
+    if (inst.state.pendingImages.length > 0) {
+      void import('./ai-capsule-image-attach').then(({ renderPendingStrip }) => {
+        renderPendingStrip(inst);
+      });
+    }
   }
 
   hideAll(): void {
@@ -1760,8 +818,6 @@ class AICapsuleManagerClass {
         // Bottom mode: hide chat panel with the bar
         if (inst.chatPanel) inst.chatPanel.style.display = 'none';
       }
-      // Side panel stays visible — it's independent of pane focus.
-      // It will be switched by show() when the active session changes.
     });
   }
 
@@ -1793,7 +849,7 @@ class AICapsuleManagerClass {
         inst.element.classList.add('ai-bar--side-active');
         if (inst.chatPanel) inst.chatPanel.style.display = '';
         if (inst.sidePanel && !inst.sidePanel.parentElement) {
-          switchToSideMode(inst, this.getSideInputCallbacks());
+          switchToSideMode(inst, getSideInputCallbacksFn(this.getChatOpsHost()));
         }
         showSidePanel(inst);
       } else {
@@ -1809,129 +865,11 @@ class AICapsuleManagerClass {
       }
       // Update model label whenever shown
       const label = inst.element.querySelector('.ai-bar-model-label') as HTMLSpanElement;
-      if (label) this.updateModelLabel(label);
+      if (label) updateModelLabelFn(label);
       // Sync AI bar position with current drawer state
       const drawerHeight = DrawerManager.getDrawerHeight(sessionId);
       this.setDrawerOffset(sessionId, drawerHeight);
     }
-  }
-
-  /** 计算弹窗可用最大高度：保留至少 4 行终端内容，不超过终端面积 30% */
-  private calcPopupMaxHeight(aiBar: HTMLElement): number {
-    // In side mode, use the side panel as container; otherwise use terminal-panel
-    const container = aiBar.closest('.ai-side-panel')
-      || aiBar.closest('#terminal-panel')
-      || aiBar.parentElement;
-    if (!container) return 0;
-    const containerRect = container.getBoundingClientRect();
-    const barRect = aiBar.getBoundingClientRect();
-
-    // In side mode there are no xterm rows in the side panel, use a simpler calculation
-    if (aiBar.closest('.ai-side-panel')) {
-      const available = barRect.top - containerRect.top - 8;
-      const maxByPercent = containerRect.height * 0.5;
-      return Math.max(Math.min(available, maxByPercent), 0);
-    }
-
-    const row = container.querySelector('.xterm-rows > div');
-    const lineHeight = row ? row.getBoundingClientRect().height : 18;
-    const reserved = lineHeight * 4 + 8;
-    const available = barRect.top - containerRect.top - reserved;
-    const maxByPercent = containerRect.height * 0.3;
-    return Math.max(Math.min(available, maxByPercent), 0);
-  }
-
-  /** 设置弹窗 max-height（自适应模式） */
-  private adjustPopupMaxHeight(panel: HTMLElement, aiBar: HTMLElement): void {
-    if (this._popupManualHeight) return; // 手动锁定后不再自动调整
-    panel.style.maxHeight = this.calcPopupMaxHeight(aiBar) + 'px';
-  }
-
-  /** 绑定响应式监听：ResizeObserver + window resize */
-  private observePopupResize(panel: HTMLElement, aiBar: HTMLElement): void {
-    this.unobservePopupResize();
-    this._activePopup = { panel, aiBar };
-
-    const onResize = () => {
-      if (this._activePopup && !this._popupManualHeight) {
-        this.adjustPopupMaxHeight(this._activePopup.panel, this._activePopup.aiBar);
-      }
-    };
-
-    // ResizeObserver 监听容器
-    const container = aiBar.closest('.ai-side-panel') || aiBar.closest('#terminal-panel') || aiBar.parentElement;
-    if (container) {
-      this._popupResizeObserver = new ResizeObserver(onResize);
-      this._popupResizeObserver.observe(container);
-    }
-
-    // window resize 兜底
-    this._popupResizeHandler = onResize;
-    window.addEventListener('resize', onResize);
-
-    // 添加拖拽 handle
-    this.ensurePopupResizeHandle(panel, aiBar);
-  }
-
-  /** 解绑弹窗 resize 监听 */
-  private unobservePopupResize(): void {
-    if (this._popupResizeObserver) {
-      this._popupResizeObserver.disconnect();
-      this._popupResizeObserver = null;
-    }
-    if (this._popupResizeHandler) {
-      window.removeEventListener('resize', this._popupResizeHandler);
-      this._popupResizeHandler = null;
-    }
-    this._activePopup = null;
-  }
-
-  /** 为弹窗添加顶部拖拽 handle，手动调整高度后锁定自适应 */
-  private ensurePopupResizeHandle(panel: HTMLElement, aiBar: HTMLElement): void {
-    // render 会清空 innerHTML，每次需要重建
-    let handle = panel.querySelector('.ai-popup-resize-handle') as HTMLElement | null;
-    if (handle) return; // 已存在（未被清空）
-    handle = document.createElement('div');
-    handle.className = 'ai-popup-resize-handle';
-    panel.insertBefore(handle, panel.firstChild);
-
-    let startY = 0;
-    let startH = 0;
-
-    const onMove = (e: MouseEvent) => {
-      const delta = startY - e.clientY;
-      // 手动拖拽允许超过 30% 但保留至少 2 行终端内容
-      const container = aiBar.closest('#terminal-panel') || aiBar.parentElement;
-      let maxH = 0;
-      if (container) {
-        const containerRect = container.getBoundingClientRect();
-        const barRect = aiBar.getBoundingClientRect();
-        const row = container.querySelector('.xterm-rows > div');
-        const lineHeight = row ? row.getBoundingClientRect().height : 18;
-        const reserved = lineHeight * 2 + 8;
-        maxH = barRect.top - containerRect.top - reserved;
-      }
-      const newH = Math.max(Math.min(startH + delta, maxH), 40);
-      panel.style.maxHeight = newH + 'px';
-    };
-
-    const onUp = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.body.style.userSelect = '';
-      handle.classList.remove('dragging');
-    };
-
-    handle.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      this._popupManualHeight = true; // 锁定自适应
-      startY = e.clientY;
-      startH = panel.getBoundingClientRect().height;
-      document.body.style.userSelect = 'none';
-      handle.classList.add('dragging');
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
   }
 
   setDrawerOffset(sessionId: string, drawerHeight: number): void {
@@ -1952,11 +890,39 @@ class AICapsuleManagerClass {
     if (!inst) return;
     if (inst.unsubInput) inst.unsubInput();
     if (inst.unsubShellIdle) inst.unsubShellIdle();
-    inst.agent.abort();
+
+    // Always remove the pane-local AI Bar element.
     inst.element.remove();
-    inst.sidePanel?.remove();
-    inst.sideResizeHandle?.remove();
     this.capsules.delete(sessionId);
+
+    // Tab-scoped teardown: only when the LAST pane of this tab is
+    // being destroyed. Other panes of the same tab still share the
+    // agent / chat panel / side panel, so we must not abort the run
+    // or rip the DOM out from under them.
+    const tabId = inst.tabId;
+    const stillHasSiblings = Array.from(this.capsules.values())
+      .some((other) => other.tabId === tabId);
+    if (stillHasSiblings) {
+      return;
+    }
+
+    this.tabStates.destroy(tabId);
+  }
+
+  // ─── Active instance accessor ─────────────────────────────────
+
+  /**
+   * Return the currently-visible capsule instance, used by paste
+   * routing as a fallback when the keystroke target is outside any
+   * registered DOM root (e.g. focus is on document.body).
+   */
+  getActiveInstance(): AICapsuleInstance | null {
+    if (this._lastShownSessionId) {
+      return this.capsules.get(this._lastShownSessionId) ?? null;
+    }
+    // Fall back to the first capsule we have, if any.
+    const first = this.capsules.values().next().value;
+    return first ?? null;
   }
 
   // ─── Hide / Show bar ──────────────────────────────────────────
@@ -1969,7 +935,6 @@ class AICapsuleManagerClass {
     this._barHidden = true;
     this.capsules.forEach((inst) => {
       inst.element.style.display = 'none';
-      // Side panel stays visible — it's independent from AI Bar
     });
     const panel = document.getElementById('terminal-panel');
     if (panel) panel.classList.add('ai-bar-hidden');
@@ -2012,3 +977,13 @@ class AICapsuleManagerClass {
 }
 
 export const AICapsuleManager = new AICapsuleManagerClass();
+
+// Tell the image-attach module how to find the currently-active
+// capsule when a paste event arrives outside any registered DOM
+// root (e.g. focus is on document.body). Without this, Cmd+V on
+// the side panel would silently route nowhere.
+setActiveInstanceGetter(() => {
+  // Reach into the manager via the public switchBarOnly state.
+  // We expose lastShownSessionId via a small accessor.
+  return AICapsuleManager.getActiveInstance();
+});

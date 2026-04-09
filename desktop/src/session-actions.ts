@@ -67,6 +67,9 @@ export async function doSplitPane(
       username: sshConfig.username,
       port: sshConfig.port,
     });
+  } else if (result) {
+    // 本地会话分屏：也创建文件抽屉
+    DrawerManager.create(result.sessionId, 'local');
   }
 }
 
@@ -80,6 +83,11 @@ export async function createNewSession(shell?: string, cwd?: string): Promise<vo
   const effectiveShell = shell || settings.defaultShell || getDefaultShellPath() || undefined;
   await TabManager.addTab(port, authToken, effectiveShell, cwd);
   if (TabManager.activeTabId) {
+    // 为本地会话创建文件抽屉（后端已支持本地文件操作 fallback）
+    const sessionId = TabManager.getActiveSessionId();
+    if (sessionId) {
+      DrawerManager.create(sessionId, 'local');
+    }
     await activateTab(TabManager.activeTabId);
     StatusBar.setConnection('connected', 'Local');
   }

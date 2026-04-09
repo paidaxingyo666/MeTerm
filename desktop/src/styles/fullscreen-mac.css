@@ -1,0 +1,55 @@
+/* ── macOS fullscreen mode ──
+ * 方案：全屏下标签栏/工具栏常驻显示（不做下拉动画），只做两件事：
+ *   1. 移除 macOS 红绿灯预留的 84px 左侧 padding（全屏下红绿灯消失）
+ *   2. 视觉上"禁用"毛玻璃（用不透明 tint = 1.0 覆盖，原生 NSVisualEffectView
+ *      保持挂载不动，退出全屏时 class 移除 → 毛玻璃自动恢复）
+ *
+ * 为什么不在 JS 里调 set_window_vibrancy(false)：
+ *   在全屏态拆掉 NSVisualEffectView 后，退出全屏时 Tauri 的 set_effects
+ *   重新挂载时机不可控，常常挂不回去，只能重启应用。改成纯 CSS 覆盖后，
+ *   原生层始终存在，切换零风险。
+ */
+
+/* 1. 红绿灯 84px 预留清除 */
+html.fs-mac.platform-macos #window-toolbar-left {
+  margin-left: 0;
+}
+
+html.fs-mac.platform-macos .editor-tabs-area {
+  padding-left: 8px;
+}
+
+/* 2. 全屏下强制覆盖所有 .vibrancy-active 规则为不透明背景
+ *    —— 覆盖 themes.css 中 rgba(..., var(--vibrancy-tint)=0.55) 的半透明背景 */
+html.fs-mac.platform-macos.vibrancy-active {
+  --vibrancy-tint: 1 !important;
+}
+
+html.fs-mac.platform-macos.vibrancy-active,
+html.fs-mac.platform-macos.vibrancy-active body,
+html.fs-mac.platform-macos.vibrancy-active #app {
+  background-color: rgb(var(--bg-primary)) !important;
+  background: rgb(var(--bg-primary)) !important;
+}
+
+html.fs-mac.platform-macos.vibrancy-active #terminal-panel {
+  background: rgb(var(--bg-primary)) !important;
+}
+
+html.fs-mac.platform-macos.vibrancy-active #window-toolbar {
+  background: rgb(var(--bg-toolbar)) !important;
+}
+
+html.fs-mac.platform-macos.vibrancy-active #tab-bar,
+html.fs-mac.platform-macos.vibrancy-active .editor-tab-bar {
+  background: rgb(var(--bg-toolbar)) !important;
+}
+
+html.fs-mac.platform-macos.vibrancy-active .status-bar-container,
+html.fs-mac.platform-macos.vibrancy-active #status {
+  background: rgb(var(--bg-status)) !important;
+}
+
+html.fs-mac.platform-macos.vibrancy-active .home-view {
+  background: rgb(var(--bg-primary)) !important;
+}

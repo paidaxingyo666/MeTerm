@@ -3,6 +3,11 @@ import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { PROVIDER_PRESETS, fetchModels, type ProviderType, type AIProviderEntry } from './ai-provider';
 import { createSettingsSelect } from './custom-select';
+import {
+  createPermissionModeRow,
+  createPermissionRulesEditor,
+  createAuditLogRow,
+} from './settings-ai-permission';
 
 export function createAITab(
   current: AppSettings,
@@ -332,6 +337,15 @@ export function createAITab(
     }
   };
   aiSettingsWrap.appendChild(iterRow);
+
+  // Permission mode selector (overrides trust level).
+  aiSettingsWrap.appendChild(createPermissionModeRow(current, update));
+
+  // Permission rules editor.
+  aiSettingsWrap.appendChild(createPermissionRulesEditor(current, update));
+
+  // Audit log viewer.
+  aiSettingsWrap.appendChild(createAuditLogRow());
 
   tabAI.appendChild(aiSettingsWrap);
 

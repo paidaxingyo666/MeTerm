@@ -32,6 +32,7 @@ import {
   activateTab,
   showHomeView, hideHomeView, showGalleryView, hideGalleryView,
   openSettings, getActiveSessionProgress,
+  syncPaneStatusBar,
 } from './view-manager';
 import {
   createNewSession, createNewPrivateSession,
@@ -152,6 +153,7 @@ export function setupDomEventListeners(): void {
   // TabManager subscription
   TabManager.subscribe(() => {
     StatusBar.setSessionCount(TabManager.tabs.length);
+    syncPaneStatusBar();
     renderTabs();
     renderToolbarActions();
     if (isHomeView) {
@@ -186,6 +188,11 @@ export function setupDomEventListeners(): void {
     // Only switch AI Bar, keep side panel as-is (shared within tab)
     AICapsuleManager.switchBarOnly(sessionId, terminalPanelEl);
     TerminalRegistry.focusTerminal(sessionId);
+
+    // Phase 2: refresh the status-bar pane capsule for the
+    // newly-focused pane. (Its total is unchanged, but the number
+    // moves.)
+    syncPaneStatusBar();
 
     TabManager.notify();
   }) as EventListener);

@@ -15,9 +15,9 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::server::protocol;
 use client::Client;
 use state::{ClientRole, SessionState};
-use crate::server::protocol;
 
 /// Configuration for sessions (passed from ServerConfig).
 #[derive(Debug, Clone)]
@@ -34,6 +34,14 @@ const MAX_RESTARTS: u32 = 3;
 /// Download flow control signal.
 #[derive(Debug, Clone, Copy)]
 pub enum DownloadSignal {
+    Pause,
+    Continue,
+    Cancel,
+}
+
+/// Upload flow control signal.
+#[derive(Debug, Clone, Copy)]
+pub enum UploadSignal {
     Pause,
     Continue,
     Cancel,
@@ -63,6 +71,8 @@ pub struct UploadState {
 pub struct AdaptivePipeline {
     /// Current pipeline window size.
     pub window: usize,
+    /// Maximum pipeline window size for this workload.
+    max_window: usize,
     /// Slow-start threshold.
     ssthresh: usize,
     /// ACK counter for linear increase phase.
@@ -77,11 +87,40 @@ impl AdaptivePipeline {
     const INITIAL_WINDOW: usize = 2;
     const MAX_WINDOW: usize = 64;
     const INITIAL_SSTHRESH: usize = 16;
+    const DOWNLOAD_INITIAL_WINDOW: usize = 8;
+    const DOWNLOAD_SSTHRESH: usize = 16;
+    const DOWNLOAD_MAX_WINDOW: usize = 24;
+    const DIRECT_DOWNLOAD_INITIAL_WINDOW: usize = 16;
+    const DIRECT_DOWNLOAD_SSTHRESH: usize = 48;
+    const DIRECT_DOWNLOAD_MAX_WINDOW: usize = 96;
 
     pub fn new() -> Self {
         Self {
             window: Self::INITIAL_WINDOW,
+            max_window: Self::MAX_WINDOW,
             ssthresh: Self::INITIAL_SSTHRESH,
+            ack_count: 0,
+            send_time: None,
+            srtt_ms: 0.0,
+        }
+    }
+
+    pub fn for_download() -> Self {
+        Self {
+            window: Self::DOWNLOAD_INITIAL_WINDOW,
+            max_window: Self::DOWNLOAD_MAX_WINDOW,
+            ssthresh: Self::DOWNLOAD_SSTHRESH,
+            ack_count: 0,
+            send_time: None,
+            srtt_ms: 0.0,
+        }
+    }
+
+    pub fn for_direct_download() -> Self {
+        Self {
+            window: Self::DIRECT_DOWNLOAD_INITIAL_WINDOW,
+            max_window: Self::DIRECT_DOWNLOAD_MAX_WINDOW,
+            ssthresh: Self::DIRECT_DOWNLOAD_SSTHRESH,
             ack_count: 0,
             send_time: None,
             srtt_ms: 0.0,
@@ -110,11 +149,11 @@ impl AdaptivePipeline {
 
         // Grow window: slow start (exponential) → linear increase
         if self.window < self.ssthresh {
-            self.window = (self.window + 1).min(Self::MAX_WINDOW);
+            self.window = (self.window + 1).min(self.max_window);
         } else {
             self.ack_count += 1;
             if self.ack_count >= self.window {
-                self.window = (self.window + 1).min(Self::MAX_WINDOW);
+                self.window = (self.window + 1).min(self.max_window);
                 self.ack_count = 0;
             }
         }
@@ -159,14 +198,21 @@ pub struct Session {
     /// SFTP client for SSH sessions (None for local sessions).
     pub sftp: Mutex<Option<std::sync::Arc<russh_sftp::client::SftpSession>>>,
 
+    /// Original SSH connection config for transfer backends that may need a
+    /// dedicated connection with different transport characteristics.
+    pub ssh_config: Mutex<Option<crate::server::terminal::ssh::SshConfig>>,
+
     /// SSH session handle for exec (ServerInfo, process list). Type-erased.
     pub ssh_exec_handle: tokio::sync::Mutex<Option<Box<dyn std::any::Any + Send + Sync>>>,
 
-    /// Active upload state (path, part_path, total_size, received bytes).
-    pub active_upload: tokio::sync::Mutex<Option<UploadState>>,
+    /// Active upload states keyed by transferId (supports parallel uploads).
+    pub active_uploads: tokio::sync::Mutex<HashMap<u32, UploadState>>,
 
-    /// Download control channel (pause/resume/cancel signals).
-    pub download_ctrl: tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<DownloadSignal>>>,
+    /// Download control channels keyed by transferId (supports parallel downloads).
+    pub download_ctrls: tokio::sync::Mutex<HashMap<u32, tokio::sync::mpsc::Sender<DownloadSignal>>>,
+
+    /// Upload control channels keyed by transferId (supports parallel uploads).
+    pub upload_ctrls: tokio::sync::Mutex<HashMap<u32, tokio::sync::mpsc::Sender<UploadSignal>>>,
 
     /// OSC filter — intercepts MeTerm OSC sequences from terminal output.
     osc_filter: Mutex<crate::server::osc_filter::OscFilter>,
@@ -198,9 +244,11 @@ impl Session {
             encoding_name: Mutex::new("utf-8".to_string()),
             executor_type: Mutex::new("local-shell".to_string()),
             sftp: Mutex::new(None),
+            ssh_config: Mutex::new(None),
             ssh_exec_handle: tokio::sync::Mutex::new(None),
-            active_upload: tokio::sync::Mutex::new(None),
-            download_ctrl: tokio::sync::Mutex::new(None),
+            active_uploads: tokio::sync::Mutex::new(HashMap::new()),
+            download_ctrls: tokio::sync::Mutex::new(HashMap::new()),
+            upload_ctrls: tokio::sync::Mutex::new(HashMap::new()),
             osc_filter: Mutex::new(crate::server::osc_filter::OscFilter::new()),
             cancel: CancellationToken::new(),
         }
@@ -224,7 +272,9 @@ impl Session {
             // Promote to master if no connected non-readonly clients exist.
             // This handles: first client, all previous clients expired after
             // system sleep (reconnect grace period elapsed while locked), etc.
-            should_promote = !clients.values().any(|c| c.is_connected() && c.role != ClientRole::ReadOnly);
+            should_promote = !clients
+                .values()
+                .any(|c| c.is_connected() && c.role != ClientRole::ReadOnly);
             clients.insert(client_id.clone(), client.clone());
         }
 
@@ -300,7 +350,7 @@ impl Session {
         client_id: &str,
         remote_addr: String,
         grace: std::time::Duration,
-    ) -> Result<mpsc::Receiver<Vec<u8>>, String> {
+    ) -> Result<client::WsReceivers, String> {
         let clients = self.clients.lock().unwrap();
         let client = clients
             .get(client_id)
@@ -312,7 +362,10 @@ impl Session {
             // same client_id, the old TCP connection must be dead (e.g., after system
             // sleep/wake). Disconnecting drops the old send channel so the previous
             // WebSocket handler exits cleanly via its rx.recv() returning None.
-            eprintln!("[ws] force-disconnecting stale client={} for reconnect", client_id);
+            eprintln!(
+                "[ws] force-disconnecting stale client={} for reconnect",
+                client_id
+            );
             client.disconnect();
         }
 
@@ -492,6 +545,19 @@ impl Session {
         }
     }
 
+    /// Blocking send for bulk transfers on the client's low-priority queue.
+    pub async fn send_bulk_to_client_async(&self, client_id: &str, data: Vec<u8>) -> bool {
+        let client = {
+            let clients = self.clients.lock().unwrap();
+            clients.get(client_id).cloned()
+        };
+        if let Some(client) = client {
+            client.send_bulk_async(data).await
+        } else {
+            false
+        }
+    }
+
     /// Flush the ring buffer history to a client (for replay on connect).
     /// Sends in 4096-byte chunks to avoid overwhelming the WebSocket buffer.
     /// Prepends RIS (Reset Initial State) `\x1bc` to avoid TUI corruption.
@@ -554,7 +620,10 @@ impl Session {
         let clients = self.clients.lock().unwrap();
         let mut kicked = 0;
         for client in clients.values() {
-            if client.is_connected() && !client.remote_addr.is_empty() && !is_loopback(&client.remote_addr) {
+            if client.is_connected()
+                && !client.remote_addr.is_empty()
+                && !is_loopback(&client.remote_addr)
+            {
                 client.disconnect();
                 kicked += 1;
             }
@@ -583,7 +652,11 @@ impl Session {
     /// Loopback clients are exempt — they are local (same machine) and will
     /// reconnect after system wake, so expiring them only causes unnecessary
     /// master-role loss and "remote control" overlay flashes.
-    pub fn expired_disconnected_clients(&self, _now: Instant, grace: std::time::Duration) -> Vec<String> {
+    pub fn expired_disconnected_clients(
+        &self,
+        _now: Instant,
+        grace: std::time::Duration,
+    ) -> Vec<String> {
         let clients = self.clients.lock().unwrap();
         clients
             .values()

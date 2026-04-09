@@ -2,242 +2,55 @@
 // Terminal-aware AI agent with Tool Use + Agentic Loop.
 // Supports three trust levels (manual / semi-auto / full-auto) and
 // degrades gracefully to chat-only mode for models without tool support.
+//
+// This file hosts the ToolAgent class itself.  Supporting logic lives
+// in sibling modules:
+//   - ai-agent-context.ts  : gatherContext / buildSystemPrompt / fixCodeBlocks
+//   - ai-agent-errors.ts   : error classification + retry configs
+//   - ai-agent-history.ts  : trimHistory / compressContext pure helpers
 
 import {
   ChatMessage, StreamCallbacks, ToolCall, ToolSpec,
   createProvider, AIProviderConfig, AIProvider,
-  resolveActiveModel, resolveModel,
+  resolveActiveModel,
 } from './ai-provider';
 import {
   ToolRegistry, buildToolContext, initializeTools, syncWebSearchTool,
-  TOKEN_BUDGET, stripAnsi, injectShellHook,
+  TOKEN_BUDGET, injectShellHook,
+  TodoState,
 } from './ai-tools';
+import type { TodoItem } from './ai-tools-todo';
 import { TerminalRegistry } from './terminal';
-import { DrawerManager } from './drawer';
 import { loadSettings } from './themes';
-import { getLanguage } from './i18n';
+import {
+  gatherContext, buildSystemPrompt, fixCodeBlocks,
+} from './ai-agent-context';
+import { getSessionMeta } from './ai-agent-session-meta';
+import {
+  classifyError, calculateRetryDelay, RETRY_CONFIGS,
+} from './ai-agent-errors';
+import {
+  trimHistory, compressContext, microCompact, shouldAutoCompact,
+} from './ai-agent-history';
+import { type AgentEvent } from './ai-agent-events';
+import { runAgentAsGenerator, type ImageAttachment } from './ai-agent-run';
+import { runTools, type ToolExecResult } from './ai-tool-orchestrator';
+import type { ToolHandler } from './ai-tools';
+import { hooks } from './ai-hooks';
+import { summarizeOlderMessages, COMPACT_MAX_OUTPUT } from './ai-agent-compact';
+import { resetAgentNotificationThrottle } from './ai-notifications';
+import {
+  decidePermission,
+  trustLevelToMode,
+  DEFAULT_PERMISSION_RULES,
+  type PermissionMode,
+  type PermissionRule,
+} from './ai-permission-rules';
 
-// ─── Code Block Post-Processing ─────────────────────────────────
-// Fix non-compliant bash code blocks in LLM output WITHOUT re-calling
-// the model.  Rules enforced:
-//   • One command per ```bash block
-//   • No comment lines (#…) inside blocks — moved to plain text
-
-function fixCodeBlocks(text: string): string {
-  return text.replace(
-    /```(bash|sh|shell|zsh|fish)\n([\s\S]*?)```/g,
-    (_match, lang: string, body: string) => {
-      const lines = body.trimEnd().split('\n');
-      const cmds: { comments: string[]; cmd: string }[] = [];
-      let commentBuf: string[] = [];
-
-      for (const line of lines) {
-        if (/^\s*#/.test(line) && line.trim().length > 0) {
-          // Comment line — buffer it
-          commentBuf.push(line.trim().replace(/^#\s*/, ''));
-        } else if (line.trim().length > 0) {
-          // Executable line
-          cmds.push({ comments: commentBuf, cmd: line });
-          commentBuf = [];
-        }
-      }
-
-      // Nothing to fix
-      if (cmds.length <= 1 && cmds.every(c => c.comments.length === 0) && commentBuf.length === 0) {
-        return _match;
-      }
-
-      const parts: string[] = [];
-      for (const { comments, cmd } of cmds) {
-        if (comments.length > 0) parts.push(comments.join('\n'));
-        parts.push(`\`\`\`${lang}\n${cmd}\n\`\`\``);
-      }
-      // Trailing comments (no command after them)
-      if (commentBuf.length > 0) parts.push(commentBuf.join('\n'));
-
-      return parts.join('\n\n');
-    },
-  );
-}
-
-// ─── Terminal Context ───────────────────────────────────────────
-
-export interface TerminalContext {
-  recentOutput: string;
-  serverInfo: string;
-  isSSH: boolean;
-  cwd: string;
-}
-
-export function gatherContext(sessionId: string, maxLines: number): TerminalContext {
-  let recentOutput = '';
-  const raw = TerminalRegistry.serializeBuffer(sessionId);
-  if (raw) {
-    const stripped = stripAnsi(raw);
-    const lines = stripped.split('\n');
-    const recent = lines.slice(-maxLines);
-    recentOutput = recent.join('\n').trim();
-  }
-
-  const info = DrawerManager.getServerInfo(sessionId);
-  let serverInfo = '';
-  let isSSH = false;
-  if (info) {
-    isSSH = true;
-    serverInfo = `${info.username}@${info.host}:${info.port}`;
-  }
-
-  const mt = TerminalRegistry.get(sessionId);
-  const cwd = mt?.shellState.cwd ?? '';
-
-  return { recentOutput, serverInfo, isSSH, cwd };
-}
-
-// ─── System Prompt Builder ──────────────────────────────────────
-
-function buildSystemPrompt(ctx: TerminalContext, hasTools: boolean): string {
-  const lang = getLanguage();
-  const langInstr = lang === 'zh'
-    ? '请使用中文回复用户。'
-    : 'Reply in the same language the user uses.';
-
-  const envSection = ctx.isSSH
-    ? `Connection: SSH (${ctx.serverInfo})`
-    : `Connection: Local terminal`;
-
-  const cwdSection = ctx.cwd
-    ? `\nWorking directory: ${ctx.cwd}`
-    : '';
-
-  const infoSection = ctx.serverInfo
-    ? `\nSystem: ${ctx.serverInfo}`
-    : '';
-
-  const terminalSection = ctx.recentOutput
-    ? `\nRecent terminal output (last lines):\n\`\`\`\n${ctx.recentOutput}\n\`\`\``
-    : '\n(No recent terminal output available)';
-
-  const toolInstructions = hasTools
-    ? `Instructions:
-1. MINIMIZE TOOL CALLS. Before calling any tool, check if the answer is already visible in the terminal context above. If it is, answer directly — do not re-run commands to get information you already have.
-2. run_command already returns the command output. Avoid unnecessary read_terminal calls — use read_terminal only when you need to check terminal state before acting or read output from user-initiated commands.
-3. When the user's request is ambiguous (e.g. "check my IP" — local? public? which interface?), answer with what is most likely wanted. Only ask for clarification when genuinely unable to determine intent.
-4. ONE tool call per step. Each shell command should be a single atomic operation — do not chain with && or ;.
-5. After executing a command, check the returned output to verify success before proceeding.
-6. If a command fails, analyze the error and try ONE alternative approach. Do NOT retry the same command or slight variations more than once.
-7. BE CONCISE: After tool execution, summarize outcomes in 1–2 sentences. Do NOT repeat or echo command outputs — the user can already see them. Avoid verbose explanations.
-8. For destructive operations (rm -rf, DROP TABLE, etc.), warn briefly before executing.
-9. When suggesting commands in text (not via tool calls), put each command in its own \`\`\`bash block — one command per block, NO comments inside the block.
-10. For monitoring running commands or handling interactive prompts (Y/n, password, etc.), use watch_terminal to observe output and send_input to respond. This enables auto-interaction with installers, package managers, and other interactive programs.
-11. web_search (if available): Only use when the user asks to search, you encounter an unknown error/command, or need real-time info. Do NOT search for basic knowledge. Always specify relevant sites when the context is clear.
-12. command_help (if available): Use to look up command syntax, flags, and usage examples from the tldr database. Useful when you need to recall exact syntax for a command.
-13. ${langInstr}`
-    : `Instructions:
-1. Each shell command MUST be in its own separate \`\`\`bash code block — one command per block, never combine multiple commands in a single block.
-2. NEVER put comments or non-executable text inside \`\`\`bash blocks. All explanations go in plain text outside the code blocks.
-3. Be concise. Prefer giving commands directly over lengthy explanations.
-4. When a command could be destructive (rm -rf, sudo, DROP, etc.), add a brief warning before the command block.
-5. If the terminal output shows an error, proactively help diagnose it.
-6. ${langInstr}`;
-
-  return `You are a terminal AI assistant embedded in a terminal application. Help the user work efficiently in their terminal environment.
-
-Environment:
-- ${envSection}${cwdSection}${infoSection}
-${terminalSection}
-
-${toolInstructions}`;
-}
-
-// ─── Error Classification ───────────────────────────────────────
-
-type ErrorCategory =
-  | 'rate_limit'
-  | 'server_error'
-  | 'context_overflow'
-  | 'auth'
-  | 'tool_unsupported'
-  | 'abort'
-  | 'unknown';
-
-interface RetryConfig {
-  maxAttempts: number;
-  baseDelayMs: number;
-  maxDelayMs: number;
-  backoffFactor: number;
-}
-
-const RETRY_CONFIGS: Record<string, RetryConfig> = {
-  rate_limit:       { maxAttempts: 10, baseDelayMs: 2000,  maxDelayMs: 30000, backoffFactor: 2 },
-  server_error:     { maxAttempts: 10, baseDelayMs: 5000,  maxDelayMs: 60000, backoffFactor: 2 },
-  context_overflow: { maxAttempts: 2,  baseDelayMs: 500,   maxDelayMs: 500,   backoffFactor: 1 },
-};
-
-function classifyError(err: Error): { category: ErrorCategory; statusCode: number } {
-  const msg = err.message;
-  const lowerMsg = msg.toLowerCase();
-
-  if (err.name === 'AbortError') {
-    return { category: 'abort', statusCode: 0 };
-  }
-
-  // Parse HTTP status from Rust error format: "HTTP 429: ..."
-  const httpMatch = msg.match(/HTTP (\d{3})/);
-  const statusCode = httpMatch ? parseInt(httpMatch[1]) : 0;
-
-  // Context overflow — various provider error formats
-  if (
-    lowerMsg.includes('context_length') ||
-    lowerMsg.includes('context length') ||
-    lowerMsg.includes('maximum context') ||
-    lowerMsg.includes('too many tokens') ||
-    lowerMsg.includes('token limit') ||
-    lowerMsg.includes('prompt is too long') ||
-    lowerMsg.includes('payload size exceeds') ||
-    lowerMsg.includes('request too large') ||
-    (lowerMsg.includes('max_tokens') && lowerMsg.includes('exceed')) ||
-    (statusCode === 400 && (
-      lowerMsg.includes('length') ||
-      lowerMsg.includes('tokens') ||
-      lowerMsg.includes('too long') ||
-      lowerMsg.includes('too large')
-    ))
-  ) {
-    return { category: 'context_overflow', statusCode };
-  }
-
-  // Rate limit
-  if (statusCode === 429 || lowerMsg.includes('rate limit') || lowerMsg.includes('too many requests')) {
-    return { category: 'rate_limit', statusCode: 429 };
-  }
-
-  // Auth errors (non-retryable)
-  if (statusCode === 401 || statusCode === 403) {
-    return { category: 'auth', statusCode };
-  }
-
-  // Server errors (5xx)
-  if (statusCode >= 500 && statusCode < 600) {
-    return { category: 'server_error', statusCode };
-  }
-
-  // Tool unsupported
-  if (
-    lowerMsg.includes('tools') ||
-    lowerMsg.includes('function') ||
-    lowerMsg.includes('tool_use') ||
-    lowerMsg.includes('not supported') ||
-    lowerMsg.includes('unrecognized request argument')
-  ) {
-    return { category: 'tool_unsupported', statusCode };
-  }
-
-  return { category: 'unknown', statusCode };
-}
-
-function calculateRetryDelay(config: RetryConfig, attempt: number): number {
-  return Math.min(config.baseDelayMs * Math.pow(config.backoffFactor, attempt), config.maxDelayMs);
-}
+// Re-exports for backward compatibility
+export type { TerminalContext } from './ai-agent-context';
+export { gatherContext } from './ai-agent-context';
+export type { AgentEvent } from './ai-agent-events';
 
 // ─── Agent Callbacks ────────────────────────────────────────────
 // All fields except onToken/onComplete/onError are optional so that
@@ -269,6 +82,15 @@ export interface AgentCallbacks {
   onToolCall?: (toolName: string, args: Record<string, unknown>) => void;
   /** Tool finished executing. */
   onToolResult?: (toolName: string, result: string, isError: boolean) => void;
+  /** Tool returned image attachments (e.g. read_screen). Fires AFTER onToolResult. */
+  onToolImages?: (
+    toolName: string,
+    images: Array<{
+      mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+      data: string;
+      label?: string;
+    }>,
+  ) => void;
   /**
    * Confirmation required — resolve with:
    *   true   → approve and execute
@@ -290,6 +112,10 @@ export interface AgentCallbacks {
   onRetrying?: (attempt: number, maxAttempts: number, delayMs: number, reason: string) => void;
   /** Context was compressed to fit within model limits. */
   onContextCompressed?: () => void;
+  // NOTE: task-plan changes (todo_write) are delivered via the
+  // persistent listener installed with `setTodoUpdateListener`, not
+  // through this callbacks surface. That way `agent.clear()` and
+  // other out-of-run mutations also refresh the UI consistently.
 }
 
 // ─── Constants ──────────────────────────────────────────────────
@@ -311,25 +137,140 @@ export class ToolAgent {
   /** Messages injected by the user while the agent is working.
    *  Flushed into this.messages at the next iteration checkpoint. */
   private pendingUserMessages: string[] = [];
+  /** Set of sessionIds for which we've already fired SessionStart. */
+  private sessionStartEmitted = new Set<string>();
+  /** Most recent sessionId this agent was driven with — used so clear()
+   *  can emit SessionEnd with the right session. */
+  private lastSessionId = '';
+  /**
+   * Sliding window of the most recent tool-call hashes (toolName + JSON
+   * args). Used by the repeat-action detector to spot the LLM looping on
+   * the same identical call (e.g. spamming press_keys(":q","Enter") at
+   * a vim that already exited). When a hash appears 3+ times in the
+   * last 5 calls, a warning is injected into the result so the LLM
+   * realizes it should switch tactics — call read_screen, web_search,
+   * or stop the loop.
+   */
+  private recentToolHashes: string[] = [];
+  /**
+   * Persistent task plan maintained by the LLM via the `todo_write`
+   * tool. The list is stored on the agent (not on individual tool
+   * calls) so it survives across iterations and can be injected into
+   * every system prompt without burning tool-call round-trips. The
+   * agent installs an `onUpdate` listener that fans state changes
+   * out to the active AgentCallbacks.
+   */
+  private todoState = new TodoState();
 
   constructor() {
     this.toolRegistry = initializeTools();
+  }
+
+  /** Read the current task plan (immutable copy). */
+  getTodos(): TodoItem[] {
+    return this.todoState.get();
+  }
+
+  /**
+   * Persistent listener for task plan changes. Set by the UI once at
+   * agent creation time so events fire even outside an active run
+   * (e.g. when `clear()` empties the plan between turns).
+   */
+  setTodoUpdateListener(fn: ((todos: TodoItem[]) => void) | undefined): void {
+    this.todoState.onUpdate = fn;
+  }
+
+  /**
+   * User-attached files queued for the NEXT turn. These are files the
+   * user dropped / picked in the chat capsule before hitting Send.
+   * They live on disk at absolute paths (saved by
+   * `agent_save_attachment`) and we surface them to the model via a
+   * system-prompt block so it can read_file / upload_file them. The
+   * list is injected on EVERY iteration of the current turn so the
+   * model can re-check the attachments at any step, and then cleared
+   * automatically once the turn finishes (see runLoop finally).
+   */
+  private pendingAttachments: Array<{ name: string; path: string; size: number; mimeType?: string }> = [];
+
+  /** Set the attachments for the upcoming turn. Call before `send()`. */
+  setPendingAttachments(
+    atts: Array<{ name: string; path: string; size: number; mimeType?: string }>,
+  ): void {
+    this.pendingAttachments = atts.map((a) => ({ ...a }));
+  }
+
+  /** Read the current pending attachment list (immutable copy). */
+  getPendingAttachments(): Array<{ name: string; path: string; size: number; mimeType?: string }> {
+    return this.pendingAttachments.map((a) => ({ ...a }));
+  }
+
+  /** Render the pending-attachments block for the system prompt. Empty
+   *  when no attachments are queued. */
+  private renderAttachmentsBlock(): string {
+    if (this.pendingAttachments.length === 0) return '';
+    const fmtSize = (n: number) => {
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+      return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    };
+    const lines: string[] = [];
+    lines.push('User attached the following local files for this turn:');
+    for (let i = 0; i < this.pendingAttachments.length; i++) {
+      const a = this.pendingAttachments[i];
+      lines.push(`  ${i + 1}. ${a.name}  (${fmtSize(a.size)})  path=${a.path}`);
+    }
+    lines.push('');
+    lines.push('You can feed these paths directly into upload_file (to ship them to a remote server), read_file (to inspect them), or run_command (e.g. `tar tzf <path>` to list an archive, `unzip -l <path>` to list a zip). The path is the canonical way to reference each attachment — do NOT ask the user to re-paste the file.');
+    return lines.join('\n');
+  }
+
+  /**
+   * Rehydrate the task plan from persisted conversation history.
+   * Called by the UI during chat restore so the next system prompt
+   * immediately reflects the plan that was in flight when the user
+   * last closed the conversation. Bypasses the onUpdate listener
+   * to avoid firing a redundant UI re-render (the caller already
+   * rendered the board from the same source).
+   */
+  restoreTodos(items: TodoItem[]): void {
+    const listener = this.todoState.onUpdate;
+    this.todoState.onUpdate = undefined;
+    try {
+      this.todoState.set(items);
+    } finally {
+      this.todoState.onUpdate = listener;
+    }
   }
 
   // ─── Public API ─────────────────────────────────────────────
 
   /**
    * Send a user message and run the agentic loop.
-   * Accepts the extended AgentCallbacks or the legacy StreamCallbacks
-   * (the extra fields are all optional).
+   *
+   * @param userMessage Plain-text user prompt.
+   * @param sessionId   Session id for terminal context.
+   * @param callbacks   UI callbacks.
+   * @param images      Optional attached images (paste / drop). If
+   *                    provided, the user message is stored as a
+   *                    ContentPart[] with text + image blocks so the
+   *                    multimodal provider path kicks in.
    */
   send(
     userMessage: string,
     sessionId: string,
     callbacks: AgentCallbacks,
+    images?: Array<{
+      mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+      data: string;
+      label?: string;
+    }>,
   ): void {
     this.abort();
     this.aborted = false;
+    // Reset the repeat-action sliding window each new turn — loops only
+    // make sense within the scope of a single agentic run.
+    this.recentToolHashes = [];
 
     // Flush any pending injected messages to history first
     this.flushPendingMessages();
@@ -339,8 +280,32 @@ export class ToolAgent {
       this.messages.pop();
     }
 
-    this.messages.push({ role: 'user', content: userMessage });
-    this.trimHistory();
+    if (images && images.length > 0) {
+      const parts: import('./ai-provider').ContentPart[] = [];
+      if (userMessage) parts.push({ type: 'text', text: userMessage });
+      for (const img of images) {
+        parts.push({ type: 'image', mediaType: img.mediaType, data: img.data });
+      }
+      this.messages.push({ role: 'user', content: parts });
+    } else {
+      this.messages.push({ role: 'user', content: userMessage });
+    }
+    trimHistory(this.messages);
+
+    // Reset per-turn notification throttle so the first waiting /
+    // complete event of this new turn will always fire.
+    resetAgentNotificationThrottle();
+
+    // Track the current sessionId so clear() can emit SessionEnd
+    // with the right value.
+    this.lastSessionId = sessionId;
+
+    // Fire SessionStart once per sessionId, then UserPromptSubmit.
+    if (!this.sessionStartEmitted.has(sessionId)) {
+      this.sessionStartEmitted.add(sessionId);
+      void hooks.emitSessionStart({ sessionId });
+    }
+    void hooks.emitUserPromptSubmit({ sessionId, prompt: userMessage });
 
     this.runLoop(sessionId, callbacks).catch((e) => {
       callbacks.onError(e instanceof Error ? e : new Error(String(e)));
@@ -349,9 +314,6 @@ export class ToolAgent {
 
   /**
    * Inject a user message while the agent is actively working.
-   * The message will be seen by the LLM at the next iteration checkpoint,
-   * allowing the model to decide whether to incorporate it into the
-   * current workflow or defer it.
    */
   injectMessage(message: string): void {
     this.pendingUserMessages.push(message);
@@ -359,8 +321,6 @@ export class ToolAgent {
 
   /**
    * Resume the agent after an error or interruption.
-   * Re-enters the agentic loop without adding a new user message,
-   * picking up from the current conversation state.
    */
   resume(
     sessionId: string,
@@ -395,6 +355,19 @@ export class ToolAgent {
     this.messages = [];
     this.pendingUserMessages = [];
     this.toolsSupported = true;
+    this.recentToolHashes = [];
+    // Reset the persistent task plan — a fresh conversation should
+    // never inherit todos from the previous one.
+    this.todoState.clear();
+    // Drop any queued attachments from the previous turn. We do NOT
+    // unlink the underlying files here — that's the UI's job (via
+    // `clearPendingAttachments(inst, deleteFiles=true)`) because only
+    // the UI knows whether the user might want to re-upload them.
+    this.pendingAttachments = [];
+    const sid = this.lastSessionId;
+    // Allow SessionStart to fire again on next send() for this session.
+    if (sid) this.sessionStartEmitted.delete(sid);
+    void hooks.emitSessionEnd({ sessionId: sid, reason: 'cleared' });
   }
 
   /** Get current conversation messages (excluding system prompt). */
@@ -405,6 +378,31 @@ export class ToolAgent {
   /** Whether a request is currently in progress. */
   get isStreaming(): boolean {
     return this.abortController !== null;
+  }
+
+  // ─── Pull-based async generator API ───────────────────────
+  //
+  // `run()` wraps the existing `runLoop()` and yields a typed stream
+  // of AgentEvent values.  This is the preferred API for new callers —
+  // it plays nicely with AbortSignal, allows structured consumption,
+  // and matches the Claude-Code-style `query()` pattern.
+  //
+  // Implementation note: we convert the callback-driven runLoop into
+  // a generator by routing callbacks into an AsyncEventQueue that the
+  // generator drains. The queue is closed when runLoop resolves.
+
+  /**
+   * Run the agentic loop as a pull-based async generator.
+   * Implementation lives in ai-agent-run.ts to keep this file
+   * under the 1000-line cap. This method is a thin forwarder.
+   */
+  run(
+    userMessage: string,
+    sessionId: string,
+    signal?: AbortSignal,
+    images?: ImageAttachment[],
+  ): AsyncGenerator<AgentEvent, void, void> {
+    return runAgentAsGenerator(this, userMessage, sessionId, signal, images);
   }
 
   // ─── Core Agentic Loop ─────────────────────────────────────
@@ -458,6 +456,12 @@ export class ToolAgent {
     let llmRetryCount = 0;
     let contextCompressions = 0;
 
+    // The persistent todo listener (installed via setTodoUpdateListener
+    // by the UI) is the canonical sink for plan changes. We don't
+    // touch it here — both in-run updates AND clear() updates flow
+    // through the same listener so the UI stays consistent across
+    // runs.
+
     // ── Loop (wrapped in try/finally to ensure agent mode cleanup) ──
     try {
     while (unlimited || iteration < maxIterations) {
@@ -476,10 +480,93 @@ export class ToolAgent {
         callbacks.onIterationStart?.();
       }
 
-      // Refresh terminal context each iteration (captures latest output)
-      const ctx = gatherContext(sessionId, TOKEN_BUDGET.systemContextLines);
+      // MicroCompact: truncate older tool outputs before every call.
+      // Cheap, no model call, keeps the most recent 2 tool results intact.
+      microCompact(this.messages);
+
+      // AutoCompact (preventive): if estimated tokens are over the
+      // threshold, proactively shrink history before we hit a hard
+      // context_overflow error.
+      //
+      // Strategy: try LLM-based summarization first (preserves more
+      // signal), fall back to purely-local compressContext() on any
+      // failure.  We only attempt LLM compaction at most twice per
+      // run to avoid runaway retries.
+      if (
+        contextCompressions < MAX_CONTEXT_COMPRESSIONS &&
+        shouldAutoCompact(this.messages, /* default model context */)
+      ) {
+        await hooks.emitPreCompact({
+          sessionId,
+          reason: 'auto',
+          beforeMessageCount: this.messages.length,
+        });
+
+        let didLlmCompact = false;
+        // Use a dedicated AbortController so the compact call is
+        // cancellable even on iteration #1 where the main
+        // this.abortController has not been created yet.  Wire it to
+        // this.abort() via a short-lived listener.
+        const compactCtl = new AbortController();
+        const abortCompact = () => compactCtl.abort();
+        if (this.abortController) {
+          this.abortController.signal.addEventListener('abort', abortCompact, { once: true });
+        }
+        try {
+          const compactConfig: AIProviderConfig = {
+            ...providerConfig,
+            maxTokens: Math.min(providerConfig.maxTokens, COMPACT_MAX_OUTPUT),
+          };
+          const compactProvider = createProvider(compactConfig);
+          const summarized = await summarizeOlderMessages(
+            this.messages,
+            compactProvider,
+            compactCtl.signal,
+          );
+          if (summarized) {
+            this.messages = summarized;
+            didLlmCompact = true;
+            contextCompressions++;
+            callbacks.onContextCompressed?.();
+          }
+        } catch {
+          // Swallow — fall through to local compression below.
+        } finally {
+          this.abortController?.signal.removeEventListener('abort', abortCompact);
+        }
+
+        // If the external signal (or this.aborted) fired during
+        // summarization, bail out of the loop cleanly.
+        if (this.aborted) {
+          this.abortController = null;
+          callbacks.onAborted?.(iteration);
+          return;
+        }
+
+        if (!didLlmCompact) {
+          const compressed = compressContext(this.messages);
+          if (compressed) {
+            contextCompressions++;
+            callbacks.onContextCompressed?.();
+          }
+        }
+      }
+
+      // Refresh terminal context each iteration (captures latest
+      // output + current pane topology). Pane closure notices are
+      // consumed (flushed) here so each notice surfaces EXACTLY ONCE
+      // — the next iteration will see an empty list for them.
+      const meta = getSessionMeta(sessionId);
+      const closureNotices = meta.consumeClosureNotices();
+      const ctx = gatherContext(sessionId, TOKEN_BUDGET.systemContextLines, {
+        targetPaneNumber: meta.targetPaneNumber,
+        closureNotices,
+      });
       const hasTools = useTools && toolSpecs.length > 0;
-      const systemPrompt = buildSystemPrompt(ctx, hasTools);
+      const systemPrompt = buildSystemPrompt(ctx, hasTools, {
+        todoBlock: this.todoState.renderForSystemPrompt(),
+        attachmentsBlock: this.renderAttachmentsBlock(),
+      });
 
       const fullMessages: ChatMessage[] = [
         { role: 'system', content: systemPrompt },
@@ -538,8 +625,39 @@ export class ToolAgent {
           tool_calls: response.toolCalls,
         });
 
-        // ── Execute each tool call ──
+        // ── Execute tool calls (orchestrated: concurrent-safe run in
+        //    parallel, unsafe run serially; confirmations are resolved
+        //    up-front, serially, because the UI can only prompt once at
+        //    a time) ──
         const toolCtx = buildToolContext(sessionId);
+        // Attach the current abort signal so long-wait tools
+        // (wait_for_user_input / watch_terminal) can unblock when
+        // the user cancels the run.
+        toolCtx.abortSignal = this.abortController?.signal;
+        // Forward the agent's persistent todo state into every tool
+        // call. The `todo_write` tool reads/writes through this ref;
+        // any successful write fires the onUpdate listener installed
+        // above, which forwards into callbacks.onTodoUpdate.
+        toolCtx.todoState = this.todoState;
+        const settingsForTools = loadSettings();
+        const currentTrustLevel: number = settingsForTools.aiAgentTrustLevel ?? 0;
+        // Explicit permission mode takes precedence over the legacy
+        // trust level; both are read live each iteration so the user
+        // can toggle the mode mid-run.
+        const permMode: PermissionMode =
+          (settingsForTools.aiPermissionMode as PermissionMode | undefined)
+          ?? trustLevelToMode(currentTrustLevel);
+        const permRules: PermissionRule[] =
+          (settingsForTools.aiPermissionRules as PermissionRule[] | undefined)
+          ?? DEFAULT_PERMISSION_RULES;
+
+        // Pass 1 (serial): notify UI + resolve confirmations + emit
+        // PreToolUse hook + consult permission rules. Builds a map from
+        // call id → decision.
+        type Decision =
+          | { kind: 'run'; args: Record<string, unknown> }
+          | { kind: 'reject'; message: string };
+        const decisions = new Map<string, Decision>();
 
         for (const toolCall of response.toolCalls) {
           if (this.aborted) {
@@ -554,28 +672,188 @@ export class ToolAgent {
             return;
           }
 
-          const result = await this.executeSingleTool(
-            toolCall,
-            toolCtx,
-            callbacks,
-          );
+          const handler = this.toolRegistry.get(toolCall.function.name);
+          if (!handler) {
+            decisions.set(toolCall.id, {
+              kind: 'reject',
+              message: `Unknown tool "${toolCall.function.name}"`,
+            });
+            continue;
+          }
 
-          // Store tool result in history
+          let args: Record<string, unknown> = {};
+          try {
+            args = JSON.parse(toolCall.function.arguments);
+          } catch {
+            args = {};
+          }
+
+          // PreToolUse hook (in-process) — may deny or mutate args.
+          const hookResult = await hooks.emitPreToolUse({
+            sessionId,
+            toolCall,
+            args,
+          });
+          if (hookResult.deny) {
+            decisions.set(toolCall.id, {
+              kind: 'reject',
+              message: hookResult.deny.reason,
+            });
+            callbacks.onToolCall?.(toolCall.function.name, args);
+            continue;
+          }
+          if (hookResult.replaceArgs) args = hookResult.replaceArgs;
+
+          // Notify UI about this tool call (for card rendering).
+          callbacks.onToolCall?.(toolCall.function.name, args);
+
+          // Permission decision via mode + rules + handler heuristic.
+          const perm = decidePermission(
+            toolCall.function.name,
+            args,
+            handler,
+            permMode,
+            permRules,
+          );
+          if (perm.kind === 'deny') {
+            decisions.set(toolCall.id, { kind: 'reject', message: perm.reason });
+            continue;
+          }
+          if (perm.kind === 'allow') {
+            decisions.set(toolCall.id, { kind: 'run', args });
+            continue;
+          }
+
+          // perm.kind === 'ask' → prompt the user.
+          if (!callbacks.onConfirmRequired) {
+            decisions.set(toolCall.id, {
+              kind: 'reject',
+              message: 'User confirmation required but no handler available.',
+            });
+            continue;
+          }
+          const approved = await callbacks.onConfirmRequired(toolCall.function.name, args);
+          if (approved === false) {
+            decisions.set(toolCall.id, {
+              kind: 'reject',
+              message: 'User rejected this action.',
+            });
+            continue;
+          }
+          if (typeof approved === 'string') {
+            decisions.set(toolCall.id, {
+              kind: 'run',
+              args: { ...args, command: approved },
+            });
+            continue;
+          }
+          // approved === true
+          decisions.set(toolCall.id, { kind: 'run', args });
+        }
+
+        if (this.aborted) {
+          this.abortController = null;
+          callbacks.onAborted?.(iteration);
+          return;
+        }
+
+        // Pass 2: run the approved tool calls through the orchestrator.
+        // Rejected calls get a synthetic result without touching any handler.
+        const results: ToolExecResult[] = await runTools(
+          response.toolCalls,
+          (name) => this.toolRegistry.get(name),
+          async (toolCall, handler) => {
+            const decision = decisions.get(toolCall.id);
+            if (!decision || decision.kind === 'reject') {
+              return {
+                result: decision?.kind === 'reject' ? decision.message : 'No decision',
+                isError: false,
+              };
+            }
+            const started = Date.now();
+            const out = await this.safeExecute(handler as ToolHandler, decision.args, toolCtx, toolCall.function.name);
+
+            // ── Repeat-action loop detection ──
+            // Track this call in a sliding window of size 5; if the
+            // exact same (toolName, args) hash has appeared 3+ times,
+            // prepend a warning to the result so the LLM realizes it
+            // is looping and switches tactics (read_screen, web_search,
+            // or just stop). The warning is injected even on success
+            // because the problem is BEHAVIORAL, not result-based.
+            const argsHash = (() => {
+              try { return JSON.stringify(decision.args); } catch { return '?'; }
+            })();
+            const hash = `${toolCall.function.name}:${argsHash}`;
+            this.recentToolHashes.push(hash);
+            if (this.recentToolHashes.length > 5) this.recentToolHashes.shift();
+            const repeatCount = this.recentToolHashes.filter(h => h === hash).length;
+            if (repeatCount >= 3) {
+              const warning =
+                `[WARNING: You have called ${toolCall.function.name} with the EXACT same arguments ${repeatCount} times in a row. The terminal state is NOT changing the way you expected — you are stuck in a loop. STOP. Do NOT make a 4th identical call. Instead: (a) call read_screen to see what is actually on the screen right now (the text-based tools may be misleading you), (b) if you are trying to exit a TUI you don't recognize, call web_search "how to quit <program-name>" before sending any more keys, (c) reconsider whether the action you keep repeating even applies — the program may have already moved on.]\n\n`;
+              if (typeof out.result === 'string') {
+                out.result = warning + out.result;
+              } else {
+                out.result = { ...out.result, text: warning + out.result.text };
+              }
+            }
+
+            // PostToolUse hook — fire-and-forget. Flatten multimodal
+            // results to text for the audit log (image bytes never go
+            // into the hook payload).
+            const resultForHook = typeof out.result === 'string'
+              ? out.result
+              : `${out.result.text} [+${out.result.images.length} image(s)]`;
+            void hooks.emitPostToolUse({
+              sessionId,
+              toolName: toolCall.function.name,
+              callId: toolCall.id,
+              args: decision.args,
+              result: resultForHook,
+              isError: out.isError,
+              durationMs: Date.now() - started,
+            });
+            return out;
+          },
+          () => this.aborted,
+        );
+
+        // Pass 3: drain results in order — update message history + UI.
+        for (const r of results) {
+          // Normalize the tool result into the ChatMessage.content shape.
+          // Text-only: store as string (classic path).
+          // Multimodal: store as ContentPart[] so the provider can
+          // translate it to the native image format when serializing.
+          let normalizedContent: ChatMessage['content'];
+          let uiText: string;
+          let uiImages: Array<{ mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string; label?: string }> | undefined;
+          if (typeof r.result === 'string') {
+            normalizedContent = r.isError ? `Error: ${r.result}` : r.result;
+            uiText = r.result;
+          } else {
+            // Multimodal: build a ContentPart[] with text + image blocks.
+            const parts: import('./ai-provider').ContentPart[] = [];
+            if (r.result.text) parts.push({ type: 'text', text: r.result.text });
+            for (const img of r.result.images) {
+              parts.push({ type: 'image', mediaType: img.mediaType, data: img.data });
+            }
+            normalizedContent = parts.length > 0 ? parts : (r.isError ? 'Error' : 'OK');
+            uiText = r.result.text;
+            uiImages = r.result.images;
+          }
+
           this.messages.push({
             role: 'tool',
-            tool_call_id: toolCall.id,
-            name: toolCall.function.name,
-            content: result.isError ? `Error: ${result.result}` : result.result,
+            tool_call_id: r.callId,
+            name: r.toolName,
+            content: normalizedContent,
           });
+          // UI callback: text + optional images attached via onToolImages.
+          callbacks.onToolResult?.(r.toolName, uiText, r.isError);
+          if (uiImages && uiImages.length > 0) {
+            callbacks.onToolImages?.(r.toolName, uiImages);
+          }
 
-          callbacks.onToolResult?.(
-            toolCall.function.name,
-            result.result,
-            result.isError,
-          );
-
-          // Consecutive error tracking
-          if (result.isError) {
+          if (r.isError) {
             consecutiveErrors++;
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
               this.abortController = null;
@@ -616,7 +894,7 @@ export class ToolAgent {
         // ── Context overflow → compress and retry ──
         if (errorInfo.category === 'context_overflow') {
           if (contextCompressions < MAX_CONTEXT_COMPRESSIONS) {
-            const compressed = this.compressContext();
+            const compressed = compressContext(this.messages);
             if (compressed) {
               contextCompressions++;
               callbacks.onContextCompressed?.();
@@ -688,70 +966,48 @@ export class ToolAgent {
       'Maximum execution steps reached. Please provide new instructions to continue.',
     );
     } finally {
-      // No agent mode teardown needed — terminal was never modified
+      // No teardown needed for the persistent todo listener — it is
+      // owned by the UI and lives across runs.
+      //
+      // Drop the pending attachments list so a follow-up turn in the
+      // same conversation doesn't re-inject stale "user attached:"
+      // blocks into the system prompt. The on-disk files are kept
+      // (the UI manages their lifecycle) so the agent can still
+      // reference them by path if the user explicitly mentions them
+      // again in a later turn.
+      this.pendingAttachments = [];
     }
   }
 
-  // ─── Execute a single tool call ────────────────────────────
+  // ─── safeExecute: single tool handler wrapper ─────────────
 
-  private async executeSingleTool(
-    toolCall: ToolCall,
-    toolCtx: ReturnType<typeof buildToolContext>,
-    callbacks: AgentCallbacks,
-  ): Promise<{ result: string; isError: boolean }> {
-    const toolName = toolCall.function.name;
-    const handler = this.toolRegistry.get(toolName);
-
-    if (!handler) {
-      return { result: `Unknown tool "${toolName}"`, isError: true };
-    }
-
-    let args: Record<string, unknown> = {};
-    try {
-      args = JSON.parse(toolCall.function.arguments);
-    } catch {
-      args = {};
-    }
-
-    // ── Trust level check (read real-time value) ──
-    const currentTrustLevel: number = loadSettings().aiAgentTrustLevel ?? 0;
-    const needsConfirm = this.toolRegistry.shouldConfirm(toolName, args, currentTrustLevel);
-
-    // Notify UI that a tool call is about to happen
-    callbacks.onToolCall?.(toolName, args);
-
-    // ── Confirmation gate ──
-    if (needsConfirm) {
-      if (!callbacks.onConfirmRequired) {
-        // No confirmation handler → reject for safety
-        return { result: 'User confirmation required but no handler available.', isError: false };
-      }
-
-      const approved = await callbacks.onConfirmRequired(toolName, args);
-
-      if (approved === false) {
-        return { result: 'User rejected this action.', isError: false };
-      }
-
-      if (typeof approved === 'string') {
-        // User edited the command
-        const editedArgs = { ...args, command: approved };
-        return this.safeExecute(handler, editedArgs, toolCtx);
-      }
-
-      // approved === true → fall through to execute
-    }
-
-    return this.safeExecute(handler, args, toolCtx);
-  }
-
-  /** Execute a tool handler with error boundary + 60s timeout. */
+  /**
+   * Execute a tool handler with an error boundary + soft timeout.
+   *
+   * Most tools are capped at 60s to guard against a hung promise in a
+   * buggy provider. A small set of "long wait" tools manage their
+   * OWN deadline (wait_for_user_input can wait up to 30 minutes; the
+   * run_command/watch_terminal paths accept a caller-supplied timeout
+   * and enforce it internally). For those we skip the 60s cap —
+   * otherwise the outer timeout would race the tool's own deadline
+   * and report "Tool execution timed out (60s)" in the middle of a
+   * legitimate password entry.
+   */
   private async safeExecute(
-    handler: { execute: (args: Record<string, unknown>, ctx: ReturnType<typeof buildToolContext>) => Promise<string> },
+    handler: ToolHandler,
     args: Record<string, unknown>,
     ctx: ReturnType<typeof buildToolContext>,
-  ): Promise<{ result: string; isError: boolean }> {
+    toolName?: string,
+  ): Promise<{ result: string | import('./ai-tools-core').ToolOutputWithImages; isError: boolean }> {
     try {
+      // Tools that manage their own (longer) timeouts internally.
+      const selfManagedTimeout = toolName === 'wait_for_user_input'
+        || toolName === 'watch_terminal'
+        || toolName === 'run_command';
+      if (selfManagedTimeout) {
+        const result = await handler.execute(args, ctx);
+        return { result, isError: false };
+      }
       const toolTimeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Tool execution timed out (60s)')), 60_000),
       );
@@ -813,68 +1069,18 @@ export class ToolAgent {
     this.pendingUserMessages = [];
 
     // If the last message is already a user message, merge to avoid
-    // consecutive user messages (which break Anthropic).
+    // consecutive user messages (which break Anthropic). Handles both
+    // string and multimodal ContentPart[] shapes.
     const last = this.messages[this.messages.length - 1];
     if (last && last.role === 'user') {
-      last.content += `\n\n${combined}`;
+      if (typeof last.content === 'string') {
+        last.content += `\n\n${combined}`;
+      } else {
+        last.content.push({ type: 'text', text: `\n\n${combined}` });
+      }
     } else {
       this.messages.push({ role: 'user', content: combined });
     }
-  }
-
-  // ─── Context Compression ─────────────────────────────────
-  //
-  // When the model reports context overflow, aggressively compress
-  // old messages to fit within limits:
-  //   Phase 1: Truncate long tool outputs and assistant messages
-  //   Phase 2: Remove oldest message turns (keeping tool pairs intact)
-
-  private compressContext(): boolean {
-    if (this.messages.length <= 4) return false;
-
-    let compressed = false;
-    const TOOL_MAX = 200;
-    const ASSISTANT_MAX = 500;
-
-    // Phase 1: Truncate long content
-    for (const msg of this.messages) {
-      if (msg.role === 'tool' && msg.content.length > TOOL_MAX) {
-        msg.content = msg.content.slice(0, TOOL_MAX) + '\n...(output truncated)';
-        compressed = true;
-      }
-      if (msg.role === 'assistant' && msg.content.length > ASSISTANT_MAX) {
-        msg.content = msg.content.slice(0, ASSISTANT_MAX) + '...(truncated)';
-        compressed = true;
-      }
-    }
-
-    // Phase 2: Remove oldest messages until count halved
-    // Keeps tool_call/tool_result pairs together
-    const targetCount = Math.max(4, Math.ceil(this.messages.length * 0.5));
-
-    while (this.messages.length > targetCount) {
-      const first = this.messages.shift()!;
-      compressed = true;
-
-      // If we removed an assistant with tool_calls, also remove its tool results
-      if (first.role === 'assistant' && first.tool_calls) {
-        const tcIds = new Set(first.tool_calls.map((tc) => tc.id));
-        while (
-          this.messages.length > 0 &&
-          this.messages[0].role === 'tool' &&
-          tcIds.has(this.messages[0].tool_call_id!)
-        ) {
-          this.messages.shift();
-        }
-      }
-
-      // Clean up any orphaned tool results at the start
-      while (this.messages.length > 0 && this.messages[0].role === 'tool') {
-        this.messages.shift();
-      }
-    }
-
-    return compressed;
   }
 
   // ─── Sleep with Abort Check ────────────────────────────────
@@ -888,37 +1094,6 @@ export class ToolAgent {
       remaining -= step;
     }
     return !this.aborted;
-  }
-
-  // ─── History Management ───────────────────────────────────
-
-  /**
-   * Trim message history by total character count.
-   * Removes oldest messages first, preserving tool_call / tool pairs.
-   */
-  private trimHistory(): void {
-    const maxChars = TOKEN_BUDGET.messageHistoryMaxChars;
-    let totalChars = this.messages.reduce((sum, m) => sum + m.content.length, 0);
-
-    while (totalChars > maxChars && this.messages.length > 2) {
-      const removed = this.messages.shift()!;
-      totalChars -= removed.content.length;
-
-      // If we removed an assistant message with tool_calls,
-      // also remove the corresponding tool-result messages
-      if (removed.role === 'assistant' && removed.tool_calls) {
-        const tcIds = new Set(removed.tool_calls.map((tc) => tc.id));
-        for (let i = this.messages.length - 1; i >= 0; i--) {
-          if (
-            this.messages[i].role === 'tool' &&
-            tcIds.has(this.messages[i].tool_call_id!)
-          ) {
-            totalChars -= this.messages[i].content.length;
-            this.messages.splice(i, 1);
-          }
-        }
-      }
-    }
   }
 }
 

@@ -20,15 +20,41 @@ export interface ToolSpec {
   parameters: Record<string, unknown>; // JSON Schema
 }
 
+/**
+ * A single content part inside a multimodal message.
+ *
+ * Legacy messages still use `content: string`. New multimodal messages
+ * use `content: ContentPart[]`. Each provider's chat() implementation
+ * is responsible for converting this into its own wire format.
+ */
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | {
+      type: 'image';
+      /** MIME type of the image data. */
+      mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+      /** Base64-encoded image bytes (no data: prefix). */
+      data: string;
+    };
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  /** Plain text (legacy) or an array of content parts (multimodal). */
+  content: string | ContentPart[];
   /** Present on assistant messages that invoke tools. */
   tool_calls?: ToolCall[];
   /** Present on tool-result messages — references the originating ToolCall.id. */
   tool_call_id?: string;
   /** Tool name on tool-result messages (used by Gemini's functionResponse). */
   name?: string;
+}
+
+/** Convenience: turn a ChatMessage's content into a plain-text view. */
+export function contentToText(content: string | ContentPart[]): string {
+  if (typeof content === 'string') return content;
+  return content
+    .map(p => (p.type === 'text' ? p.text : `[image ${p.mediaType}]`))
+    .join('\n');
 }
 
 export interface StreamCallbacks {
@@ -310,13 +336,37 @@ class OpenAIProvider implements AIProvider {
   chat(messages: ChatMessage[], callbacks: StreamCallbacks, signal?: AbortSignal, tools?: ToolSpec[]): void {
     const url = buildOpenAIUrl(this.config.baseUrl, '/chat/completions');
 
+    // Convert a ContentPart[] (multimodal) payload into OpenAI's
+    // content-parts shape. OpenAI uses `image_url` with data URIs.
+    const toOpenAIParts = (parts: ContentPart[]): unknown[] => parts.map((p) => {
+      if (p.type === 'text') return { type: 'text', text: p.text };
+      return {
+        type: 'image_url',
+        image_url: { url: `data:${p.mediaType};base64,${p.data}` },
+      };
+    });
+
     // Convert universal ChatMessage format → OpenAI API format
     const apiMessages = messages.map((m) => {
+      // Tool-result messages: OpenAI accepts either a string or a
+      // content-parts array (vision-capable models only). We stringify
+      // multimodal tool results since older models reject arrays here.
       if (m.role === 'tool') {
-        return { role: 'tool' as const, tool_call_id: m.tool_call_id, content: m.content };
+        const flat = typeof m.content === 'string'
+          ? m.content
+          : contentToText(m.content);
+        return { role: 'tool' as const, tool_call_id: m.tool_call_id, content: flat };
       }
       if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
-        return { role: 'assistant' as const, content: m.content || null, tool_calls: m.tool_calls };
+        const c = typeof m.content === 'string'
+          ? (m.content || null)
+          : (contentToText(m.content) || null);
+        return { role: 'assistant' as const, content: c, tool_calls: m.tool_calls };
+      }
+      // Regular user / assistant / system messages: pass arrays through
+      // as OpenAI content-parts so images reach the model.
+      if (typeof m.content !== 'string') {
+        return { role: m.role, content: toOpenAIParts(m.content) };
       }
       return { role: m.role, content: m.content };
     });
@@ -464,6 +514,18 @@ class AnthropicProvider implements AIProvider {
     const systemMessages = messages.filter((m) => m.role === 'system');
     const conversationMessages = messages.filter((m) => m.role !== 'system');
 
+    // Turn a ContentPart[] into Anthropic content blocks.
+    const toAnthropicBlocks = (parts: ContentPart[]): unknown[] => parts.map((p) => {
+      if (p.type === 'text') return { type: 'text', text: p.text };
+      return {
+        type: 'image',
+        source: { type: 'base64', media_type: p.mediaType, data: p.data },
+      };
+    });
+    // Convert a string or ContentPart[] into an Anthropic text or block array.
+    const contentToAnthropic = (c: string | ContentPart[]): unknown =>
+      typeof c === 'string' ? c : toAnthropicBlocks(c);
+
     // Convert universal ChatMessage format → Anthropic API format
     // Anthropic uses content-block arrays and requires alternating user/assistant turns.
     const anthropicMessages: Record<string, unknown>[] = [];
@@ -474,7 +536,11 @@ class AnthropicProvider implements AIProvider {
       if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
         // Assistant message with tool_use content blocks
         const content: unknown[] = [];
-        if (m.content) content.push({ type: 'text', text: m.content });
+        if (typeof m.content === 'string') {
+          if (m.content) content.push({ type: 'text', text: m.content });
+        } else {
+          content.push(...toAnthropicBlocks(m.content));
+        }
         for (const tc of m.tool_calls) {
           let input: unknown = {};
           try { input = JSON.parse(tc.function.arguments); } catch { /* empty */ }
@@ -482,20 +548,25 @@ class AnthropicProvider implements AIProvider {
         }
         anthropicMessages.push({ role: 'assistant', content });
       } else if (m.role === 'tool') {
-        // Merge consecutive tool-result messages into a single user message
+        // Merge consecutive tool-result messages into a single user message.
+        // tool_result.content can itself be a string OR an array of blocks
+        // (Anthropic supports images inside tool_result).
         const toolResults: unknown[] = [];
         let j = i;
         while (j < conversationMessages.length && conversationMessages[j].role === 'tool') {
           const tm = conversationMessages[j];
-          toolResults.push({ type: 'tool_result', tool_use_id: tm.tool_call_id, content: tm.content });
+          const tmContent = typeof tm.content === 'string'
+            ? tm.content
+            : toAnthropicBlocks(tm.content);
+          toolResults.push({ type: 'tool_result', tool_use_id: tm.tool_call_id, content: tmContent });
           j++;
         }
         i = j - 1; // advance loop index past grouped messages
         anthropicMessages.push({ role: 'user', content: toolResults });
       } else if (m.role === 'assistant') {
-        anthropicMessages.push({ role: 'assistant', content: m.content });
+        anthropicMessages.push({ role: 'assistant', content: contentToAnthropic(m.content) });
       } else {
-        anthropicMessages.push({ role: 'user', content: m.content });
+        anthropicMessages.push({ role: 'user', content: contentToAnthropic(m.content) });
       }
     }
 
@@ -523,15 +594,40 @@ class AnthropicProvider implements AIProvider {
     };
 
     if (systemMessages.length > 0) {
-      body.system = systemMessages.map((m) => m.content).join('\n\n');
+      // Prompt Cache beta: mark the system prompt as cacheable.
+      // The system field accepts an array of content blocks; the last
+      // block with cache_control becomes a cache breakpoint.  We pack
+      // all system messages into a single cached text block.
+      //
+      // Cost impact: first call still pays full input tokens, but
+      // subsequent calls within ~5 minutes with an identical prefix
+      // only pay 10% for the cached portion.
+      // System prompt is always text in MeTerm; flatten any accidental
+      // multimodal content to plain text for the API.
+      const combinedSystem = systemMessages
+        .map((m) => (typeof m.content === 'string' ? m.content : contentToText(m.content)))
+        .join('\n\n');
+      body.system = [
+        {
+          type: 'text',
+          text: combinedSystem,
+          cache_control: { type: 'ephemeral' },
+        },
+      ];
     }
 
     if (tools && tools.length > 0) {
-      body.tools = tools.map((t) => ({
+      const toolsArr = tools.map((t) => ({
         name: t.name,
         description: t.description,
         input_schema: t.parameters,
       }));
+      // Cache the tool definitions too — they rarely change within a session.
+      if (toolsArr.length > 0) {
+        const last = toolsArr[toolsArr.length - 1] as Record<string, unknown>;
+        last.cache_control = { type: 'ephemeral' };
+      }
+      body.tools = toolsArr;
     }
 
     const headers: Record<string, string> = {
@@ -629,6 +725,14 @@ class GeminiProvider implements AIProvider {
     const systemMessages = messages.filter((m) => m.role === 'system');
     const conversationMessages = messages.filter((m) => m.role !== 'system');
 
+    // Turn a ContentPart[] into Gemini parts.
+    const toGeminiParts = (parts: ContentPart[]): unknown[] => parts.map((p) => {
+      if (p.type === 'text') return { text: p.text };
+      return { inlineData: { mimeType: p.mediaType, data: p.data } };
+    });
+    const contentToGeminiParts = (c: string | ContentPart[]): unknown[] =>
+      typeof c === 'string' ? [{ text: c }] : toGeminiParts(c);
+
     // Convert universal ChatMessage format → Gemini API format
     const contents: Record<string, unknown>[] = [];
     for (let i = 0; i < conversationMessages.length; i++) {
@@ -637,7 +741,11 @@ class GeminiProvider implements AIProvider {
       if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
         // Model message with functionCall parts
         const parts: unknown[] = [];
-        if (m.content) parts.push({ text: m.content });
+        if (typeof m.content === 'string') {
+          if (m.content) parts.push({ text: m.content });
+        } else {
+          parts.push(...toGeminiParts(m.content));
+        }
         for (const tc of m.tool_calls) {
           let args: unknown = {};
           try { args = JSON.parse(tc.function.arguments); } catch { /* empty */ }
@@ -645,25 +753,41 @@ class GeminiProvider implements AIProvider {
         }
         contents.push({ role: 'model', parts });
       } else if (m.role === 'tool') {
-        // Group consecutive tool results into one user message with functionResponse parts
+        // Group consecutive tool results into one user message with functionResponse parts.
+        // Gemini's functionResponse doesn't accept images; if a tool result
+        // is multimodal, we also append a follow-up user message with the image.
         const parts: unknown[] = [];
+        const trailingImages: unknown[] = [];
         let j = i;
         while (j < conversationMessages.length && conversationMessages[j].role === 'tool') {
           const tm = conversationMessages[j];
-          parts.push({
-            functionResponse: {
-              name: tm.name,
-              response: { content: tm.content },
-            },
-          });
+          if (typeof tm.content === 'string') {
+            parts.push({ functionResponse: { name: tm.name, response: { content: tm.content } } });
+          } else {
+            // Text parts stay inside functionResponse; image parts go
+            // into a trailing user turn so the model actually sees them.
+            const texts = tm.content.filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text').map(p => p.text).join('\n');
+            parts.push({ functionResponse: { name: tm.name, response: { content: texts || '[see attached screenshot]' } } });
+            for (const p of tm.content) {
+              if (p.type === 'image') {
+                trailingImages.push({ inlineData: { mimeType: p.mediaType, data: p.data } });
+              }
+            }
+          }
           j++;
         }
         i = j - 1;
         contents.push({ role: 'user', parts });
+        if (trailingImages.length > 0) {
+          contents.push({
+            role: 'user',
+            parts: [{ text: '[attached screenshots from the previous tool call]' }, ...trailingImages],
+          });
+        }
       } else {
         contents.push({
           role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }],
+          parts: contentToGeminiParts(m.content),
         });
       }
     }
@@ -678,7 +802,11 @@ class GeminiProvider implements AIProvider {
 
     if (systemMessages.length > 0) {
       body.systemInstruction = {
-        parts: [{ text: systemMessages.map((m) => m.content).join('\n\n') }],
+        parts: [{
+          text: systemMessages
+            .map((m) => (typeof m.content === 'string' ? m.content : contentToText(m.content)))
+            .join('\n\n'),
+        }],
       };
     }
 

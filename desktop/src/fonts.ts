@@ -270,20 +270,40 @@ export async function loadFont(key: string, nerd: boolean, weight?: number): Pro
   console.log(`[font] All registered faces:`, [...document.fonts].map(f => `${f.family}@${f.weight}`));
 }
 
-export function getFontFamily(key: string, nerd: boolean, weight?: number): string {
+export function getFontFamily(key: string, nerd: boolean, weight?: number, cjkKey?: string): string {
   const def = FONT_REGISTRY.find((f) => f.key === key);
   if (!def) return 'Menlo, Monaco, "Courier New", monospace';
 
   const base = (nerd && def.hasNerdFont) ? def.nerdCssFamily : def.cssFamily;
 
+  let family: string;
   // For bundled fonts: switch to the "Light" family when weight <= 300
   // For system fonts: keep original family (system provides light variant natively)
   if (weight !== undefined && weight <= 300 && def.hasLightWeight && !def.isSystem) {
     const baseName = base.split(',')[0].replace(/"/g, '').trim();
-    return `"${baseName} Light", ${base}`;
+    family = `"${baseName} Light", ${base}`;
+  } else {
+    family = base;
   }
 
-  return base;
+  // Append CJK font before the generic fallback (monospace) so Chinese/Japanese/Korean
+  // characters use the user-chosen CJK font instead of the system default.
+  if (cjkKey) {
+    const cjkDef = CJK_FONT_REGISTRY.find((f) => f.key === cjkKey);
+    if (cjkDef) {
+      // Insert CJK family before the trailing "monospace" fallback
+      const parts = family.split(',').map((s) => s.trim());
+      const lastPart = parts[parts.length - 1];
+      if (lastPart === 'monospace') {
+        parts.splice(parts.length - 1, 0, cjkDef.cssFamily);
+      } else {
+        parts.push(cjkDef.cssFamily);
+      }
+      family = parts.join(', ');
+    }
+  }
+
+  return family;
 }
 
 /**
@@ -301,4 +321,108 @@ export function getEffectiveFontWeight(key: string, weight: number): number {
 
 export function getFontDef(key: string): FontDefinition | undefined {
   return FONT_REGISTRY.find((f) => f.key === key);
+}
+
+// ---------------------------------------------------------------------------
+// CJK (Chinese/Japanese/Korean) font support
+// ---------------------------------------------------------------------------
+
+export interface CJKFontDefinition {
+  key: string;
+  displayName: string;
+  cssFamily: string;
+  /** Platform hint: 'windows' | 'mac' | 'linux' | 'all' */
+  platform: string;
+}
+
+/**
+ * Common CJK fonts across platforms.
+ * The list is intentionally broad — at runtime we detect which ones are
+ * actually installed and only show those in the settings UI.
+ */
+export const CJK_FONT_REGISTRY: CJKFontDefinition[] = [
+  // Windows
+  { key: 'microsoft-yahei', displayName: '微软雅黑 (Microsoft YaHei)', cssFamily: '"Microsoft YaHei"', platform: 'windows' },
+  { key: 'simhei', displayName: '黑体 (SimHei)', cssFamily: 'SimHei', platform: 'windows' },
+  { key: 'simsun', displayName: '宋体 (SimSun)', cssFamily: 'SimSun', platform: 'windows' },
+  { key: 'nsimsun', displayName: '新宋体 (NSimSun)', cssFamily: 'NSimSun', platform: 'windows' },
+  { key: 'kaiti', displayName: '楷体 (KaiTi)', cssFamily: 'KaiTi', platform: 'windows' },
+  { key: 'fangsong', displayName: '仿宋 (FangSong)', cssFamily: 'FangSong', platform: 'windows' },
+  { key: 'dengxian', displayName: '等线 (DengXian)', cssFamily: 'DengXian', platform: 'windows' },
+  // macOS
+  { key: 'pingfang-sc', displayName: '苹方-简 (PingFang SC)', cssFamily: '"PingFang SC"', platform: 'mac' },
+  { key: 'pingfang-tc', displayName: '苹方-繁 (PingFang TC)', cssFamily: '"PingFang TC"', platform: 'mac' },
+  { key: 'hiragino-sans-gb', displayName: '冬青黑体 (Hiragino Sans GB)', cssFamily: '"Hiragino Sans GB"', platform: 'mac' },
+  { key: 'stheiti', displayName: '华文黑体 (STHeiti)', cssFamily: 'STHeiti', platform: 'mac' },
+  { key: 'stsong', displayName: '华文宋体 (STSong)', cssFamily: 'STSong', platform: 'mac' },
+  { key: 'stkaiti', displayName: '华文楷体 (STKaiti)', cssFamily: 'STKaiti', platform: 'mac' },
+  // Linux
+  { key: 'noto-sans-cjk-sc', displayName: 'Noto Sans CJK SC', cssFamily: '"Noto Sans CJK SC"', platform: 'linux' },
+  { key: 'noto-serif-cjk-sc', displayName: 'Noto Serif CJK SC', cssFamily: '"Noto Serif CJK SC"', platform: 'linux' },
+  { key: 'wenquanyi-micro-hei', displayName: '文泉驿微米黑', cssFamily: '"WenQuanYi Micro Hei"', platform: 'linux' },
+  { key: 'wenquanyi-zen-hei', displayName: '文泉驿正黑', cssFamily: '"WenQuanYi Zen Hei"', platform: 'linux' },
+  // Cross-platform (bundled with some apps or manually installed)
+  { key: 'sarasa-mono-sc', displayName: '更纱黑体 (Sarasa Mono SC)', cssFamily: '"Sarasa Mono SC"', platform: 'all' },
+  { key: 'sarasa-gothic-sc', displayName: '更纱黑体 Gothic (Sarasa Gothic SC)', cssFamily: '"Sarasa Gothic SC"', platform: 'all' },
+  { key: 'source-han-sans-sc', displayName: '思源黑体 (Source Han Sans SC)', cssFamily: '"Source Han Sans SC"', platform: 'all' },
+  { key: 'source-han-serif-sc', displayName: '思源宋体 (Source Han Serif SC)', cssFamily: '"Source Han Serif SC"', platform: 'all' },
+];
+
+/**
+ * Detect whether a font is available on the system using the classic
+ * three-baseline canvas measurement technique.
+ *
+ * We measure a CJK test string against three generic families (monospace,
+ * serif, sans-serif). If the target font matches ALL three baselines it's
+ * almost certainly not installed (the browser fell through to the same
+ * fallback). If it differs from ANY baseline, the font is present.
+ *
+ * This avoids the single-baseline pitfall where macOS monospace already
+ * includes CJK glyphs, making "PingFang SC, monospace" look identical to
+ * plain "monospace".
+ */
+function isFontAvailable(fontFamily: string): boolean {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return false;
+
+  const testStr = '中文字体ABCgq';
+  const size = '72px';
+  const baselines = ['monospace', 'serif', 'sans-serif'] as const;
+
+  for (const base of baselines) {
+    ctx.font = `${size} ${base}`;
+    const baseWidth = ctx.measureText(testStr).width;
+
+    ctx.font = `${size} ${fontFamily}, ${base}`;
+    const testWidth = ctx.measureText(testStr).width;
+
+    if (Math.abs(testWidth - baseWidth) > 0.5) {
+      return true;
+    }
+  }
+  return false;
+}
+
+let _cachedAvailableCJKFonts: CJKFontDefinition[] | null = null;
+
+/**
+ * Returns CJK fonts that are actually installed on the current system.
+ * Results are cached after the first call.
+ */
+export function getAvailableCJKFonts(): CJKFontDefinition[] {
+  if (_cachedAvailableCJKFonts !== null) return _cachedAvailableCJKFonts;
+
+  _cachedAvailableCJKFonts = CJK_FONT_REGISTRY.filter((f) => isFontAvailable(f.cssFamily));
+  console.log(
+    `[font] CJK fonts detected: ${_cachedAvailableCJKFonts.map((f) => f.displayName).join(', ') || '(none)'}`,
+  );
+  return _cachedAvailableCJKFonts;
+}
+
+/**
+ * Look up a CJK font definition by key.
+ */
+export function getCJKFontDef(key: string): CJKFontDefinition | undefined {
+  return CJK_FONT_REGISTRY.find((f) => f.key === key);
 }

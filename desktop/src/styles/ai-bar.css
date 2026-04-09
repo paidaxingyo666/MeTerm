@@ -152,6 +152,15 @@
   transform: scale(1.25);
 }
 
+/* Normalize all icon SVGs inside AI bar buttons to 16×16 so the
+ * attach button (and any future icons) line up with the existing
+ * terminal / LLM / history buttons regardless of their authored size. */
+.ai-bar-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
 .ai-bar-btn:active {
   transform: scale(1.1);
 }
@@ -185,6 +194,13 @@
 }
 
 .ai-bar-btn.active {
+  color: var(--accent);
+}
+
+.ai-bar-btn-attach {
+  color: var(--text-secondary);
+}
+.ai-bar-btn-attach:hover {
   color: var(--accent);
 }
 
@@ -231,20 +247,23 @@
   max-height: 30%; /* JS will override dynamically */
   overflow: hidden;
   z-index: 9999;
-  /* Liquid Glass */
-  background: rgba(255, 255, 255, 0.04);
+  /* Semi-opaque glass — nested inside .ai-bar which has its own backdrop-filter,
+     so child backdrop-filter can't blur through to page content in WebKit.
+     Use opaque-enough background to create frosted appearance. */
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
-  box-shadow: none;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   padding: 4px;
   display: flex;
   flex-direction: column;
 }
 [data-theme="light"] .ai-bar-history-panel {
-  background: rgba(255, 255, 255, 0.25);
-  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
 /* Inner scroll viewport for popup panels (used with JS overlay scrollbar) */
@@ -384,20 +403,21 @@
   max-height: 30%; /* JS will override dynamically */
   overflow: hidden;
   z-index: 9999;
-  /* Liquid Glass */
-  background: rgba(255, 255, 255, 0.04);
+  /* Semi-opaque glass — see .ai-bar-history-panel comment */
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
-  box-shadow: none;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   padding: 4px;
   display: flex;
   flex-direction: column;
 }
 [data-theme="light"] .ai-bar-chat-history-panel {
-  background: rgba(255, 255, 255, 0.25);
-  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
 .ai-chat-hist-header {
@@ -614,7 +634,17 @@
 .ai-bar--side-active .ai-bar-btn-llm,
 .ai-bar--side-active .ai-bar-btn-chat-history,
 .ai-bar--side-active .ai-bar-chat-history-panel,
+.ai-bar--side-active .ai-bar-btn-attach,
 .ai-bar--side-active .ai-bar-trust-switcher {
+  display: none !important;
+}
+/* When side mode is active the agent's attach surface lives in the
+ * side panel input area; the AI bar should never show a pending-image
+ * strip because that strip would be in the wrong place visually.
+ * The renderPendingStrip() routing already prefers the side panel,
+ * but this rule belt-and-braces against any stale strip that may
+ * have been left in the AI Bar across mode switches. */
+.ai-bar--side-active .ai-pending-images {
   display: none !important;
 }
 
@@ -633,11 +663,13 @@
   gap: 8px;
   padding: 4px 10px;
   font-size: 11px;
-  background: rgba(255, 255, 255, 0.04);
+  /* Semi-opaque glass — see .ai-bar-history-panel comment */
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   animation: chat-slide-up 0.12s ease-out;
 }
 
@@ -676,7 +708,8 @@
 }
 
 [data-theme="light"] .ai-prompt-hint {
-  background: rgba(255, 255, 255, 0.25);
-  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 

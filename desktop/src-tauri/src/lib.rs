@@ -18,20 +18,20 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, RunEvent,
 };
-use serde::Serialize;
 
 #[derive(Clone, Serialize)]
 struct WindowEvent {
-	target_window: String,
+    target_window: String,
 }
 use std::sync::Arc;
 
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 fn get_log_path() -> Option<std::path::PathBuf> {
@@ -45,7 +45,11 @@ fn get_log_path() -> Option<std::path::PathBuf> {
 
 pub fn startup_log(msg: &str) {
     if let Some(path) = get_log_path() {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             let elapsed = APP_START.elapsed().as_millis();
             let _ = writeln!(f, "[+{:>6}ms] {}", elapsed, msg);
         }
@@ -173,9 +177,7 @@ impl AppLifecycleState {
     fn is_within_grace_period(&self, label: &str, grace: Duration) -> bool {
         self.window_created_at
             .lock()
-            .map(|guard| {
-                guard.get(label).is_some_and(|t| t.elapsed() < grace)
-            })
+            .map(|guard| guard.get(label).is_some_and(|t| t.elapsed() < grace))
             .unwrap_or(false)
     }
 
@@ -234,355 +236,478 @@ impl AppLifecycleState {
 }
 
 fn normalize_menu_id(raw: &str) -> Option<&'static str> {
-	match raw {
-		"new_window" => Some("new_window"),
-		"show_home" => Some("show_home"),
-		"new_terminal" => Some("new_terminal"),
-		"new_private_terminal" => Some("new_private_terminal"),
-		"settings" => Some("settings"),
-		"close_all_sessions" => Some("close_all_sessions"),
-		"quit_all" => Some("quit_all"),
-		"quit" => Some("quit"),
-		"undo" => Some("undo"),
-		"redo" => Some("redo"),
-		"cut" => Some("cut"),
-		"copy" => Some("copy"),
-		"paste" => Some("paste"),
-		"select_all" => Some("select_all"),
-		"reload" => Some("reload"),
-		"show_about" => Some("show_about"),
-		"show_shortcuts" => Some("show_shortcuts"),
-		"import_connections" => Some("import_connections"),
-		"export_connections" => Some("export_connections"),
-		"lan_discover" => Some("lan_discover"),
-		"check_updates" => Some("check_updates"),
-		"pip_toggle" => Some("pip_toggle"),
-		_ => None,
-	}
+    match raw {
+        "new_window" => Some("new_window"),
+        "show_home" => Some("show_home"),
+        "new_terminal" => Some("new_terminal"),
+        "new_private_terminal" => Some("new_private_terminal"),
+        "settings" => Some("settings"),
+        "close_all_sessions" => Some("close_all_sessions"),
+        "quit_all" => Some("quit_all"),
+        "quit" => Some("quit"),
+        "undo" => Some("undo"),
+        "redo" => Some("redo"),
+        "cut" => Some("cut"),
+        "copy" => Some("copy"),
+        "paste" => Some("paste"),
+        "select_all" => Some("select_all"),
+        "reload" => Some("reload"),
+        "show_about" => Some("show_about"),
+        "show_shortcuts" => Some("show_shortcuts"),
+        "import_connections" => Some("import_connections"),
+        "export_connections" => Some("export_connections"),
+        "lan_discover" => Some("lan_discover"),
+        "check_updates" => Some("check_updates"),
+        "pip_toggle" => Some("pip_toggle"),
+        _ => None,
+    }
 }
 
 fn get_target_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
-	// Utility windows (settings, updater, tray-dialog) are never menu targets —
-	// menu actions must be dispatched to a main window so they are actually handled.
-	let is_main = |label: &str| {
-		label != "settings" && label != "updater" && label != "about" && label != "tray-dialog"
-	};
+    // Utility windows (settings, updater, tray-dialog) are never menu targets —
+    // menu actions must be dispatched to a main window so they are actually handled.
+    let is_main = |label: &str| {
+        label != "settings" && label != "updater" && label != "about" && label != "tray-dialog"
+    };
 
-	// Try to get the currently focused main window first
-	for window in app.webview_windows().values() {
-		if !is_main(window.label()) { continue; }
-		if let Ok(is_focused) = window.is_focused() {
-			if is_focused {
-				debug_log!("[DEBUG] Using focused window: {}", window.label());
-				return Some(window.clone());
-			}
-		}
-	}
+    // Try to get the currently focused main window first
+    for window in app.webview_windows().values() {
+        if !is_main(window.label()) {
+            continue;
+        }
+        if let Ok(is_focused) = window.is_focused() {
+            if is_focused {
+                debug_log!("[DEBUG] Using focused window: {}", window.label());
+                return Some(window.clone());
+            }
+        }
+    }
 
-	// Fall back to any visible main window
-	for window in app.webview_windows().values() {
-		if !is_main(window.label()) { continue; }
-		if let Ok(is_visible) = window.is_visible() {
-			if is_visible {
-				debug_log!("[DEBUG] Using visible window: {}", window.label());
-				return Some(window.clone());
-			}
-		}
-	}
+    // Fall back to any visible main window
+    for window in app.webview_windows().values() {
+        if !is_main(window.label()) {
+            continue;
+        }
+        if let Ok(is_visible) = window.is_visible() {
+            if is_visible {
+                debug_log!("[DEBUG] Using visible window: {}", window.label());
+                return Some(window.clone());
+            }
+        }
+    }
 
-	// Finally, fall back to main window
-	debug_log!("[DEBUG] Using main window as fallback");
-	app.get_webview_window("main")
+    // Finally, fall back to main window
+    debug_log!("[DEBUG] Using main window as fallback");
+    app.get_webview_window("main")
 }
 
 fn get_quit_confirmation_window(app: &tauri::AppHandle) -> String {
-	// For quit confirmation, prefer main window if visible, otherwise any visible window
-	if let Some(window) = app.get_webview_window("main") {
-		if window.is_visible().unwrap_or(false) {
-			return "main".to_string();
-		}
-	}
-	// Find first visible window
-	app.webview_windows().values()
-		.find(|w| w.is_visible().unwrap_or(false))
-		.map(|w| w.label().to_string())
-		.unwrap_or_else(|| "main".to_string())
+    // For quit confirmation, prefer main window if visible, otherwise any visible window
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) {
+            return "main".to_string();
+        }
+    }
+    // Find first visible window
+    app.webview_windows()
+        .values()
+        .find(|w| w.is_visible().unwrap_or(false))
+        .map(|w| w.label().to_string())
+        .unwrap_or_else(|| "main".to_string())
 }
 
 /// For edit operations (undo/redo/cut/copy/paste/select_all), use the
 /// actually focused window — including utility windows like "settings".
 fn get_focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
-	for window in app.webview_windows().values() {
-		if let Ok(true) = window.is_focused() {
-			return Some(window.clone());
-		}
-	}
-	None
+    for window in app.webview_windows().values() {
+        if let Ok(true) = window.is_focused() {
+            return Some(window.clone());
+        }
+    }
+    None
 }
 
 fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
-	// Edit operations should target the actually focused window so they
-	// work correctly in utility windows (settings, etc.).
-	let is_edit_action = matches!(action, "undo" | "redo" | "cut" | "copy" | "paste" | "select_all");
-	let target = if is_edit_action {
-		get_focused_window(app).or_else(|| get_target_window(app))
-	} else {
-		get_target_window(app)
-	};
-	let Some(window) = target else {
-		debug_log!("[DEBUG] Failed to get any window");
-		return;
-	};
+    // Edit operations should target the actually focused window so they
+    // work correctly in utility windows (settings, etc.).
+    let is_edit_action = matches!(
+        action,
+        "undo" | "redo" | "cut" | "copy" | "paste" | "select_all"
+    );
+    let target = if is_edit_action {
+        get_focused_window(app).or_else(|| get_target_window(app))
+    } else {
+        get_target_window(app)
+    };
+    let Some(window) = target else {
+        debug_log!("[DEBUG] Failed to get any window");
+        return;
+    };
 
-	let window_label = window.label().to_string();
-	debug_log!("[DEBUG] Dispatching {} to window {}", action, window_label);
+    let window_label = window.label().to_string();
+    debug_log!("[DEBUG] Dispatching {} to window {}", action, window_label);
 
-		match action {
-			"new_window" => {
-				#[cfg(target_os = "windows")]
-				{
-					let _ = window.show();
-					let _ = window.set_focus();
-					let payload = WindowEvent { target_window: window_label.clone() };
-					match app.emit("menu-new-window", payload) {
-						Ok(_) => debug_log!("[DEBUG] Successfully emitted menu-new-window to {}", window_label),
-						Err(_e) => debug_log!("[DEBUG] Failed to emit menu-new-window: {}", _e),
-					}
-				}
+    match action {
+        "new_window" => {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = window.show();
+                let _ = window.set_focus();
+                let payload = WindowEvent {
+                    target_window: window_label.clone(),
+                };
+                match app.emit("menu-new-window", payload) {
+                    Ok(_) => debug_log!(
+                        "[DEBUG] Successfully emitted menu-new-window to {}",
+                        window_label
+                    ),
+                    Err(_e) => debug_log!("[DEBUG] Failed to emit menu-new-window: {}", _e),
+                }
+            }
 
-				#[cfg(not(target_os = "windows"))]
-				{
-					debug_log!("[DEBUG] Creating new window");
-					use tauri::WebviewWindowBuilder;
-					use tauri::WebviewUrl;
-					#[cfg(target_os = "macos")]
-					use tauri::TitleBarStyle;
+            #[cfg(not(target_os = "windows"))]
+            {
+                debug_log!("[DEBUG] Creating new window");
+                #[cfg(target_os = "macos")]
+                use tauri::TitleBarStyle;
+                use tauri::WebviewUrl;
+                use tauri::WebviewWindowBuilder;
 
-					let new_window_label = format!(
-						"window-{}",
-						std::time::SystemTime::now()
-							.duration_since(std::time::UNIX_EPOCH)
-							.unwrap()
-							.as_millis()
-					);
+                let new_window_label = format!(
+                    "window-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                );
 
-					#[cfg(target_os = "linux")]
-					let bg_alpha = 0_u8;
-					#[cfg(not(target_os = "linux"))]
-					let bg_alpha = 255_u8;
+                #[cfg(target_os = "linux")]
+                let bg_alpha = 0_u8;
+                #[cfg(not(target_os = "linux"))]
+                let bg_alpha = 255_u8;
 
-					#[allow(unused_mut)]
-					let mut builder = WebviewWindowBuilder::new(app, &new_window_label, WebviewUrl::default())
-						.title("MeTerm")
-						.inner_size(1000.0, 700.0)
-						.resizable(true)
-						.decorations(true)
-						.transparent(true)
-						.visible(false)
-						.background_color(tauri::window::Color(45, 45, 45, bg_alpha));
+                #[allow(unused_mut)]
+                let mut builder =
+                    WebviewWindowBuilder::new(app, &new_window_label, WebviewUrl::default())
+                        .title("MeTerm")
+                        .inner_size(1000.0, 700.0)
+                        .resizable(true)
+                        .decorations(true)
+                        .transparent(true)
+                        .visible(false)
+                        .background_color(tauri::window::Color(45, 45, 45, bg_alpha));
 
-					#[cfg(target_os = "macos")]
-					{
-						use tauri::LogicalPosition;
-						builder = builder
-							.hidden_title(true)
-							.accept_first_mouse(true)
-							.title_bar_style(TitleBarStyle::Overlay)
-							.traffic_light_position(LogicalPosition::new(14.0, 18.0));
-					}
-					match builder.build() {
-						Ok(new_window) => {
-							debug_log!("[DEBUG] Successfully created new window: {}", new_window_label);
-							let lifecycle = app.state::<AppLifecycleState>();
-							lifecycle.track_window_created(&new_window_label);
-							#[cfg(target_os = "linux")]
-							commands::window::apply_gtk_csd(&new_window);
-							// macOS: alpha=0 + orderBack: to compositor invisibly
-							#[cfg(target_os = "macos")]
-							{
-								use objc2::msg_send;
-								use objc2_app_kit::NSWindow;
-								if let Ok(ns_ptr) = new_window.ns_window() {
-									let ns_ptr = ns_ptr as *const NSWindow;
-									unsafe {
-										let _: () = msg_send![ns_ptr, setAlphaValue: 0.0_f64];
-										let nil: *const objc2::runtime::AnyObject = std::ptr::null();
-										let _: () = msg_send![ns_ptr, orderBack: nil];
-									}
-								}
-							}
-							#[cfg(not(target_os = "macos"))]
-							{ let _ = &new_window; }
-						}
-						Err(_e) => debug_log!("[DEBUG] Failed to create new window: {}", _e),
-					}
-				}
-			}
-			"show_home" => {
-			let _ = window.show();
-			let _ = window.set_focus();
-			let payload = WindowEvent { target_window: window_label.clone() };
-			match app.emit("menu-show-home", payload) {
-				Ok(_) => debug_log!("[DEBUG] Successfully emitted menu-show-home to {}", window_label),
-				Err(_e) => debug_log!("[DEBUG] Failed to emit menu-show-home: {}", _e),
-			}
-		}
-		"new_terminal" => {
-			let _ = window.show();
-			let _ = window.set_focus();
-			let payload = WindowEvent { target_window: window_label.clone() };
-			match app.emit("menu-new-terminal", payload) {
-				Ok(_) => debug_log!("[DEBUG] Successfully emitted menu-new-terminal to {}", window_label),
-				Err(_e) => debug_log!("[DEBUG] Failed to emit menu-new-terminal: {}", _e),
-			}
-		}
-		"new_private_terminal" => {
-			let _ = window.show();
-			let _ = window.set_focus();
-			let payload = WindowEvent { target_window: window_label.clone() };
-			match app.emit("menu-new-private-terminal", payload) {
-				Ok(_) => debug_log!("[DEBUG] Successfully emitted menu-new-private-terminal to {}", window_label),
-				Err(_e) => debug_log!("[DEBUG] Failed to emit menu-new-private-terminal: {}", _e),
-			}
-		}
-		"settings" => {
-			let _ = window.show();
-			let _ = window.set_focus();
-			let payload = WindowEvent { target_window: "main".to_string() };
-			match app.emit("menu-open-settings", payload) {
-				Ok(_) => debug_log!("[DEBUG] Successfully emitted menu-open-settings to main"),
-				Err(_e) => debug_log!("[DEBUG] Failed to emit menu-open-settings: {}", _e),
-			}
-		}
-		"close_all_sessions" => {
-			let _ = window.show();
-			let _ = window.set_focus();
-			let payload = WindowEvent { target_window: window_label.clone() };
-			match app.emit("menu-close-all-sessions", payload) {
-				Ok(_) => debug_log!("[DEBUG] Successfully emitted menu-close-all-sessions to {}", window_label),
-				Err(_e) => debug_log!("[DEBUG] Failed to emit menu-close-all-sessions: {}", _e),
-			}
-		}
-		"quit" => {
-			// Send window close request to all windows, each window will confirm independently
-			debug_log!("[DEBUG] Sending window close request to all windows");
-			// Get all window labels
-			let window_labels: Vec<String> = app.webview_windows().keys().map(|k| k.to_string()).collect();
-			for label in window_labels {
-				let payload = WindowEvent { target_window: label.clone() };
-				let _ = app.emit("window-close-requested", payload);
-			}
-		}
-		"quit_all" => {
-			debug_log!("[DEBUG] Quit all requested");
+                #[cfg(target_os = "macos")]
+                {
+                    use tauri::LogicalPosition;
+                    builder = builder
+                        .hidden_title(true)
+                        .accept_first_mouse(true)
+                        .title_bar_style(TitleBarStyle::Overlay)
+                        .traffic_light_position(LogicalPosition::new(14.0, 18.0));
+                }
+                match builder.build() {
+                    Ok(new_window) => {
+                        debug_log!(
+                            "[DEBUG] Successfully created new window: {}",
+                            new_window_label
+                        );
+                        let lifecycle = app.state::<AppLifecycleState>();
+                        lifecycle.track_window_created(&new_window_label);
+                        #[cfg(target_os = "linux")]
+                        commands::window::apply_gtk_csd(&new_window);
+                        // macOS: alpha=0 + orderBack: to compositor invisibly
+                        #[cfg(target_os = "macos")]
+                        {
+                            use objc2::msg_send;
+                            use objc2_app_kit::NSWindow;
+                            if let Ok(ns_ptr) = new_window.ns_window() {
+                                let ns_ptr = ns_ptr as *const NSWindow;
+                                unsafe {
+                                    let _: () = msg_send![ns_ptr, setAlphaValue: 0.0_f64];
+                                    let nil: *const objc2::runtime::AnyObject = std::ptr::null();
+                                    let _: () = msg_send![ns_ptr, orderBack: nil];
+                                }
+                            }
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            let _ = &new_window;
+                        }
+                    }
+                    Err(_e) => debug_log!("[DEBUG] Failed to create new window: {}", _e),
+                }
+            }
+        }
+        "show_home" => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            let payload = WindowEvent {
+                target_window: window_label.clone(),
+            };
+            match app.emit("menu-show-home", payload) {
+                Ok(_) => debug_log!(
+                    "[DEBUG] Successfully emitted menu-show-home to {}",
+                    window_label
+                ),
+                Err(_e) => debug_log!("[DEBUG] Failed to emit menu-show-home: {}", _e),
+            }
+        }
+        "new_terminal" => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            let payload = WindowEvent {
+                target_window: window_label.clone(),
+            };
+            match app.emit("menu-new-terminal", payload) {
+                Ok(_) => debug_log!(
+                    "[DEBUG] Successfully emitted menu-new-terminal to {}",
+                    window_label
+                ),
+                Err(_e) => debug_log!("[DEBUG] Failed to emit menu-new-terminal: {}", _e),
+            }
+        }
+        "new_private_terminal" => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            let payload = WindowEvent {
+                target_window: window_label.clone(),
+            };
+            match app.emit("menu-new-private-terminal", payload) {
+                Ok(_) => debug_log!(
+                    "[DEBUG] Successfully emitted menu-new-private-terminal to {}",
+                    window_label
+                ),
+                Err(_e) => debug_log!("[DEBUG] Failed to emit menu-new-private-terminal: {}", _e),
+            }
+        }
+        "settings" => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            let payload = WindowEvent {
+                target_window: "main".to_string(),
+            };
+            match app.emit("menu-open-settings", payload) {
+                Ok(_) => debug_log!("[DEBUG] Successfully emitted menu-open-settings to main"),
+                Err(_e) => debug_log!("[DEBUG] Failed to emit menu-open-settings: {}", _e),
+            }
+        }
+        "close_all_sessions" => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            let payload = WindowEvent {
+                target_window: window_label.clone(),
+            };
+            match app.emit("menu-close-all-sessions", payload) {
+                Ok(_) => debug_log!(
+                    "[DEBUG] Successfully emitted menu-close-all-sessions to {}",
+                    window_label
+                ),
+                Err(_e) => debug_log!("[DEBUG] Failed to emit menu-close-all-sessions: {}", _e),
+            }
+        }
+        "quit" => {
+            // Send window close request to all windows, each window will confirm independently
+            debug_log!("[DEBUG] Sending window close request to all windows");
+            // Get all window labels
+            let window_labels: Vec<String> = app
+                .webview_windows()
+                .keys()
+                .map(|k| k.to_string())
+                .collect();
+            for label in window_labels {
+                let payload = WindowEvent {
+                    target_window: label.clone(),
+                };
+                let _ = app.emit("window-close-requested", payload);
+            }
+        }
+        "quit_all" => {
+            debug_log!("[DEBUG] Quit all requested");
 
-			// First, show, unminimize, and bring to front all windows
-			for window in app.webview_windows().values() {
-				let _ = window.show();
-				let _ = window.unminimize();
-				let _ = window.set_focus();
-				#[cfg(target_os = "macos")]
-				{
-					// On macOS, ensure windows are brought to front
-					let _ = window.set_always_on_top(true);
-					let _ = window.set_always_on_top(false);
-				}
-				debug_log!("[DEBUG] Window {} shown and focused", window.label());
-			}
+            // First, show, unminimize, and bring to front all windows
+            for window in app.webview_windows().values() {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+                #[cfg(target_os = "macos")]
+                {
+                    // On macOS, ensure windows are brought to front
+                    let _ = window.set_always_on_top(true);
+                    let _ = window.set_always_on_top(false);
+                }
+                debug_log!("[DEBUG] Window {} shown and focused", window.label());
+            }
 
-			// Wait a bit to ensure windows are visible
-			std::thread::sleep(std::time::Duration::from_millis(300));
+            // Wait a bit to ensure windows are visible
+            std::thread::sleep(std::time::Duration::from_millis(300));
 
-			// Send event to frontend to show confirmation dialog
-			// Choose one window to show the dialog
-			let target_label = get_quit_confirmation_window(app);
-			debug_log!("[DEBUG] Sending quit-all confirmation request to window: {}", target_label);
-			let _ = app.emit("menu-quit-all-requested", WindowEvent { target_window: target_label });
-		}
-		"undo" => {
-			let _ = app.emit("menu-undo", WindowEvent { target_window: window_label.clone() });
-		}
-		"redo" => {
-			let _ = app.emit("menu-redo", WindowEvent { target_window: window_label.clone() });
-		}
-		"cut" => {
-			let _ = app.emit("menu-cut", WindowEvent { target_window: window_label.clone() });
-		}
-		"copy" => {
-			let _ = app.emit("menu-copy", WindowEvent { target_window: window_label.clone() });
-		}
-		"paste" => {
-			let _ = app.emit("menu-paste", WindowEvent { target_window: window_label.clone() });
-		}
-		"select_all" => {
-			let _ = app.emit("menu-select-all", WindowEvent { target_window: window_label.clone() });
-		}
-		"reload" => {
-			let _ = app.emit("menu-reload", WindowEvent { target_window: window_label.clone() });
-		}
-		"show_about" => {
-			let _ = app.emit("menu-show-about", WindowEvent { target_window: "main".to_string() });
-		}
-		"show_shortcuts" => {
-			let _ = app.emit("menu-show-shortcuts", WindowEvent { target_window: "main".to_string() });
-		}
-		"import_connections" => {
-			let _ = window.show();
-			let _ = window.set_focus();
-			let _ = app.emit("menu-import-connections", WindowEvent { target_window: window_label.clone() });
-		}
-		"export_connections" => {
-			let _ = window.show();
-			let _ = window.set_focus();
-			let _ = app.emit("menu-export-connections", WindowEvent { target_window: window_label.clone() });
-		}
-		"lan_discover" => {
-			let lifecycle = app.state::<AppLifecycleState>();
-			let new_state = !lifecycle.is_discoverable();
-			lifecycle.set_discoverable(new_state);
-			// Rebuild tray menu with updated checked state
-			let lang = lifecycle.current_language();
-			let _ = commands::set_tray_language(app.clone(), lang);
-			let _ = app.emit("menu-toggle-lan-discover", serde_json::json!({ "enabled": new_state }));
-		}
-		"check_updates" => {
-			let _ = window.show();
-			let _ = window.set_focus();
-			let _ = app.emit("menu-check-updates", WindowEvent { target_window: "main".to_string() });
-		}
-		"pip_toggle" => {
-			let payload = WindowEvent { target_window: window_label.clone() };
-			let _ = app.emit("menu-pip-toggle", payload);
-		}
-		_ => {}
-	}
+            // Send event to frontend to show confirmation dialog
+            // Choose one window to show the dialog
+            let target_label = get_quit_confirmation_window(app);
+            debug_log!(
+                "[DEBUG] Sending quit-all confirmation request to window: {}",
+                target_label
+            );
+            let _ = app.emit(
+                "menu-quit-all-requested",
+                WindowEvent {
+                    target_window: target_label,
+                },
+            );
+        }
+        "undo" => {
+            let _ = app.emit(
+                "menu-undo",
+                WindowEvent {
+                    target_window: window_label.clone(),
+                },
+            );
+        }
+        "redo" => {
+            let _ = app.emit(
+                "menu-redo",
+                WindowEvent {
+                    target_window: window_label.clone(),
+                },
+            );
+        }
+        "cut" => {
+            let _ = app.emit(
+                "menu-cut",
+                WindowEvent {
+                    target_window: window_label.clone(),
+                },
+            );
+        }
+        "copy" => {
+            let _ = app.emit(
+                "menu-copy",
+                WindowEvent {
+                    target_window: window_label.clone(),
+                },
+            );
+        }
+        "paste" => {
+            let _ = app.emit(
+                "menu-paste",
+                WindowEvent {
+                    target_window: window_label.clone(),
+                },
+            );
+        }
+        "select_all" => {
+            let _ = app.emit(
+                "menu-select-all",
+                WindowEvent {
+                    target_window: window_label.clone(),
+                },
+            );
+        }
+        "reload" => {
+            let _ = app.emit(
+                "menu-reload",
+                WindowEvent {
+                    target_window: window_label.clone(),
+                },
+            );
+        }
+        "show_about" => {
+            let _ = app.emit(
+                "menu-show-about",
+                WindowEvent {
+                    target_window: "main".to_string(),
+                },
+            );
+        }
+        "show_shortcuts" => {
+            let _ = app.emit(
+                "menu-show-shortcuts",
+                WindowEvent {
+                    target_window: "main".to_string(),
+                },
+            );
+        }
+        "import_connections" => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            let _ = app.emit(
+                "menu-import-connections",
+                WindowEvent {
+                    target_window: window_label.clone(),
+                },
+            );
+        }
+        "export_connections" => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            let _ = app.emit(
+                "menu-export-connections",
+                WindowEvent {
+                    target_window: window_label.clone(),
+                },
+            );
+        }
+        "lan_discover" => {
+            let lifecycle = app.state::<AppLifecycleState>();
+            let new_state = !lifecycle.is_discoverable();
+            lifecycle.set_discoverable(new_state);
+            // Rebuild tray menu with updated checked state
+            let lang = lifecycle.current_language();
+            let _ = commands::set_tray_language(app.clone(), lang);
+            let _ = app.emit(
+                "menu-toggle-lan-discover",
+                serde_json::json!({ "enabled": new_state }),
+            );
+        }
+        "check_updates" => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            let _ = app.emit(
+                "menu-check-updates",
+                WindowEvent {
+                    target_window: "main".to_string(),
+                },
+            );
+        }
+        "pip_toggle" => {
+            let payload = WindowEvent {
+                target_window: window_label.clone(),
+            };
+            let _ = app.emit("menu-pip-toggle", payload);
+        }
+        _ => {}
+    }
 }
 
 fn handle_menu_event(app: &tauri::AppHandle, raw_id: &str) {
-	debug_log!("[DEBUG] Menu event received: raw_id={}", raw_id);
-	let Some(action) = normalize_menu_id(raw_id) else {
-		debug_log!("[DEBUG] Ignored unknown menu id: {}", raw_id);
-		return;
-	};
-	debug_log!("[DEBUG] Normalized action: {}", action);
-	let lifecycle = app.state::<AppLifecycleState>();
+    debug_log!("[DEBUG] Menu event received: raw_id={}", raw_id);
+    let Some(action) = normalize_menu_id(raw_id) else {
+        debug_log!("[DEBUG] Ignored unknown menu id: {}", raw_id);
+        return;
+    };
+    debug_log!("[DEBUG] Normalized action: {}", action);
+    let lifecycle = app.state::<AppLifecycleState>();
 
-	// Block window-creating actions until at least one main window has fully initialized.
-	// During startup, Tauri/Windows may fire spurious menu events that should not
-	// create new windows.
-	if (action == "new_window" || action == "new_terminal" || action == "new_private_terminal")
-		&& !lifecycle.has_any_initialized_main_window()
-	{
-		debug_log!("[DEBUG] Blocked {} during startup (no initialized main window)", action);
-		return;
-	}
+    // Block window-creating actions until at least one main window has fully initialized.
+    // During startup, Tauri/Windows may fire spurious menu events that should not
+    // create new windows.
+    if (action == "new_window" || action == "new_terminal" || action == "new_private_terminal")
+        && !lifecycle.has_any_initialized_main_window()
+    {
+        debug_log!(
+            "[DEBUG] Blocked {} during startup (no initialized main window)",
+            action
+        );
+        return;
+    }
 
-	if !lifecycle.should_dispatch_menu_event(action) {
-		debug_log!("[DEBUG] Blocked duplicate event for: {}", action);
-		return;
-	}
-	debug_log!("[DEBUG] Dispatching action: {}", action);
-	dispatch_menu_action(app, action);
+    if !lifecycle.should_dispatch_menu_event(action) {
+        debug_log!("[DEBUG] Blocked duplicate event for: {}", action);
+        return;
+    }
+    debug_log!("[DEBUG] Dispatching action: {}", action);
+    dispatch_menu_action(app, action);
 }
 
 /// Extract the first directory path from CLI args (skip the binary path at index 0).
@@ -615,7 +740,10 @@ pub fn run() {
     // Parse CLI args for "open in terminal" path
     let cli_args: Vec<String> = std::env::args().collect();
     let initial_path = extract_open_path(&cli_args);
-    startup_log(&format!("CLI args: {:?}, initial_path: {:?}", cli_args, initial_path));
+    startup_log(&format!(
+        "CLI args: {:?}, initial_path: {:?}",
+        cli_args, initial_path
+    ));
 
     let lifecycle = AppLifecycleState::new_with_path(initial_path);
 
@@ -814,9 +942,14 @@ pub fn run() {
             commands::session::list_sessions,
             commands::session::delete_session,
             commands::session::list_available_shells,
+            commands::session::inject_osc_marker,
             // ssh
             commands::ssh::create_ssh_session,
             commands::ssh::test_ssh_connection,
+            commands::transfer::start_session_file_download,
+            commands::transfer::control_session_file_download,
+            commands::transfer::start_session_file_upload,
+            commands::transfer::control_session_file_upload,
             // menu
             commands::menu::set_tray_language,
             commands::menu::set_update_badge,
@@ -876,10 +1009,22 @@ pub fn run() {
             // fs
             commands::fs::stat_path,
             commands::fs::open_path,
+            commands::fs::open_text_file,
             commands::fs::list_dir_names,
             commands::fs::copy_background_image,
             commands::fs::delete_background_image,
             commands::fs::take_initial_open_path,
+            commands::fs::agent_read_file,
+            commands::fs::agent_read_file_bytes,
+            commands::fs::agent_write_file,
+            commands::fs::agent_write_file_bytes,
+            commands::fs::agent_copy_local_file,
+            commands::fs::agent_save_attachment,
+            commands::fs::agent_delete_attachment,
+            commands::fs::agent_list_directory,
+            commands::fs::agent_glob_search,
+            commands::fs::agent_grep_search,
+            commands::fs::read_clipboard_image,
             // context_menu
             commands::context_menu::register_context_menu,
             commands::context_menu::unregister_context_menu,

@@ -13,6 +13,7 @@ import { emit, listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { TabManager } from './tabs';
 import { DrawerManager } from './drawer';
+import { SidebarManager } from './file-sidebar';
 import { isJumpServerPanelOpen, closeJumpServerPanel } from './jumpserver-panel';
 import { setIsPipMode, isHomeView, isGalleryView, isMacPlatform, settings } from './app-state';
 import { activateTab } from './view-manager';
@@ -41,6 +42,8 @@ interface PipState {
   originalY: number;
   /** Session IDs whose drawers were open before PiP (to restore on exit) */
   openDrawerSessionIds: string[];
+  /** Session IDs whose file sidebars were open before PiP (to restore on exit) */
+  openSidebarSessionIds: string[];
   /** Saved JumpServer browser window geometry (null if not present) */
   browserWindowState: BrowserWindowState | null;
 }
@@ -98,6 +101,26 @@ export async function enterPip(): Promise<void> {
     DrawerManager.toggle(sid);
   }
 
+  // 记录所有处于打开状态的侧边栏 (含非活跃 tab)，PiP 退出时按状态恢复。
+  // 仅对当前活跃 tab 的侧边栏走 toggle 动画 + 等待，确保 terminal-panel
+  // 尺寸捕获时不带侧边栏宽度；其他 tab 的侧边栏只改 isOpen 标记，
+  // 避免它们的 DOM 元素出现在当前 mainContent 中。
+  const openSidebarSessionIds = SidebarManager.getOpenSessionIds();
+  const activeSessionId = TabManager.getActiveSessionId();
+  let activeSidebarWasOpen = false;
+  for (const sid of openSidebarSessionIds) {
+    if (sid === activeSessionId) {
+      activeSidebarWasOpen = true;
+      SidebarManager.toggle(sid); // 走关闭动画
+    } else {
+      SidebarManager.markOpen(sid, false);
+    }
+  }
+  if (activeSidebarWasOpen) {
+    // CSS 过渡 200ms + 余量，确保 transitionend 已触发并 display:none
+    await new Promise(resolve => setTimeout(resolve, 240));
+  }
+
   // Save JumpServer browser window state, then close/undock/hide it
   let browserWindowState: BrowserWindowState | null = null;
   const jsBrowser = await WebviewWindow.getByLabel('jumpserver-browser');
@@ -131,6 +154,7 @@ export async function enterPip(): Promise<void> {
     originalX: Math.round(pos.x / factor),
     originalY: Math.round(pos.y / factor),
     openDrawerSessionIds,
+    openSidebarSessionIds,
     browserWindowState,
   };
 
@@ -255,6 +279,7 @@ export async function exitPip(): Promise<void> {
   const origW = pipState.originalWidth;
   const origH = pipState.originalHeight;
   const drawerSessionIds = pipState.openDrawerSessionIds;
+  const sidebarSessionIds = pipState.openSidebarSessionIds;
   const savedBrowserState = pipState.browserWindowState;
   pipState = null;
 
@@ -299,6 +324,20 @@ export async function exitPip(): Promise<void> {
   for (const sid of drawerSessionIds) {
     if (DrawerManager.has(sid)) {
       DrawerManager.toggle(sid);
+    }
+  }
+
+  // 恢复 PiP 前打开的文件侧边栏：仅当前活跃 tab 的侧边栏走 toggle 动画显示，
+  // 其他 tab 的侧边栏只把 isOpen 标记还原，由 view-manager.activateTab 在
+  // 下次切到那个 tab 时根据 isOpen 自动 show，避免多个 tab 的侧边栏
+  // 同时出现在 mainContent。
+  const activeSessionIdForRestore = TabManager.getActiveSessionId();
+  for (const sid of sidebarSessionIds) {
+    if (!SidebarManager.has(sid)) continue;
+    if (sid === activeSessionIdForRestore) {
+      if (!SidebarManager.isOpen(sid)) SidebarManager.toggle(sid);
+    } else {
+      SidebarManager.markOpen(sid, true);
     }
   }
 

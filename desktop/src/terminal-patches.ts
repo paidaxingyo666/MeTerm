@@ -141,20 +141,26 @@ export function patchOverlayScrollbar(terminal: Terminal, container: HTMLElement
   const viewport = container.querySelector('.xterm-viewport') as HTMLElement | null;
   if (!xtermEl || !viewport) return;
 
-  const handle = createOverlayScrollbar({ viewport, container: xtermEl });
-
   // Track whether we're in alternate screen buffer (TUI apps).
   // In alternate mode there is no scrollback, so hide the scrollbar.
   let inAlternate = terminal.buffer.active.type === 'alternate';
-  terminal.buffer.onBufferChange((buf) => {
-    inAlternate = buf.type === 'alternate';
-    updateAlternate();
+
+  // Gate the overlay scrollbar on xterm.js's real buffer state instead of
+  // the viewport's scrollHeight.  When rows shrink (e.g. entering split-pane
+  // layout) xterm.js pushes blank lines into scrollback, inflating
+  // scrollHeight even though nothing real is scrollable.  Using
+  // buffer.active.baseY === 0 as the "no scrollback" signal keeps the
+  // scrollbar hidden until real content actually scrolls off-screen.
+  const handle = createOverlayScrollbar({
+    viewport,
+    container: xtermEl,
+    shouldShow: () => !inAlternate && terminal.buffer.active.baseY > 0,
   });
 
-  function updateAlternate(): void {
-    const bar = xtermEl!.querySelector('.overlay-sb') as HTMLElement | null;
-    if (bar) bar.style.display = inAlternate ? 'none' : '';
-    if (!inAlternate) handle.sync();
-  }
-  updateAlternate();
+  terminal.buffer.onBufferChange((buf) => {
+    inAlternate = buf.type === 'alternate';
+    handle.sync();
+  });
+
+  handle.sync();
 }

@@ -32,6 +32,8 @@ interface EditableSelection {
   text: string;
   /** highlight overlay elements */
   overlays: HTMLElement[];
+  /** Whether selection was created without shell hook (uses repeated arrows) */
+  hookless: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -46,10 +48,11 @@ export function setupClickToMoveCursor(mt: ManagedTerminal): void {
   let downX = 0;
   let downY = 0;
   let lastClickTime = 0;
+  let mousedownFired = false; // guards against cross-pane mouseup in split-pane layouts
   const DEBOUNCE_MS = 150;
 
   const sel: EditableSelection = {
-    active: false, forward: true, charCount: 0, text: '', overlays: [],
+    active: false, forward: true, charCount: 0, text: '', overlays: [], hookless: false,
   };
 
   // ── Selection key handler: stored on mt, called by terminal-ime.ts ──
@@ -69,12 +72,18 @@ export function setupClickToMoveCursor(mt: ManagedTerminal): void {
     if (e.button !== 0) return;
     downX = e.clientX;
     downY = e.clientY;
+    mousedownFired = true;
     // Clear editable selection on any mousedown (new interaction starting)
     if (sel.active) clearSel(terminal, sel);
   }, { capture: false });
 
   screenEl.addEventListener('mouseup', (e: MouseEvent) => {
     if (e.button !== 0) return;
+    // In split-pane layouts the user may mousedown on pane A and release on pane B.
+    // Pane B's mouseup fires but its mousedown never did, so downX/downY are stale.
+    // Guard: only process mouseup when this pane originated the current press.
+    if (!mousedownFired) return;
+    mousedownFired = false;
 
     const isDrag = Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4;
 
@@ -85,7 +94,8 @@ export function setupClickToMoveCursor(mt: ManagedTerminal): void {
 
     // ── Click (not drag) ──
     if (terminal.hasSelection()) return; // native xterm selection from prior drag
-    if (mt.shellState.phase !== 'ready') return;
+    const hookless = !mt.shellState.hookInjected;
+    if (!hookless && mt.shellState.phase !== 'ready') return;
     if (terminal.buffer.active.type !== 'normal') return;
     if (isMouseTrackingActive(terminal)) return;
 
@@ -96,7 +106,19 @@ export function setupClickToMoveCursor(mt: ManagedTerminal): void {
     const { clickAbsRow, snappedClickCol, cursorAbsRow, cursorCol } =
       resolveClickPositions(terminal, screenEl, e);
     if (clickAbsRow < 0) return;
-    const { promptRow, promptCol } = mt.shellState;
+
+    let promptRow: number, promptCol: number;
+    if (hookless) {
+      // Heuristic: detect command area from cursor position
+      const buf = terminal.buffer.active;
+      const area = detectCommandArea(buf, cursorAbsRow);
+      promptRow = area.startRow;
+      const promptLine = buf.getLine(promptRow);
+      promptCol = promptLine ? detectPromptCol(promptLine, terminal.cols) : 0;
+      if (clickAbsRow > area.endRow) return;
+    } else {
+      ({ promptRow, promptCol } = mt.shellState);
+    }
     if (promptRow < 0 || clickAbsRow < promptRow) return;
     // Clicked inside prompt text (before editable area) → ignore
     if (clickAbsRow === promptRow && snappedClickCol < promptCol) return;
@@ -109,7 +131,7 @@ export function setupClickToMoveCursor(mt: ManagedTerminal): void {
 
     const forward = clickAbsRow > cursorAbsRow
       || (clickAbsRow === cursorAbsRow && snappedClickCol > cursorCol);
-    sendInput(mt, buildReadlineMove(charCount, forward));
+    sendInput(mt, buildCursorMove(charCount, forward, hookless));
   }, { capture: false });
 }
 
@@ -125,7 +147,8 @@ function handleDragSelect(
   upEvent: MouseEvent,
   mouseDownX: number, mouseDownY: number,
 ): void {
-  if (mt.shellState.phase !== 'ready') return;
+  const hookless = !mt.shellState.hookInjected;
+  if (!hookless && mt.shellState.phase !== 'ready') return;
   if (terminal.buffer.active.type !== 'normal') return;
   if (isMouseTrackingActive(terminal)) return;
   if (!terminal.hasSelection()) return;
@@ -149,7 +172,16 @@ function handleDragSelect(
   const upAbsRow = viewportY + upRow;
 
   // Only editable if both ends are within command area (at or after prompt row)
-  const { promptRow, promptCol } = mt.shellState;
+  let promptRow: number, promptCol: number;
+  if (hookless) {
+    const area = detectCommandArea(buf, cursorAbsRow);
+    promptRow = area.startRow;
+    const promptLine = buf.getLine(promptRow);
+    promptCol = promptLine ? detectPromptCol(promptLine, terminal.cols) : 0;
+    if (downAbsRow > area.endRow || upAbsRow > area.endRow) return;
+  } else {
+    ({ promptRow, promptCol } = mt.shellState);
+  }
   if (promptRow < 0) return;
   if (downAbsRow < promptRow || upAbsRow < promptRow) return;
 
@@ -186,7 +218,7 @@ function handleDragSelect(
   if (moveCount > 0) {
     const moveForward = upAbsRow > cursorAbsRow
       || (upAbsRow === cursorAbsRow && snappedUpCol > cursorCol);
-    sendInput(mt, buildReadlineMove(moveCount, moveForward));
+    sendInput(mt, buildCursorMove(moveCount, moveForward, hookless));
   }
 
   // Record editable selection
@@ -194,6 +226,7 @@ function handleDragSelect(
   sel.forward = isForward;
   sel.charCount = selCharCount;
   sel.text = selectedText;
+  sel.hookless = hookless;
 
   // Show custom cursor-style highlight (uses clamped range)
   const startAbsRow = isForward ? downAbsRow : upAbsRow;
@@ -306,6 +339,7 @@ function clearSel(terminal: Terminal, sel: EditableSelection): void {
   sel.active = false;
   sel.charCount = 0;
   sel.text = '';
+  sel.hookless = false;
   removeHighlight(sel);
   terminal.clearSelection();
 }
@@ -403,6 +437,8 @@ function handleSelectionKey(
 function buildSelectionDelete(sel: EditableSelection): string {
   if (sel.charCount === 0) return '';
   const deleteKey = sel.forward ? '\x7f' : '\x1b[3~';
+  // Hookless mode: repeated individual delete keys (universal compatibility)
+  if (sel.hookless) return deleteKey.repeat(sel.charCount);
   if (sel.charCount === 1) return deleteKey;
   return buildMetaDigitPrefix(sel.charCount) + deleteKey;
 }
@@ -428,6 +464,70 @@ function resolveClickPositions(terminal: Terminal, screenEl: HTMLElement, e: Mou
   const snappedClickCol = snapClickCol(clickLine, clickCol);
 
   return { clickAbsRow, snappedClickCol, cursorAbsRow, cursorCol };
+}
+
+// ---------------------------------------------------------------------------
+// Hookless mode helpers — fallback when shell hook (OSC 7768) is unavailable
+// (Windows SSH, WSL, JumpServer, etc.)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect the command area heuristically by walking through wrapped lines
+ * from the cursor position. Returns the logical line boundaries.
+ */
+function detectCommandArea(
+  buf: Terminal['buffer']['active'], cursorAbsRow: number,
+): { startRow: number; endRow: number } {
+  // Walk up through wrapped lines to find the prompt start row
+  let startRow = cursorAbsRow;
+  while (startRow > 0) {
+    const line = buf.getLine(startRow);
+    if (!line || !line.isWrapped) break;
+    startRow--;
+  }
+  // Walk down through wrapped lines to find the command end row
+  let endRow = cursorAbsRow;
+  while (true) {
+    const nextLine = buf.getLine(endRow + 1);
+    if (!nextLine || !nextLine.isWrapped) break;
+    endRow++;
+  }
+  return { startRow, endRow };
+}
+
+/**
+ * Detect promptCol heuristically by scanning the prompt row for common
+ * prompt-ending patterns: `$ `, `# `, `% `, `> `, `❯ `, `» `, `→ `.
+ * Returns the column after the prompt ending (where command input begins).
+ */
+function detectPromptCol(line: IBufferLine, cols: number): number {
+  const scanLimit = Math.min(line.length, cols, 120);
+  let promptEnd = 0;
+  for (let col = 0; col < scanLimit - 1; col++) {
+    const cell = line.getCell(col);
+    if (!cell) break;
+    const ch = cell.getChars();
+    if (ch === '$' || ch === '#' || ch === '%' || ch === '>'
+      || ch === '❯' || ch === '»' || ch === '→') {
+      const next = line.getCell(col + 1);
+      if (next && next.getChars() === ' ') {
+        promptEnd = col + 2;
+      }
+    }
+  }
+  return promptEnd;
+}
+
+/**
+ * Build cursor move sequence — uses Meta-digit prefix with shell hook,
+ * repeated individual arrow keys without (universal compatibility).
+ */
+function buildCursorMove(charCount: number, forward: boolean, hookless: boolean): string {
+  if (hookless) {
+    const arrow = forward ? '\x1b[C' : '\x1b[D';
+    return arrow.repeat(charCount);
+  }
+  return buildReadlineMove(charCount, forward);
 }
 
 // ---------------------------------------------------------------------------

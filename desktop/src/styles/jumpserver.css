@@ -190,7 +190,7 @@
   border-bottom: none;
   position: sticky;
   top: 0;
-  background: rgba(var(--bg-toolbar), 0.95);
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
   backdrop-filter: blur(8px);
   z-index: 1;
 }

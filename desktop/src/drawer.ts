@@ -26,8 +26,11 @@ import {
   showSpeedLimitPicker,
 } from './drawer-file-features';
 
+export type DrawerExecutorType = 'ssh' | 'local' | 'jumpserver';
+
 export interface DrawerInstance {
   sessionId: string;
+  executorType: DrawerExecutorType;
   element: HTMLDivElement;
   isOpen: boolean;
   height: number;
@@ -48,6 +51,10 @@ class DrawerManagerClass {
   private drawers = new Map<string, DrawerInstance>();
   private readonly MIN_HEIGHT = 200;
   private readonly MAX_HEIGHT_RATIO = 0.5;
+  /** Queued transports for sessions whose drawer hasn't been created yet */
+  private pendingTransports = new Map<string, TerminalTransport>();
+  /** Queued WebSockets for sessions whose drawer hasn't been created yet */
+  private pendingWebSockets = new Map<string, WebSocket>();
 
   private readonly layoutConfig = { minHeight: this.MIN_HEIGHT, maxHeightRatio: this.MAX_HEIGHT_RATIO };
   private readonly layoutCallbacks = {
@@ -88,8 +95,13 @@ class DrawerManagerClass {
       ? settings.drawerHeight
       : 0.4 * window.innerHeight;
 
+    const resolvedType: DrawerExecutorType =
+      jumpServerConfigMap.has(sessionId) ? 'jumpserver' :
+      (executorType === 'ssh' ? 'ssh' : 'local');
+
     const instance: DrawerInstance = {
       sessionId,
+      executorType: resolvedType,
       element: drawer,
       isOpen: false,
       height: savedHeight,
@@ -132,17 +144,50 @@ class DrawerManagerClass {
     // Skip sidebar — compact mode hides scrollbar via CSS
     for (const sel of ['.file-list', '.process-list', '.transfer-history']) {
       const el = drawer.querySelector(sel) as HTMLElement | null;
-      if (el) createOverlayScrollbar({ viewport: el, container: el });
+      if (!el) continue;
+      // .file-list / .process-list 内部有 sticky thead,scrollbar 需要从 thead 下方开始
+      // 否则 thumb 会叠在表头上
+      const tableEl = el.querySelector('table') as HTMLElement | null;
+      const topOffset = tableEl
+        ? () => (tableEl.querySelector('thead') as HTMLElement | null)?.offsetHeight || 0
+        : undefined;
+      createOverlayScrollbar({ viewport: el, container: el, topOffset });
     }
 
     // JumpServer：Koko 代理不支持 exec session，隐藏系统信息侧栏和进程 tab
-    if (jumpServerConfigMap.has(sessionId)) {
+    if (resolvedType === 'jumpserver') {
       const sidebar = drawer.querySelector('.drawer-sidebar') as HTMLElement;
       const splitHandle = drawer.querySelector('.drawer-split-handle') as HTMLElement;
       const processTab = drawer.querySelector('[data-tab="processes"]') as HTMLElement;
       if (sidebar) sidebar.style.display = 'none';
       if (splitHandle) splitHandle.style.display = 'none';
       if (processTab) processTab.style.display = 'none';
+    }
+
+    // 本地会话：隐藏系统信息侧栏和进程 tab（本地不支持 exec/sysinfo）
+    if (resolvedType === 'local') {
+      const sidebar = drawer.querySelector('.drawer-sidebar') as HTMLElement;
+      const splitHandle = drawer.querySelector('.drawer-split-handle') as HTMLElement;
+      const sidebarToggle = drawer.querySelector('.btn-toggle-sidebar') as HTMLElement;
+      const processTab = drawer.querySelector('[data-tab="processes"]') as HTMLElement;
+      if (sidebar) sidebar.style.display = 'none';
+      if (splitHandle) splitHandle.style.display = 'none';
+      if (sidebarToggle) sidebarToggle.style.display = 'none';
+      if (processTab) processTab.style.display = 'none';
+    }
+
+    // 消费 pending transport/websocket（解决创建顺序问题）
+    const pendingTransport = this.pendingTransports.get(sessionId);
+    if (pendingTransport) {
+      this.pendingTransports.delete(sessionId);
+      fileManager.setTransport(pendingTransport);
+      this._afterConnect(sessionId, instance);
+    }
+    const pendingWs = this.pendingWebSockets.get(sessionId);
+    if (pendingWs) {
+      this.pendingWebSockets.delete(sessionId);
+      fileManager.setWebSocket(pendingWs);
+      this._afterConnect(sessionId, instance);
     }
 
     return instance;
@@ -186,8 +231,8 @@ class DrawerManagerClass {
               <button class="drawer-tab btn-toggle-sidebar" title="${t('serverInfoToggle')}">
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="2" width="14" height="12" rx="2"/><line x1="6" y1="2" x2="6" y2="14"/><circle cx="3.5" cy="6" r="0.5" fill="currentColor" stroke="none"/><circle cx="3.5" cy="8" r="0.5" fill="currentColor" stroke="none"/><circle cx="3.5" cy="10" r="0.5" fill="currentColor" stroke="none"/></svg>
               </button>
-              <button class="drawer-tab active" data-tab="files" title="${t('drawerTabFiles')}">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13V4a1 1 0 011-1h3.5l2 2H13a1 1 0 011 1v7a1 1 0 01-1 1H3a1 1 0 01-1-1z"/></svg>
+              <button class="drawer-tab btn-switch-mode active" data-tab="files" title="Switch view">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="2" width="14" height="12" rx="2"/><line x1="5.5" y1="2" x2="5.5" y2="14"/></svg>
               </button>
               <button class="drawer-tab" data-tab="processes" title="${t('drawerTabProcesses')}">
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="2"/><line x1="5" y1="6" x2="11" y2="6"/><line x1="5" y1="8.5" x2="9" y2="8.5"/><line x1="5" y1="11" x2="7" y2="11"/></svg>
@@ -372,7 +417,7 @@ class DrawerManagerClass {
       });
     });
 
-    // Toggle sidebar visibility
+    // Toggle system info sidebar visibility
     // Default: sidebar hidden
     const defaultSidebar = instance.element.querySelector('.drawer-sidebar') as HTMLElement;
     const defaultSplitHandle = instance.element.querySelector('.drawer-split-handle') as HTMLElement;
@@ -388,7 +433,7 @@ class DrawerManagerClass {
         const hidden = sidebar.style.display === 'none';
         sidebar.style.display = hidden ? '' : 'none';
         if (splitHandle) splitHandle.style.display = hidden ? '' : 'none';
-        toggleSidebarBtn.classList.toggle('active', hidden); // visible → active
+        toggleSidebarBtn.classList.toggle('active', hidden);
       });
     }
 
@@ -538,6 +583,16 @@ class DrawerManagerClass {
   private setupFileManagerEvents(instance: DrawerInstance): void {
     if (!instance.fileManager) return;
 
+    // Switch mode button (drawer ↔ sidebar)
+    const switchModeBtn = instance.element.querySelector('.btn-switch-mode') as HTMLButtonElement;
+    if (switchModeBtn) {
+      switchModeBtn.addEventListener('click', () => {
+        import('./file-manager-toggle').then(({ switchFileManagerMode }) => {
+          switchFileManagerMode(instance.sessionId);
+        });
+      });
+    }
+
     const pathInput = instance.element.querySelector('.path-input') as HTMLInputElement;
     const backBtn = instance.element.querySelector('.btn-back') as HTMLButtonElement;
     const goBtn = instance.element.querySelector('.btn-go') as HTMLButtonElement;
@@ -547,6 +602,11 @@ class DrawerManagerClass {
     const listElement = instance.element.querySelector(`#file-list-${instance.sessionId}`) as HTMLElement;
     const fileListContainer = instance.element.querySelector('.file-list') as HTMLElement;
     const historyContainer = instance.element.querySelector('.transfer-history') as HTMLElement;
+
+    // 本地会话隐藏传输历史按钮
+    if (instance.executorType === 'local') {
+      historyBtn.style.display = 'none';
+    }
 
     // 历史视图状态和切换函数（提前声明，供其他按钮使用）
     const horizontalIcon = historyBtn.querySelector('.history-icon-horizontal') as SVGElement;
@@ -718,13 +778,18 @@ class DrawerManagerClass {
       }
     });
 
-    // 上传按钮
-    uploadBtn.addEventListener('click', () => {
-      if (instance.isHistoryView) { showFileList(); return; }
-      if (instance.fileManager) {
-        instance.fileManager.triggerUpload();
-      }
-    });
+    // 上传按钮（本地会话不可用）
+    if (instance.executorType === 'local') {
+      uploadBtn.disabled = true;
+      uploadBtn.title = '本地会话不支持上传';
+    } else {
+      uploadBtn.addEventListener('click', () => {
+        if (instance.isHistoryView) { showFileList(); return; }
+        if (instance.fileManager) {
+          instance.fileManager.triggerUpload();
+        }
+      });
+    }
 
     // 书签按钮
     const bookmarkBtn = instance.element.querySelector('.btn-bookmark') as HTMLButtonElement;
@@ -792,26 +857,31 @@ class DrawerManagerClass {
       });
     });
 
-    dropZone.addEventListener('drop', async (e: DragEvent) => {
+    dropZone.addEventListener('drop', (e: DragEvent) => {
       const files = e.dataTransfer?.files;
       if (!files || files.length === 0 || !instance.fileManager) {
         return;
       }
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        try {
-          const arrayBuffer = await file.arrayBuffer();
-          const content = new Uint8Array(arrayBuffer);
-          await instance.fileManager.uploadFile(file.name, content);
-          console.log(`已上传: ${file.name}`);
-        } catch (err) {
-          console.error(`上传 ${file.name} 失败:`, err);
-          alert(`上传文件 "${file.name}" 失败`);
+      const fileList = Array.from(files);
+      const fm = instance.fileManager;
+      void (async () => {
+        const { readFile } = await import('@tauri-apps/plugin-fs');
+        for (const file of fileList) {
+          try {
+            const localPath = (file as any).path as string | undefined;
+            let content: Uint8Array;
+            if (localPath) {
+              content = await readFile(localPath);
+            } else {
+              content = new Uint8Array(await file.arrayBuffer());
+            }
+            await fm.uploadFile(file.name, content, undefined, true);
+          } catch (err) {
+            console.error(`上传 ${file.name} 失败:`, err);
+          }
         }
-      }
-
-      instance.fileManager.loadDirectory(instance.fileManager.getCurrentPath());
+      })();
     });
   }
 
@@ -833,6 +903,7 @@ class DrawerManagerClass {
 
     instance.isOpen = !instance.isOpen;
     if (instance.isOpen) {
+      instance.element.style.display = '';
       instance.element.classList.add('open');
       this.updateHeight(instance);
       this.startSysInfoRefresh(instance);
@@ -840,11 +911,13 @@ class DrawerManagerClass {
       FileManager.setActiveDragDropTarget(instance.fileManager ?? null);
       // 首次打开抽屉时加载文件列表（SSH 的 SFTP 后台初始化需要时间，延迟到打开时加载）
       if (instance.fileManager && instance.fileManager.getCurrentPath() === '/') {
-        const initialPath = instance.serverConnectionInfo ? '.' : '/';
+        // SSH: '.' 解析为 SFTP home; local: '~' 由后端展开为 home 目录
+        const initialPath = instance.executorType === 'local' ? '~' : '.';
         instance.fileManager.loadDirectory(initialPath);
       }
     } else {
       instance.element.classList.remove('open');
+      instance.element.style.display = 'none';
       instance.element.style.setProperty('--drawer-height', '0px');
       // Flex layout handles terminal resizing — no manual padding needed
       import('./ai-capsule').then(({ AICapsuleManager }) => {
@@ -886,6 +959,15 @@ class DrawerManagerClass {
     return this.drawers.has(sessionId);
   }
 
+  isOpen(sessionId: string): boolean {
+    return this.drawers.get(sessionId)?.isOpen ?? false;
+  }
+
+  /** Internal: expose DrawerInstance for SidebarManager */
+  _getInstanceForSidebar(sessionId: string): DrawerInstance | null {
+    return this.drawers.get(sessionId) ?? null;
+  }
+
   /** Return session IDs of all currently open drawers. */
   getOpenSessionIds(): string[] {
     const ids: string[] = [];
@@ -915,6 +997,10 @@ class DrawerManagerClass {
     this.stopProcessRefresh(instance);
     instance.element.remove();
     this.drawers.delete(sessionId);
+    this.pendingTransports.delete(sessionId);
+    this.pendingWebSockets.delete(sessionId);
+    // Notify sidebar to also destroy
+    window.dispatchEvent(new CustomEvent('meterm-drawer-destroyed', { detail: { sessionId } }));
   }
 
   setWebSocket(sessionId: string, ws: WebSocket): void {
@@ -922,6 +1008,9 @@ class DrawerManagerClass {
     if (instance?.fileManager) {
       instance.fileManager.setWebSocket(ws);
       this._afterConnect(sessionId, instance);
+    } else {
+      // Drawer 尚未创建，存入 pending 队列
+      this.pendingWebSockets.set(sessionId, ws);
     }
   }
 
@@ -930,6 +1019,9 @@ class DrawerManagerClass {
     if (instance?.fileManager) {
       instance.fileManager.setTransport(transport);
       this._afterConnect(sessionId, instance);
+    } else {
+      // Drawer 尚未创建，存入 pending 队列
+      this.pendingTransports.set(sessionId, transport);
     }
   }
 
@@ -946,12 +1038,13 @@ class DrawerManagerClass {
         }
       };
     }
-    // 目录加载延迟到抽屉首次打开时（toggle 中处理），避免 SSH SFTP 未就绪
-    // 如果抽屉已经打开（如重连场景），立即加载
-    if (instance.isOpen && instance.fileManager.getCurrentPath() === '/') {
-      const initialPath = instance.serverConnectionInfo ? '.' : '/';
+    // 加载初始目录：底部抽屉打开时需要显示，侧边栏模式也需要（通过 onPathChanged 通知）
+    if (instance.fileManager.getCurrentPath() === '/') {
+      const initialPath = instance.executorType === 'local' ? '~' : '.';
       instance.fileManager.loadDirectory(initialPath);
     }
+    // Notify sidebar that FileManager is connected
+    window.dispatchEvent(new CustomEvent('meterm-fm-connected', { detail: { sessionId } }));
   }
 
   getServerInfo(sessionId: string): { host: string; username: string; port: number } | null {
@@ -973,6 +1066,13 @@ class DrawerManagerClass {
     const instance = this.drawers.get(sessionId);
     if (!instance) return;
     instance.serverConnectionInfo = { host: info.host, username: info.username, port: info.port || 22 };
+
+    // Sync server label to transfer history for display/search
+    if (instance.fileManager) {
+      const port = info.port || 22;
+      const label = port === 22 ? `${info.username}@${info.host}` : `${info.username}@${info.host}:${port}`;
+      instance.fileManager.setServerLabel(label);
+    }
 
     const serverInfoEl = instance.element.querySelector(`#server-info-${sessionId}`) as HTMLElement;
     if (serverInfoEl) {
@@ -1000,11 +1100,30 @@ class DrawerManagerClass {
     const instance = this.drawers.get(sessionId);
     if (!instance) return;
 
+    // Check if sidebar mode is active
+    const { loadSettings } = await import('./themes');
+    const mode = loadSettings().fileManagerMode;
+    if (mode === 'sidebar') {
+      // Delegate to SidebarManager
+      const { SidebarManager } = await import('./file-sidebar');
+      if (!SidebarManager.has(sessionId)) {
+        SidebarManager.create(sessionId);
+        const mainContent = document.getElementById('main-content');
+        if (mainContent) SidebarManager.mountTo(sessionId, mainContent);
+      }
+      if (!SidebarManager.isOpen(sessionId)) {
+        SidebarManager.toggle(sessionId);
+      }
+      // Navigate sidebar tree
+      const { changeTreeRootPublic } = await import('./file-sidebar');
+      changeTreeRootPublic(sessionId, dirPath);
+      return;
+    }
+
+    // Drawer mode
     if (instance.isOpen) {
-      // 抽屉已打开，直接导航
       instance.fileManager?.loadDirectory(dirPath);
     } else {
-      // 确认已在 openFileLink 中完成，此处直接打开抽屉
       this.toggle(sessionId);
       const filesTab = instance.element.querySelector('[data-tab="files"]') as HTMLElement;
       if (filesTab) filesTab.click();

@@ -18,13 +18,13 @@ import {
   type ServerInfoResponse,
 } from './protocol';
 import { handleFileReadResponse, handleSaveResponse } from './file-editor-bridge';
+import { isMacPlatform } from './app-state';
 import { encodeMessage, validateFileName, formatSize } from './file-utils';
 import { PathAutocomplete } from './file-autocomplete';
 import { TransferHistoryManager } from './file-transfer-history';
 import {
   type DownloadState,
   type DownloadQueueItem,
-  createDownloadState,
 } from './file-download';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import {
@@ -35,13 +35,15 @@ import {
 } from './file-list-ui';
 import {
   type TransferContext,
+  type ActiveUpload,
   handleDownloadChunk as _handleDownloadChunk,
-  adaptPipeline as _adaptPipeline,
+  adaptPipeline as _adaptPipelineForUpload,
   sendUploadChunk as _sendUploadChunk,
   resumeUpload as _resumeUpload,
   resumeDownload as _resumeDownload,
   triggerUpload as _triggerUpload,
   uploadFile as _uploadFile,
+  uploadLocalFile as _uploadLocalFile,
   processNextUpload as _processNextUpload,
   uploadDirectory as _uploadDirectory,
   downloadFile as _downloadFile,
@@ -67,7 +69,7 @@ export class FileManager {
   private ws: WebSocket | null = null;
   private transport: import('./terminal-transport').TerminalTransport | null = null;
   private currentPath: string = '/';
-  private _showHiddenFiles: boolean = true;
+  private _showHiddenFiles: boolean = false;
 
   private get _isConnected(): boolean {
     return !!(this.transport?.connected) || (this.ws?.readyState === WebSocket.OPEN);
@@ -81,17 +83,16 @@ export class FileManager {
     }
   }
   private files: FileInfo[] = [];
+  /** 当前目录是否被 soft_limit 截断 */
+  private listTruncated: boolean = false;
+  /** 截断前的总文件数 */
+  private listTotalCount: number = 0;
   private listElement: HTMLElement;
   private pathInput: HTMLInputElement;
-  private _dlState: DownloadState = createDownloadState();
+  private activeDownloads: Map<number, DownloadState> = new Map();
   private downloadQueue: DownloadQueueItem[] = [];
-  private _isProcessingDownload: boolean = false;
-  private pendingUpload: { path: string; content: Uint8Array; offset: number } | null = null;
-  private inFlightChunks: number = 0;
-  private pipelineSize: number = 2;
-  private pipelineAckCount: number = 0;
-  private uploadQueue: Array<{ path: string; content: Uint8Array; filename: string; size: number; transferId: string }> = [];
-  private isUploadPaused: boolean = false;
+  private activeUploads: Map<number, ActiveUpload> = new Map();
+  private uploadQueue: Array<{ path: string; content?: Uint8Array; localFilePath?: string; filename: string; size: number; transferId: string; numTransferId: number }> = [];
   private pendingPartCleanup: boolean = false;
   private isLoadingDirectory: boolean = false;
   private loadingTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -100,6 +101,8 @@ export class FileManager {
   private loadRetryCount: number = 0;
   private loadRetryPath: string = '';
   private pendingRequestId: string | null = null;
+  /** Pending raw directory load callbacks (for tree component, bypasses UI update) */
+  private _rawDirCallbacks = new Map<string, { resolve: (result: { files: FileInfo[]; path: string }) => void; reject: (err: Error) => void }>();
   private loadingOverlay: HTMLElement | null = null;
   private loadingProgressBar: HTMLElement | null = null;
   private disconnectOverlay: HTMLElement | null = null;
@@ -125,7 +128,6 @@ export class FileManager {
   private _batchUploadCount: number = 0;
   private _speedLimit: number = 0; // 0 = unlimited, bytes/s
   private _autocomplete: PathAutocomplete | null = null;
-  private currentUploadId: string | null = null;
 
   constructor(
     sessionId: string,
@@ -175,47 +177,40 @@ export class FileManager {
     this.initializeDragAndDrop();
   }
 
-  private _transferCtx(): TransferContext {
+  /** @internal — used by drag-drop and sidebar upload logic */
+  _transferCtx(): TransferContext {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
     return {
-      isConnected: this._isConnected,
+      sessionId: this.sessionId,
+      get isConnected() { return self._isConnected; },
       send: (data) => this._send(data),
-      currentPath: this.currentPath,
-      files: this.files,
-      pendingUpload: this.pendingUpload,
-      setPendingUpload: (v) => { this.pendingUpload = v; },
-      inFlightChunks: this.inFlightChunks,
-      setInFlightChunks: (v) => { this.inFlightChunks = v; },
-      pipelineSize: this.pipelineSize,
-      setPipelineSize: (v) => { this.pipelineSize = v; },
-      pipelineAckCount: this.pipelineAckCount,
-      setPipelineAckCount: (v) => { this.pipelineAckCount = v; },
-      isUploadPaused: this.isUploadPaused,
-      setIsUploadPaused: (v) => { this.isUploadPaused = v; },
-      currentUploadId: this.currentUploadId,
-      setCurrentUploadId: (v) => { this.currentUploadId = v; },
-      uploadQueue: this.uploadQueue,
-      dlState: this._dlState,
-      setDlState: (v) => { this._dlState = v; },
-      downloadQueue: this.downloadQueue,
-      isProcessingDownload: this._isProcessingDownload,
-      setIsProcessingDownload: (v) => { this._isProcessingDownload = v; },
-      pendingPartCleanup: this.pendingPartCleanup,
+      get currentPath() { return self.currentPath; },
+      get files() { return self.files; },
+      get useBackendDownload() { return true; },
+      get useBackendUpload() { return true; },
+      get activeUploads() { return self.activeUploads; },
+      get uploadQueue() { return self.uploadQueue; },
+      get activeDownloads() { return self.activeDownloads; },
+      get downloadQueue() { return self.downloadQueue; },
+      get pendingPartCleanup() { return self.pendingPartCleanup; },
       setPendingPartCleanup: (v) => { this.pendingPartCleanup = v; },
-      pendingStatCallback: this.pendingStatCallback,
+      get pendingStatCallback() { return self.pendingStatCallback; },
       setPendingStatCallback: (v) => { this.pendingStatCallback = v; },
-      pendingMkdirResolve: this.pendingMkdirResolve,
+      get pendingMkdirResolve() { return self.pendingMkdirResolve; },
       setPendingMkdirResolve: (v) => { this.pendingMkdirResolve = v; },
-      batchFileAction: this._batchFileAction,
+      get batchFileAction() { return self._batchFileAction; },
       setBatchFileAction: (v) => { this._batchFileAction = v; },
-      batchDirAction: this._batchDirAction,
+      get batchDirAction() { return self._batchDirAction; },
       setBatchDirAction: (v) => { this._batchDirAction = v; },
-      batchUploadCount: this._batchUploadCount,
+      get batchUploadCount() { return self._batchUploadCount; },
       setBatchUploadCount: (v) => { this._batchUploadCount = v; },
       addTransferRecord: (type, filename, path, size, savePath) => this.addTransferRecord(type, filename, path, size, savePath),
       updateTransferProgress: (id, progress, status, error) => this.updateTransferProgress(id, progress, status, error),
+      updateTransferSize: (id, size) => this._transferHistory!.updateTransferSize(id, size),
       findRecord: (id) => this._transferHistory!.findRecord(id) ?? undefined,
       resetSpeedTracker: (id, currentBytes) => this._transferHistory!.resetSpeedTracker(id, currentBytes),
-      speedLimit: this._speedLimit,
+      get speedLimit() { return self._speedLimit; },
       getModalContainer: () => this.getModalContainer(),
       loadDirectory: (path) => this.loadDirectory(path),
     };
@@ -258,12 +253,12 @@ export class FileManager {
   }
 
   private _resumeTransfers(): void {
-    if (this.pendingUpload) {
+    if (this.activeUploads.size > 0) {
       _resumeUpload(this._transferCtx());
     } else if (this.uploadQueue.length > 0) {
       _processNextUpload(this._transferCtx());
     }
-    if (this._dlState.pendingDownload) {
+    if (this.activeDownloads.size > 0) {
       _resumeDownload(this._transferCtx());
     } else if (this.downloadQueue.length > 0) {
       _processNextDownload(this._transferCtx());
@@ -312,26 +307,48 @@ export class FileManager {
     } else if (msgType === MsgFileListResp) {
       this.handleFileListResponse(payload);
     } else if (msgType === MsgFileDownloadChunk) {
-      _handleDownloadChunk(payload, this._dlState, _dlCallbacks(this._transferCtx()));
-    } else if (msgType === MsgFileUploadChunk) {
-      if (this.pendingUpload) {
-        if (payload.length === 8) {
-          const resumeView = new DataView(payload.buffer, payload.byteOffset, 8);
-          this.pendingUpload.offset = Number(resumeView.getBigUint64(0));
-          this.inFlightChunks = 0;
-          this.pipelineSize = 2;
-          this.pipelineAckCount = 0;
-          console.log(`Upload resume ACK: continuing from offset ${this.pendingUpload.offset}`);
-        } else {
-          this.inFlightChunks = Math.max(0, this.inFlightChunks - 1);
-          _adaptPipeline(this._transferCtx());
+      // New format: [4B transferId][8B totalSize][8B offset][data]
+      if (payload.length >= 4) {
+        const numTid = new DataView(payload.buffer, payload.byteOffset, 4).getUint32(0);
+        const ds = this.activeDownloads.get(numTid);
+        if (ds) {
+          _handleDownloadChunk(payload, ds, _dlCallbacks(this._transferCtx(), numTid));
         }
-        // 限速时延迟发送下一个 chunk
-        if (this._speedLimit > 0) {
-          const delayMs = Math.max(1, Math.round(1024 * 1024 / this._speedLimit * 1000));
-          setTimeout(() => _sendUploadChunk(this._transferCtx()), delayMs);
-        } else {
-          _sendUploadChunk(this._transferCtx());
+      }
+    } else if (msgType === MsgFileUploadChunk) {
+      // New ACK format: [4B transferId] (regular ACK) or [4B transferId][8B resumeOffset] (resume ACK)
+      if (payload.length >= 4) {
+        const ackView = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+        const numTid = ackView.getUint32(0);
+        const au = this.activeUploads.get(numTid);
+        if (au) {
+          if (payload.length >= 12) {
+            // Resume ACK: [4B tid][8B offset]
+            const resumeOffset = Number(ackView.getBigUint64(4));
+            au.offset = resumeOffset;
+            au.inFlightChunks = 0;
+            au.pipelineSize = 2;
+            au.pipelineAckCount = 0;
+            console.log(`Upload resume ACK (tid=${numTid}): offset ${resumeOffset}`);
+            if (au.fileHandle) {
+              import('@tauri-apps/plugin-fs').then(({ SeekMode }) => {
+                au.fileHandle?.seek(resumeOffset, SeekMode.Start)
+                  .then(() => _sendUploadChunk(this._transferCtx(), numTid))
+                  .catch(err => console.error('Seek failed:', err));
+              });
+              return isFileMsg;
+            }
+          } else {
+            // Regular ACK
+            au.inFlightChunks = Math.max(0, au.inFlightChunks - 1);
+            _adaptPipelineForUpload(au);
+          }
+          if (this._speedLimit > 0) {
+            const delayMs = Math.max(1, Math.round(1024 * 1024 / this._speedLimit * 1000));
+            setTimeout(() => _sendUploadChunk(this._transferCtx(), numTid), delayMs);
+          } else {
+            _sendUploadChunk(this._transferCtx(), numTid);
+          }
         }
       }
     } else if (msgType === MsgFileOperationResp) {
@@ -350,15 +367,17 @@ export class FileManager {
     return isFileMsg;
   }
 
-  async loadDirectory(path: string): Promise<void> {
+  async loadDirectory(path: string, options?: { loadAll?: boolean }): Promise<void> {
     if (!this._isConnected) {
       console.error('FileManager: not connected');
       alert('文件管理器未连接到服务器\n请关闭并重新打开抽屉，或刷新页面');
       return;
     }
 
+    const loadAll = options?.loadAll === true;
     const now = Date.now();
-    if (now - this.lastClickTime < 300 && this.lastClickPath === path) {
+    // 防抖跳过普通快速点击,但"加载全部"绕过防抖(否则点了无反应)
+    if (!loadAll && now - this.lastClickTime < 300 && this.lastClickPath === path) {
       console.warn('⏭️ 防抖：忽略重复的快速点击', path);
       return;
     }
@@ -403,7 +422,14 @@ export class FileManager {
     try {
       const requestId = `fl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.pendingRequestId = requestId;
-      const request = JSON.stringify({ path, request_id: requestId, show_hidden: this._showHiddenFiles });
+      // soft_limit: 默认 5000(后端超过即截断并上报 truncated/total),loadAll=true 时传 0(不限制)
+      const softLimit = loadAll ? 0 : 5000;
+      const request = JSON.stringify({
+        path,
+        request_id: requestId,
+        show_hidden: this._showHiddenFiles,
+        soft_limit: softLimit,
+      });
       const message = this.encodeMessage(MsgFileList, new TextEncoder().encode(request));
       console.log('📤 发送目录请求到服务器，路径:', path, 'requestId:', requestId, '消息大小:', message.length, 'bytes');
       this._send(message);
@@ -419,6 +445,33 @@ export class FileManager {
       alert(`发送请求失败: ${err instanceof Error ? err.message : String(err)}`);
       throw err;
     }
+  }
+
+  /**
+   * Load directory contents without affecting current path/UI state.
+   * Used by the file tree component for lazy-loading children.
+   */
+  loadDirectoryRaw(path: string): Promise<{ files: FileInfo[]; path: string }> {
+    return new Promise((resolve, reject) => {
+      if (!this._isConnected) {
+        reject(new Error('FileManager not connected'));
+        return;
+      }
+      const requestId = `raw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      this._rawDirCallbacks.set(requestId, { resolve, reject });
+
+      // Auto-timeout after 30s
+      setTimeout(() => {
+        if (this._rawDirCallbacks.has(requestId)) {
+          this._rawDirCallbacks.delete(requestId);
+          reject(new Error('loadDirectoryRaw timeout'));
+        }
+      }, 30000);
+
+      const request = JSON.stringify({ path, request_id: requestId, show_hidden: this._showHiddenFiles });
+      const message = this.encodeMessage(MsgFileList, new TextEncoder().encode(request));
+      this._send(message);
+    });
   }
 
   private handleFileListProgress(payload: Uint8Array): void {
@@ -460,6 +513,19 @@ export class FileManager {
     try {
       const response: FileListResponse = JSON.parse(new TextDecoder().decode(payload));
 
+      // Route to raw directory callbacks (used by file tree component)
+      if (response.request_id && this._rawDirCallbacks.has(response.request_id)) {
+        const cb = this._rawDirCallbacks.get(response.request_id)!;
+        this._rawDirCallbacks.delete(response.request_id);
+        if (response.error) {
+          cb.reject(new Error(response.error));
+        } else {
+          this.dirCachePut(response.path, response.files);
+          cb.resolve({ files: response.files, path: response.path });
+        }
+        return;
+      }
+
       if (this._autocomplete?.autocompleteResolve && !this.isLoadingDirectory) {
         isAutocompleteResponse = true;
         const resolve = this._autocomplete.autocompleteResolve;
@@ -487,13 +553,16 @@ export class FileManager {
             : `${this.currentPath}/${resolvedPath}`;
         }
       }
-      console.log('📥 收到文件列表响应:', response.path, '→', resolvedPath, '文件数:', response.files.length);
+      console.log('📥 收到文件列表响应:', response.path, '→', resolvedPath, '文件数:', response.files.length, response.truncated ? `(已截断/总 ${response.total})` : '');
       this.dirCachePut(resolvedPath, response.files);
       this.files = response.files;
+      this.listTruncated = !!response.truncated;
+      this.listTotalCount = response.total ?? response.files.length;
       this.currentPath = resolvedPath;
       this.pathInput.value = resolvedPath;
       this.onPathChanged?.(resolvedPath);
       this.renderFileList();
+      this.updateTruncationBanner();
     } catch (err) {
       console.error('❌ 解析文件列表响应失败:', err);
     } finally {
@@ -521,14 +590,29 @@ export class FileManager {
   }
 
   private handleError(payload: Uint8Array): void {
+    let error: ErrorResponse;
+    let errorTransferId: number | undefined;
     try {
-      const error: ErrorResponse = JSON.parse(new TextDecoder().decode(payload));
+      const parsed = JSON.parse(new TextDecoder().decode(payload));
+      error = parsed as ErrorResponse;
+      errorTransferId = typeof parsed.transferId === 'number' ? parsed.transferId : undefined;
+    } catch {
+      // Rust encode_error() format: [code: u8][message: UTF-8] (not JSON)
+      if (payload.length < 1) { console.error('❌ 收到空错误响应'); return; }
+      const code = payload[0];
+      const message = new TextDecoder().decode(payload.slice(1));
+      const isDownloading = this.activeDownloads.size > 0;
+      error = { code: code === 0xFF && isDownloading ? 'READ_FAILED' : 'INTERNAL_ERROR', message };
+    }
+    try {
       console.error('🚨 服务器返回错误:', error.code, '-', error.message);
 
-      if (error.code === 'NO_PARTIAL_UPLOAD' && this.pendingUpload) {
-        console.log('Upload resume failed (no partial file), restarting full upload');
-        this.pendingUpload.offset = 0;
-        const request = JSON.stringify({ path: this.pendingUpload.path, size: this.pendingUpload.content.length });
+      if (error.code === 'NO_PARTIAL_UPLOAD' && this.activeUploads.size > 0) {
+        // Restart the first active upload that failed resume
+        const [numTid, au] = this.activeUploads.entries().next().value!;
+        console.log(`Upload resume failed (no partial file), restarting full upload (tid=${numTid})`);
+        au.offset = 0;
+        const request = JSON.stringify({ path: au.path, size: au.totalSize, transferId: numTid });
         const message = this.encodeMessage(MsgFileUploadStart, new TextEncoder().encode(request));
         if (this._isConnected) {
           this._send(message);
@@ -536,15 +620,26 @@ export class FileManager {
         return;
       }
 
-      // SFTP 未就绪时自动重试（SSH 后台初始化 SFTP 需要时间，最多重试 5 次）
-      if (error.code === 'SFTP_NOT_AVAILABLE' && this.isLoadingDirectory && this.loadRetryCount < 5) {
-        this.hideLoading();
-        this.isLoadingDirectory = false;
-        if (this.loadingTimeout) { clearTimeout(this.loadingTimeout); this.loadingTimeout = null; }
-        const retryPath = this.loadRetryPath || this.currentPath;
-        this.loadRetryCount++;
-        console.log(`⏳ SFTP 未就绪，1秒后重试 (${this.loadRetryCount}/5):`, retryPath);
-        setTimeout(() => this.loadDirectory(retryPath), 1000);
+      // SFTP 未就绪时：reject pending loadDirectoryRaw 回调，自动重试 loadDirectory
+      if (error.code === 'SFTP_NOT_AVAILABLE') {
+        // Reject all raw directory callbacks so callers get immediate feedback
+        for (const [, cb] of this._rawDirCallbacks) {
+          cb.reject(new Error('SFTP_NOT_AVAILABLE'));
+        }
+        this._rawDirCallbacks.clear();
+
+        if (this.loadRetryCount < 10) {
+          if (this.isLoadingDirectory) {
+            this.hideLoading();
+            this.isLoadingDirectory = false;
+            if (this.loadingTimeout) { clearTimeout(this.loadingTimeout); this.loadingTimeout = null; }
+          }
+          const retryPath = this.loadRetryPath || this.currentPath;
+          this.loadRetryCount++;
+          const delay = this.loadRetryCount <= 3 ? 1000 : 2000;
+          console.log(`⏳ SFTP 未就绪，${delay/1000}秒后重试 (${this.loadRetryCount}/10):`, retryPath);
+          setTimeout(() => this.loadDirectory(retryPath), delay);
+        }
         return;
       }
 
@@ -566,6 +661,11 @@ export class FileManager {
         return;
       }
 
+      // NOT_FOUND without pending stat callback — benign (stale or file-read error), don't kill transfers
+      if (error.code === 'NOT_FOUND') {
+        return;
+      }
+
       this.hideLoading();
       this.isLoadingDirectory = false;
       if (this.loadingTimeout) {
@@ -573,7 +673,13 @@ export class FileManager {
         this.loadingTimeout = null;
       }
 
-      _failAllTransfers(this._transferCtx(), error.message);
+      // Only kill all transfers for fatal errors when no upload is in progress,
+      // or for WRITE_FAILED which directly impacts the current upload
+      const hasActiveUpload = this.activeUploads.size > 0 || this.uploadQueue.length > 0;
+      const isUploadFatalError = error.code === 'WRITE_FAILED';
+      if (!hasActiveUpload || isUploadFatalError) {
+        _failAllTransfers(this._transferCtx(), error.message);
+      }
 
       let userMessage = error.message;
       const msgLower = error.message.toLowerCase();
@@ -589,18 +695,71 @@ export class FileManager {
           return;
         }
         userMessage = '无法列出目录\n' + error.message;
+      } else if (error.code === 'TOO_MANY_FILES' || error.code === 'LIST_FAILED') {
+        // Non-fatal for uploads — don't show alert during upload
+        if (hasActiveUpload) return;
+        userMessage = error.message;
       } else if (error.code === 'READ_FAILED') {
+        // Clean up the specific download that failed
+        if (errorTransferId !== undefined) {
+          const ds = this.activeDownloads.get(errorTransferId);
+          if (ds?.currentDownloadId) {
+            this.updateTransferProgress(ds.currentDownloadId, 0, 'failed', error.message);
+            ds.currentDownloadId = null;
+          }
+          this.activeDownloads.delete(errorTransferId);
+          _processNextDownload(this._transferCtx());
+          return;
+        }
         userMessage = '下载失败\n' + error.message;
       } else if (error.code === 'WRITE_FAILED' || msgLower.includes('no space') || msgLower.includes('disk full') || msgLower.includes('enospc')) {
         userMessage = '服务器磁盘空间不足\n上传失败';
       } else if (msgLower.includes('permission denied') || msgLower.includes('eacces')) {
         userMessage = '服务器权限不足\n' + error.message;
+      } else if (hasActiveUpload) {
+        // Unknown error during upload — log but don't show alert or kill transfers
+        console.warn('⚠️ 上传期间收到非致命错误:', error.code, error.message);
+        return;
       }
 
       alert(`操作失败\n\n${userMessage}`);
     } catch (err) {
-      console.error('❌ 解析错误响应失败:', err);
+      console.error('❌ 处理错误响应失败:', err);
     }
+  }
+
+  /**
+   * 更新"目录被截断"提示横幅。当后端因 soft_limit 截断了文件列表时,
+   * 在 .file-list 滚动容器**外部**(作为兄弟节点)插入一个 banner,
+   * 避免与 sticky 表头争抢 top:0 导致互相覆盖。
+   */
+  private updateTruncationBanner(): void {
+    const fileListEl = this.listElement.closest('.file-list') as HTMLElement | null;
+    if (!fileListEl || !fileListEl.parentElement) return;
+    const parent = fileListEl.parentElement;
+    // banner 作为 .file-list 的前置兄弟节点存在,避免被 .file-list 的 overflow 滚走
+    let banner = parent.querySelector(':scope > .file-list-trunc-banner') as HTMLElement | null;
+
+    if (!this.listTruncated) {
+      banner?.remove();
+      return;
+    }
+
+    const message = `目录含 ${this.listTotalCount} 项,已显示前 ${this.files.length} 项`;
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.className = 'file-list-trunc-banner';
+      banner.innerHTML = `
+        <span class="file-list-trunc-msg"></span>
+        <button class="file-list-trunc-btn" type="button">全部加载</button>
+      `;
+      // 插在 .file-list 之前,保证它不受 .file-list 的 overflow 影响
+      parent.insertBefore(banner, fileListEl);
+      banner.querySelector('.file-list-trunc-btn')!.addEventListener('click', () => {
+        this.loadDirectory(this.currentPath, { loadAll: true });
+      });
+    }
+    banner.querySelector('.file-list-trunc-msg')!.textContent = message;
   }
 
   private renderFileList(): void {
@@ -753,24 +912,27 @@ export class FileManager {
       const selected = await open({ multiple: true, directory: false });
       if (!selected) return;
       const filePaths = Array.isArray(selected) ? selected : [selected];
-      const { readFile } = await import('@tauri-apps/plugin-fs');
       this._batchUploadCount = filePaths.length;
       for (const fp of filePaths) {
         try {
-          const content = await readFile(fp);
-          await _uploadFile(this._transferCtx(), fp.replace(/\\/g, '/').split('/').pop() || 'file', content, targetDir);
+          await _uploadLocalFile(this._transferCtx(), fp, targetDir);
         } catch (err) { console.error(`Failed to read file ${fp}:`, err); }
       }
       _resetBatchConflictState(this._transferCtx());
     } catch (err) { console.error('Upload failed:', err); }
   }
 
-  async uploadFile(filename: string, content: Uint8Array, targetDir?: string): Promise<void> {
-    await _uploadFile(this._transferCtx(), filename, content, targetDir);
+  async uploadFile(filename: string, content: Uint8Array, targetDir?: string, skipConflictCheck?: boolean): Promise<void> {
+    await _uploadFile(this._transferCtx(), filename, content, targetDir, skipConflictCheck);
   }
 
   private async downloadFile(filename: string, isDir: boolean = false): Promise<void> {
     await _downloadFile(this._transferCtx(), filename, isDir);
+  }
+
+  /** Public download entry for sidebar tree */
+  async downloadFilePublic(filename: string, isDir: boolean = false): Promise<void> {
+    await this.downloadFile(filename, isDir);
   }
 
   private handleOperationResponse(payload: Uint8Array): void {
@@ -808,24 +970,52 @@ export class FileManager {
         const isUploadComplete = !response.operation;
 
         if (isUploadComplete) {
-          if (this.currentUploadId) {
-            this.updateTransferProgress(this.currentUploadId, 100, 'completed');
-            this.currentUploadId = null;
+          // Find the active upload by path (or transferId if server returns it)
+          const completedPath = response.path || '';
+          let completedTid: number | null = null;
+          for (const [numTid, au] of this.activeUploads) {
+            if (au.path === completedPath || (response.transferId != null && response.transferId === numTid)) {
+              completedTid = numTid;
+              break;
+            }
           }
-          this.pendingUpload = null;
+          if (completedTid !== null) {
+            const au = this.activeUploads.get(completedTid)!;
+            if (au.recordId) {
+              this.updateTransferProgress(au.recordId, 100, 'completed');
+            }
+            if (au.fileHandle) {
+              au.fileHandle.close().catch(() => { /* ignore */ });
+            }
+            this.activeUploads.delete(completedTid);
+          }
           _processNextUpload(this._transferCtx());
         } else {
           if (this.pendingFileOp) this.hideFileOpLoading();
           this.loadDirectory(this.currentPath);
         }
+        // Notify sidebar tree to refresh
+        window.dispatchEvent(new CustomEvent('meterm-file-op-done', { detail: { sessionId: this.sessionId } }));
       } else {
         const errorMsg = response.message || response.error || 'Unknown error';
         console.error(`Operation failed: ${errorMsg}`);
 
-        if (!response.operation && this.currentUploadId) {
-          this.updateTransferProgress(this.currentUploadId, 0, 'failed', errorMsg);
-          this.currentUploadId = null;
-          this.pendingUpload = null;
+        if (!response.operation && this.activeUploads.size > 0) {
+          // Find the active upload by path (or transferId if server returns it)
+          const failedPath = response.path || '';
+          let failedTid: number | null = null;
+          for (const [numTid, au] of this.activeUploads) {
+            if (au.path === failedPath || (response.transferId != null && response.transferId === numTid)) {
+              failedTid = numTid;
+              break;
+            }
+          }
+          if (failedTid !== null) {
+            const au = this.activeUploads.get(failedTid)!;
+            if (au.recordId) this.updateTransferProgress(au.recordId, 0, 'failed', errorMsg);
+            if (au.fileHandle) au.fileHandle.close().catch(() => { /* ignore */ });
+            this.activeUploads.delete(failedTid);
+          }
           _processNextUpload(this._transferCtx());
         } else {
           if (this.pendingFileOp) this.hideFileOpLoading();
@@ -837,12 +1027,12 @@ export class FileManager {
       console.error('Failed to parse operation response:', err);
       alert('操作失败: 服务器响应解析错误');
 
-      if (this.currentUploadId) {
-        this.updateTransferProgress(this.currentUploadId, 0, 'failed', '服务器响应解析错误');
-        this.currentUploadId = null;
+      // Close all active upload file handles and mark as failed
+      for (const [numTid, au] of this.activeUploads) {
+        if (au.recordId) this.updateTransferProgress(au.recordId, 0, 'failed', '服务器响应解析错误');
+        if (au.fileHandle) au.fileHandle.close().catch(() => { /* ignore */ });
       }
-
-      this.pendingUpload = null;
+      this.activeUploads.clear();
       _processNextUpload(this._transferCtx());
     }
   }
@@ -854,12 +1044,16 @@ export class FileManager {
   }
 
   async deleteFile(path: string): Promise<void> {
-    this.sendFileOp({ operation: 'delete', path: this.getFullPath(path) }, '删除中...');
+    // If path is already absolute, use directly; otherwise resolve via getFullPath
+    const resolved = path.startsWith('/') ? path : this.getFullPath(path);
+    this.sendFileOp({ operation: 'delete', path: resolved }, '删除中...');
   }
 
   async renameFile(oldPath: string, newName: string): Promise<void> {
     if (!validateFileName(newName)) { alert('Invalid filename'); return; }
-    this.sendFileOp({ operation: 'rename', path: this.getFullPath(oldPath), new_path: this.getFullPath(newName) }, '重命名中...');
+    const resolvedOld = oldPath.startsWith('/') ? oldPath : this.getFullPath(oldPath);
+    const resolvedNew = newName.startsWith('/') ? newName : this.getFullPath(newName);
+    this.sendFileOp({ operation: 'rename', path: resolvedOld, new_path: resolvedNew }, '重命名中...');
   }
 
   getWebSocket(): WebSocket | null { return this.ws; }
@@ -873,8 +1067,18 @@ export class FileManager {
     this._send(message);
   }
 
+  /** Temporary context path override for sidebar tree right-click operations */
+  private _contextPath: string | null = null;
+
+  setCurrentPathForContext(path: string): void {
+    this._contextPath = path;
+    // Auto-clear after a short delay (context menu action completes quickly)
+    setTimeout(() => { this._contextPath = null; }, 5000);
+  }
+
   getFullPath(name: string): string {
-    return this.currentPath === '/' ? `/${name}` : `${this.currentPath}/${name}`;
+    const base = this._contextPath ?? this.currentPath;
+    return base === '/' ? `/${name}` : `${base}/${name}`;
   }
 
   async createFile(name: string): Promise<void> {
@@ -883,19 +1087,28 @@ export class FileManager {
   }
 
   async chmodFile(path: string, mode: number): Promise<void> {
-    this.sendFileOp({ operation: 'chmod', path: this.getFullPath(path), mode }, '修改权限...');
+    const resolved = path.startsWith('/') ? path : this.getFullPath(path);
+    this.sendFileOp({ operation: 'chmod', path: resolved, mode }, '修改权限...');
   }
 
   async copyFile(name: string, destPath: string): Promise<void> {
-    this.sendFileOp({ operation: 'copy', path: this.getFullPath(name), new_path: destPath }, '复制中...');
+    const resolved = name.startsWith('/') ? name : this.getFullPath(name);
+    this.sendFileOp({ operation: 'copy', path: resolved, new_path: destPath }, '复制中...');
   }
 
   async moveFile(name: string, destPath: string): Promise<void> {
-    this.sendFileOp({ operation: 'rename', path: this.getFullPath(name), new_path: destPath }, '移动中...');
+    const resolved = name.startsWith('/') ? name : this.getFullPath(name);
+    this.sendFileOp({ operation: 'rename', path: resolved, new_path: destPath }, '移动中...');
+  }
+
+  /** Move file by full source path (for sidebar tree drag-drop) */
+  async moveFileByPath(srcPath: string, destPath: string): Promise<void> {
+    this.sendFileOp({ operation: 'rename', path: srcPath, new_path: destPath });
   }
 
   async createSymlink(target: string, linkName: string): Promise<void> {
-    this.sendFileOp({ operation: 'symlink', path: target, new_path: this.getFullPath(linkName) }, '创建链接...');
+    const resolved = linkName.startsWith('/') ? linkName : this.getFullPath(linkName);
+    this.sendFileOp({ operation: 'symlink', path: target, new_path: resolved }, '创建链接...');
   }
 
   async createDirectory(name: string): Promise<void> {
@@ -913,18 +1126,144 @@ export class FileManager {
 
   private initializeDragAndDrop(): void {
     if (_dragDropListenerRegistered) {
-      console.log('🎯 Drag-drop listener already registered globally, skipping.');
       return;
     }
     _dragDropListenerRegistered = true;
-    console.log('🎯 Registering global Tauri v2 drag-drop listener...');
 
     const appWindow = getCurrentWebviewWindow();
+    let _sidebarHighlight: HTMLElement | null = null;
+
     appWindow.onDragDropEvent(async (event) => {
+      const payload = event.payload as { type: string; paths?: string[]; position?: { x: number; y: number } };
+
+      // Tauri v2 drag-drop position coordinate system varies by platform:
+      // - macOS (WKWebView): already in logical (CSS) pixels — dividing by dpr would
+      //   halve coordinates on Retina and shift elementFromPoint well above the cursor.
+      // - Windows (WebView2) / Linux (WebKitGTK): physical pixels — must divide by dpr.
+      const dpr = isMacPlatform ? 1 : (window.devicePixelRatio || 1);
+      const cssX = payload.position ? payload.position.x / dpr : 0;
+      const cssY = payload.position ? payload.position.y / dpr : 0;
+
+      // Check if hovering/dropping over a sidebar
+      const elemAtPoint = payload.position ? document.elementFromPoint(cssX, cssY) : null;
+      const sidebarEl = elemAtPoint?.closest('.file-sidebar') as HTMLElement | null;
+
+      if (sidebarEl && sidebarEl.style.display !== 'none') {
+        const sessionId = sidebarEl.dataset.sessionId;
+        if (!sessionId) return;
+        const { DrawerManager } = await import('./drawer');
+        const drawerInst = DrawerManager._getInstanceForSidebar(sessionId);
+        const fm = drawerInst?.fileManager;
+        if (!fm) return;
+
+        if (payload.type === 'enter' || payload.type === 'over') {
+          // Highlight drop target in sidebar tree
+          const nodeEl = elemAtPoint?.closest('.tree-node[data-is-dir="true"]') as HTMLElement | null;
+          const treeContainer = sidebarEl.querySelector('.sidebar-tree-container') as HTMLElement;
+
+          // Determine new highlight target first, then clear old one if different
+          const newTarget: HTMLElement | null = nodeEl
+            ?? ((treeContainer?.contains(elemAtPoint) || elemAtPoint === treeContainer) ? treeContainer : null);
+
+          if (_sidebarHighlight && _sidebarHighlight !== newTarget) {
+            _sidebarHighlight.classList.remove('drop-target', 'drag-over');
+          }
+
+          if (newTarget === nodeEl && nodeEl) {
+            nodeEl.classList.add('drop-target');
+            _sidebarHighlight = nodeEl;
+          } else if (newTarget === treeContainer) {
+            treeContainer.classList.add('drag-over');
+            _sidebarHighlight = treeContainer;
+          }
+        } else if (payload.type === 'leave') {
+          if (_sidebarHighlight) {
+            _sidebarHighlight.classList.remove('drop-target', 'drag-over');
+            _sidebarHighlight = null;
+          }
+          sidebarEl.querySelectorAll<HTMLElement>('.drop-target, .drag-over').forEach(el => {
+            el.classList.remove('drop-target', 'drag-over');
+          });
+        } else if (payload.type === 'drop') {
+          if (_sidebarHighlight) {
+            _sidebarHighlight.classList.remove('drop-target', 'drag-over');
+            _sidebarHighlight = null;
+          }
+          // Fallback: clear any lingering highlights across the whole sidebar
+          sidebarEl.querySelectorAll<HTMLElement>('.drop-target, .drag-over').forEach(el => {
+            el.classList.remove('drop-target', 'drag-over');
+          });
+
+          // Determine target directory
+          const nodeEl = elemAtPoint?.closest('.tree-node') as HTMLElement | null;
+          let targetDir: string | undefined;
+          if (nodeEl) {
+            const nodePath = nodeEl.dataset.path;
+            const isDir = nodeEl.dataset.isDir === 'true';
+            if (nodePath) {
+              if (isDir) {
+                targetDir = nodePath;
+              } else {
+                // Dropped on a file → use its parent directory
+                const lastSlash = nodePath.lastIndexOf('/');
+                targetDir = lastSlash > 0 ? nodePath.substring(0, lastSlash) : '/';
+              }
+            }
+          }
+          // Fall back to sidebar tree root
+          if (!targetDir) {
+            const { SidebarManager } = await import('./file-sidebar');
+            if (SidebarManager.has(sessionId)) {
+              // Access tree root path via the sidebar instance
+              const sidebarInst = (SidebarManager as any).sidebars.get(sessionId);
+              targetDir = sidebarInst?.tree?.getRootPath() || '/';
+            }
+          }
+
+          // Perform upload
+          const filePaths = payload.paths ?? [];
+          if (filePaths.length === 0) return;
+
+          const { stat: fsStat } = await import('@tauri-apps/plugin-fs');
+          const { validateFileName } = await import('./file-utils');
+          const ctx = fm._transferCtx();
+          ctx.setBatchUploadCount(filePaths.length);
+
+          for (const filePath of filePaths) {
+            try {
+              const info = await fsStat(filePath);
+              if (info.isDirectory) {
+                const dirName = filePath.replace(/\\/g, '/').split('/').pop() || 'unknown';
+                await _uploadDirectory(ctx, filePath, dirName);
+              } else {
+                const fileName = filePath.replace(/\\/g, '/').split('/').pop() || 'unknown';
+                if (!validateFileName(fileName)) continue;
+                await _uploadLocalFile(ctx, filePath, targetDir, true);
+              }
+            } catch (err) {
+              console.error(`Sidebar drop upload failed: ${filePath}`, err);
+            }
+          }
+          _resetBatchConflictState(ctx);
+
+          // Refresh sidebar tree
+          const { SidebarManager } = await import('./file-sidebar');
+          setTimeout(() => SidebarManager.refreshTree(sessionId), 500);
+        }
+        return; // handled by sidebar
+      }
+
+      // Clear sidebar highlight on leave/drop outside sidebar
+      if (_sidebarHighlight) {
+        _sidebarHighlight.classList.remove('drop-target', 'drag-over');
+        _sidebarHighlight = null;
+      }
+
+      // Default: bottom drawer drag-drop handler
       const target = _activeDragDropInstance;
       if (!target) return;
-      await _handleDragEvent(target._transferCtx(), event.payload as { type: string; paths?: string[] }, target.listElement);
-    }).then(() => console.log('✅ Tauri v2 drag-drop listener registered'));
+      await _handleDragEvent(target._transferCtx(), payload, target.listElement);
+    });
   }
 
   // ===================== 传输历史（委托到 TransferHistoryManager） =====================
@@ -956,6 +1295,18 @@ export class FileManager {
     this._transferHistory!.renderTransferHistory();
   }
 
+  getTransferRecords(typeFilter?: 'upload' | 'download' | null, statusFilter?: 'active' | 'completed' | 'failed' | null): import('./file-transfer-history').TransferRecord[] {
+    return this._transferHistory!.getRecords(typeFilter, statusFilter);
+  }
+
+  getTransferSpeed(id: string): number {
+    return this._transferHistory!.getSpeed(id);
+  }
+
+  deleteTransferRecord(id: string): void {
+    this._transferHistory!.deleteRecord(id);
+  }
+
   setTransferFilter(type: 'upload' | 'download' | null): void {
     this._transferHistory!.setFilter(type);
   }
@@ -970,6 +1321,10 @@ export class FileManager {
 
   setTransferSearchQuery(query: string): void {
     this._transferHistory!.setSearchQuery(query);
+  }
+
+  setServerLabel(label: string): void {
+    this._transferHistory!.serverLabel = label;
   }
 
   pauseTransfer(id: string): void {

@@ -62,6 +62,8 @@ export interface ManagedTerminal {
   _lastOscBg?: string;
   // _userScrolledUp and scroll stabilization are handled via closures
   // in terminal.ts (not stored on ManagedTerminal).
+  /** Reset the scroll-area height floor so resize can shrink freely */
+  _resetScrollFloor?: () => void;
   /** OSC 7766 marker resolvers — key is marker ID, value resolves with exit code */
   _oscMarkerResolvers: Map<string, (exitCode: number) => void>;
   /** Shell integration state — tracked via OSC 7768 prompt hook */

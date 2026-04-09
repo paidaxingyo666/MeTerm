@@ -26,6 +26,8 @@ import { pendingUpdateVersion, openUpdaterWindow } from './updater';
 import { settings, isHomeView, isGalleryView, isWindowsPlatform, isLinuxPlatform, activeJumpServers } from './app-state';
 import { toggleJumpServerPanel, isJumpServerPanelOpen } from './jumpserver-panel';
 import { isPipActive, togglePip } from './pip';
+import { DrawerManager } from './drawer';
+import { toggleFileManager } from './file-manager-toggle';
 import appIconUrl from '../src-tauri/icons/icon.svg';
 
 /** Platforms that need custom window controls (no native overlay titlebar). */
@@ -286,6 +288,23 @@ export function renderToolbarActions(): void {
     renderTabs();
   };
   toolbarLeftEl.appendChild(homeBtn);
+
+  // File manager toggle button — only when tabs exist and not in home/gallery view
+  if (TabManager.tabs.length > 0 && !isHomeView && !isGalleryView) {
+    const activeSessionId = TabManager.getActiveSessionId();
+    const hasFm = activeSessionId && DrawerManager.has(activeSessionId);
+    if (hasFm) {
+      const fmBtn = document.createElement('button');
+      fmBtn.className = 'toolbar-action-btn';
+      fmBtn.type = 'button';
+      fmBtn.title = t('fileManager');
+      fmBtn.innerHTML = `<span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16"><path d="M2 19V7a2 2 0 012-2h5l2 2h7a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+      fmBtn.onclick = () => {
+        toggleFileManager(activeSessionId);
+      };
+      toolbarLeftEl.appendChild(fmBtn);
+    }
+  }
 
   if (settings?.enableThumbnail !== false) {
     const galleryBtn = document.createElement('button');

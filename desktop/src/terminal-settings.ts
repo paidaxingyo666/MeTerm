@@ -12,7 +12,7 @@ import type { ManagedTerminal } from './terminal-types';
 
 export function applySettingsToTerminal(mt: ManagedTerminal, settings: AppSettings): void {
   const theme = getTheme(settings.theme);
-  const fontFamily = getFontFamily(settings.fontFamily, settings.enableNerdFont, settings.fontWeight);
+  const fontFamily = getFontFamily(settings.fontFamily, settings.enableNerdFont, settings.fontWeight, settings.cjkFontFamily);
   const fontWeight = getEffectiveFontWeight(settings.fontFamily, settings.fontWeight || 400);
   console.log(`[terminal] applySettings: fontFamily="${fontFamily}" fontWeight=${fontWeight} (raw=${settings.fontWeight})`);
 

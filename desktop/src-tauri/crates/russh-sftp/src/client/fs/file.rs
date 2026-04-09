@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     future::Future,
     io::{self, SeekFrom},
     pin::Pin,
@@ -20,6 +21,7 @@ type StateFn<T> = Option<Pin<Box<dyn Future<Output = io::Result<T>> + Send + Syn
 
 const MAX_READ_LENGTH: u64 = 261120;
 const MAX_WRITE_LENGTH: u64 = 261120;
+const MAX_PIPELINED_READ_REQUESTS: usize = 512;
 
 struct FileState {
     f_read: StateFn<Option<Vec<u8>>>,
@@ -192,6 +194,184 @@ impl File {
         }
 
         Ok(results)
+    }
+
+    /// Read multiple chunks using pipelined SFTP read requests and emit each
+    /// chunk as soon as its response arrives.
+    ///
+    /// This preserves pipelined throughput while avoiding the "whole batch
+    /// returns at once" behavior of [`read_pipelined`].
+    pub async fn read_pipelined_each<F, Fut>(&mut self, count: usize, mut on_chunk: F) -> io::Result<usize>
+    where
+        F: FnMut(Vec<u8>) -> Fut,
+        Fut: Future<Output = io::Result<()>> + Send,
+    {
+        if count == 0 {
+            return Ok(0);
+        }
+
+        let max_read_len = self
+            .extensions
+            .limits
+            .as_ref()
+            .and_then(|l| l.read_len)
+            .unwrap_or(MAX_READ_LENGTH) as u32;
+
+        let mut pending = Vec::with_capacity(count);
+        for _ in 0..count {
+            match self.session.read_no_wait(self.handle.as_str(), self.pos, max_read_len) {
+                Ok(pr) => {
+                    pending.push(pr);
+                    self.pos += max_read_len as u64;
+                }
+                Err(e) => {
+                    for pr in pending {
+                        let _ = pr.wait().await;
+                    }
+                    return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+                }
+            }
+        }
+
+        let mut actual_bytes = 0u64;
+        let mut emitted = 0usize;
+        for pr in pending {
+            match pr.wait().await {
+                Ok(Some(data)) => {
+                    if data.is_empty() {
+                        break;
+                    }
+                    actual_bytes += data.len() as u64;
+                    emitted += 1;
+                    on_chunk(data).await?;
+                }
+                Ok(None) => break,
+                Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
+            }
+        }
+
+        let advanced = count as u64 * max_read_len as u64;
+        if actual_bytes < advanced {
+            self.pos -= advanced - actual_bytes;
+        }
+
+        Ok(emitted)
+    }
+
+    /// Read the rest of the file while continuously keeping a target amount
+    /// of data in flight.
+    ///
+    /// Unlike [`read_pipelined_each`], this keeps refilling the pipeline after
+    /// every completed read instead of waiting for a whole batch to finish
+    /// first. That avoids bursty transfer patterns on fast links and makes the
+    /// effective concurrency scale with the server's negotiated read length.
+    pub async fn read_pipelined_streaming_each<F, Fut>(
+        &mut self,
+        max_inflight_bytes: usize,
+        mut on_chunk: F,
+    ) -> io::Result<usize>
+    where
+        F: FnMut(Vec<u8>) -> Fut,
+        Fut: Future<Output = io::Result<()>> + Send,
+    {
+        if max_inflight_bytes == 0 {
+            return Ok(0);
+        }
+
+        let max_read_len = self
+            .extensions
+            .limits
+            .as_ref()
+            .and_then(|l| l.read_len)
+            .unwrap_or(MAX_READ_LENGTH) as u32;
+
+        let window = ((max_inflight_bytes + max_read_len as usize - 1) / max_read_len as usize)
+            .clamp(1, MAX_PIPELINED_READ_REQUESTS);
+
+        let mut pending = VecDeque::with_capacity(window);
+        let mut sent = 0usize;
+        let mut emitted = 0usize;
+        let mut actual_bytes = 0u64;
+        let mut saw_eof = false;
+
+        while pending.len() < window {
+            match self.session.read_no_wait(self.handle.as_str(), self.pos, max_read_len) {
+                Ok(pr) => {
+                    pending.push_back(pr);
+                    self.pos += max_read_len as u64;
+                    sent += 1;
+                }
+                Err(e) => {
+                    for pr in pending {
+                        let _ = pr.wait().await;
+                    }
+                    return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+                }
+            }
+        }
+
+        while let Some(pr) = pending.pop_front() {
+            match pr.wait().await {
+                Ok(Some(data)) => {
+                    if data.is_empty() {
+                        saw_eof = true;
+                    } else {
+                        actual_bytes += data.len() as u64;
+                        emitted += 1;
+                        if let Err(err) = on_chunk(data).await {
+                            for pending_read in pending {
+                                let _ = pending_read.wait().await;
+                            }
+                            let advanced = sent as u64 * max_read_len as u64;
+                            if actual_bytes < advanced {
+                                self.pos -= advanced - actual_bytes;
+                            }
+                            return Err(err);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    saw_eof = true;
+                }
+                Err(e) => {
+                    for pending_read in pending {
+                        let _ = pending_read.wait().await;
+                    }
+                    let advanced = sent as u64 * max_read_len as u64;
+                    if actual_bytes < advanced {
+                        self.pos -= advanced - actual_bytes;
+                    }
+                    return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+                }
+            }
+
+            if !saw_eof {
+                match self.session.read_no_wait(self.handle.as_str(), self.pos, max_read_len) {
+                    Ok(next) => {
+                        pending.push_back(next);
+                        self.pos += max_read_len as u64;
+                        sent += 1;
+                    }
+                    Err(e) => {
+                        for pending_read in pending {
+                            let _ = pending_read.wait().await;
+                        }
+                        let advanced = sent as u64 * max_read_len as u64;
+                        if actual_bytes < advanced {
+                            self.pos -= advanced - actual_bytes;
+                        }
+                        return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+                    }
+                }
+            }
+        }
+
+        let advanced = sent as u64 * max_read_len as u64;
+        if actual_bytes < advanced {
+            self.pos -= advanced - actual_bytes;
+        }
+
+        Ok(emitted)
     }
 
     /// Send a single SFTP Write without waiting for the response.

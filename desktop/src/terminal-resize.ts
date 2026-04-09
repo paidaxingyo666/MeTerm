@@ -100,9 +100,54 @@ export function doResizeInternal(
   // Check if terminal was scrolled to bottom before resize
   const buf = mt.terminal.buffer.active;
   const wasAtBottom = buf.viewportY >= buf.baseY;
+  const prevBaseY = buf.baseY;
+
+  // Reset the height-floor interceptor before fit so it does not block the
+  // new (possibly smaller) scroll-area height during resize.
+  mt._resetScrollFloor?.();
 
   // Use fitAddon to calculate and apply correct dimensions
   mt.fitAddon.fit();
+
+  // When rows shrink (e.g. entering split-pane layout, focus-triggered
+  // layout shifts) xterm.js pushes the excess lines into scrollback even
+  // when they are blank.  That inflates baseY and makes the overlay
+  // scrollbar appear despite there being no real content to scroll.
+  // Fix: if there was no scrollback before the fit and the newly-added
+  // scrollback lines are all empty, clear them so baseY goes back to 0.
+  if (wasAtBottom && prevBaseY === 0) {
+    const postBuf = mt.terminal.buffer.active;
+    const newBaseY = postBuf.baseY;
+    if (newBaseY > 0) {
+      let allEmpty = true;
+      for (let i = 0; i < newBaseY && allEmpty; i++) {
+        const line = postBuf.getLine(i);
+        if (line && line.translateToString(true).trim().length > 0) {
+          allEmpty = false;
+        }
+      }
+      if (allEmpty) {
+        (mt.terminal as any).clearScrollback?.();
+      }
+    }
+  }
+
+  // xterm.js bug workaround: _afterResize() calls syncScrollArea(true)
+  // before _renderService.resize() runs (different onResize listener
+  // registered later). This means _innerRefresh() computes the scroll-area
+  // height using stale canvasHeight, producing a wrong value. The cached
+  // _lastRecordedBufferHeight is updated to this wrong value, so subsequent
+  // syncScrollArea() calls see no mismatch and skip re-computation.
+  //
+  // Fix: invalidate the viewport's cached values and re-sync now that all
+  // event handlers have completed and render dimensions are accurate.
+  const core = (mt.terminal as any)._core;
+  const vp = core?.viewport;
+  if (vp) {
+    vp._lastRecordedBufferHeight = -1;
+    vp._lastRecordedViewportHeight = -1;
+    vp.syncScrollArea(true);
+  }
 
   const cols = mt.terminal.cols;
   const rows = mt.terminal.rows;
@@ -153,6 +198,15 @@ export function doResizeInternal(
 
   // Force full refresh to keep display in sync
   mt.terminal.refresh(0, rows - 1);
+
+  // Nudge the custom overlay scrollbar to re-evaluate: xterm.js's internal
+  // resize can change .xterm-scroll-area's inline height, but overlay-scrollbar
+  // only listens to scroll/ResizeObserver/MutationObserver events — none of
+  // which fire on a pure style-attribute change on a child element.
+  const xvp = mt.container.querySelector('.xterm-viewport') as HTMLElement | null;
+  if (xvp) {
+    xvp.dispatchEvent(new Event('scroll'));
+  }
 
   // WKWebView GPU compositing fix: xterm.js schedules its canvas render via
   // requestAnimationFrame (async). During a window shrink on WKWebView/Metal,

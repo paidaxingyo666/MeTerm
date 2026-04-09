@@ -49,86 +49,207 @@ export function renderMarkdown(text: string, sessionId: string, addHistoryFn: (c
   return segments.join('');
 }
 
+/**
+ * Block-level markdown renderer using a line-based state machine.
+ *
+ * Why a state machine and not split-on-blank-lines?  LLMs frequently
+ * emit a markdown table flush against the surrounding paragraph
+ * (no blank line above the table) — the previous implementation
+ * required `\n\n` to start a fresh block, which meant the whole
+ * paragraph + table got bundled into one block where lines[0] was
+ * a sentence, not a table header, so the table heuristic missed.
+ *
+ * Now we walk the input line-by-line and recognize:
+ *   • headings (#, ##, ###)
+ *   • horizontal rules (---, ***, ___)
+ *   • unordered lists (-, *, +)
+ *   • GitHub-flavored markdown tables (pipes + separator row)
+ *   • blank lines (close any open paragraph or list)
+ *   • everything else accumulated into a paragraph
+ *
+ * Tables are detected by looking ahead one line: if the current
+ * line contains a pipe AND the next line is a valid separator
+ * (`---`/`:---:` segments joined by pipes), we enter table mode.
+ */
 export function renderInlineMarkdown(text: string): string {
-  // Process block-level elements first, then inline
-  const blocks = text.split('\n\n');
-  const rendered: string[] = [];
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const out: string[] = [];
 
-  for (const block of blocks) {
-    const trimmed = block.trim();
-    if (!trimmed) continue;
+  let inList = false;
+  let paraBuf: string[] = [];
 
-    // Check if this block is a table (lines starting with |)
-    const lines = trimmed.split('\n');
-    if (lines.length >= 2 && lines[0].includes('|') && lines[1].includes('---')) {
-      rendered.push(renderTable(lines));
+  const flushPara = () => {
+    if (paraBuf.length === 0) return;
+    out.push(`<p>${paraBuf.join('<br>')}</p>`);
+    paraBuf = [];
+  };
+  const closeList = () => {
+    if (!inList) return;
+    out.push('</ul>');
+    inList = false;
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const lt = line.trim();
+
+    // ── Blank line: end paragraph + list ──
+    if (!lt) {
+      flushPara();
+      closeList();
+      i++;
       continue;
     }
 
-    // Process line by line for headings, hr, lists
-    const lineResults: string[] = [];
-    let inList = false;
-    for (const line of lines) {
-      const lt = line.trim();
-      // Horizontal rule
-      if (/^---+$/.test(lt)) {
-        if (inList) { lineResults.push('</ul>'); inList = false; }
-        lineResults.push('<hr class="ai-md-hr">');
+    // ── Table: current line has pipes AND next line is a separator ──
+    if (
+      i + 1 < lines.length &&
+      lt.includes('|') &&
+      isTableSeparator(lines[i + 1])
+    ) {
+      flushPara();
+      closeList();
+      const tableLines: string[] = [lines[i], lines[i + 1]];
+      let j = i + 2;
+      while (j < lines.length) {
+        const lj = lines[j].trim();
+        if (!lj || !lj.includes('|')) break;
+        tableLines.push(lines[j]);
+        j++;
       }
-      // Headings
-      else if (lt.startsWith('### ')) {
-        if (inList) { lineResults.push('</ul>'); inList = false; }
-        lineResults.push(`<h4 class="ai-md-h3">${renderInline(escapeHtml(lt.slice(4)))}</h4>`);
-      } else if (lt.startsWith('## ')) {
-        if (inList) { lineResults.push('</ul>'); inList = false; }
-        lineResults.push(`<h3 class="ai-md-h2">${renderInline(escapeHtml(lt.slice(3)))}</h3>`);
-      } else if (lt.startsWith('# ')) {
-        if (inList) { lineResults.push('</ul>'); inList = false; }
-        lineResults.push(`<h2 class="ai-md-h1">${renderInline(escapeHtml(lt.slice(2)))}</h2>`);
-      }
-      // Unordered list
-      else if (/^[-*] /.test(lt)) {
-        if (!inList) { lineResults.push('<ul class="ai-md-list">'); inList = true; }
-        lineResults.push(`<li>${renderInline(escapeHtml(lt.slice(2)))}</li>`);
-      }
-      // Regular text
-      else {
-        if (inList) { lineResults.push('</ul>'); inList = false; }
-        lineResults.push(renderInline(escapeHtml(lt)));
-      }
+      out.push(renderTable(tableLines));
+      i = j;
+      continue;
     }
-    if (inList) lineResults.push('</ul>');
 
-    // Wrap non-block content in <p>
-    const joined = lineResults.join('\n');
-    if (!joined.startsWith('<h') && !joined.startsWith('<ul') && !joined.startsWith('<hr') && !joined.startsWith('<table')) {
-      rendered.push(`<p>${joined.replace(/\n/g, '<br>')}</p>`);
-    } else {
-      rendered.push(joined);
+    // ── Horizontal rule (must NOT also be a hijacked table separator) ──
+    if (/^---+$/.test(lt) || /^\*\*\*+$/.test(lt) || /^___+$/.test(lt)) {
+      flushPara();
+      closeList();
+      out.push('<hr class="ai-md-hr">');
+      i++;
+      continue;
     }
+
+    // ── Headings ──
+    if (lt.startsWith('### ')) {
+      flushPara();
+      closeList();
+      out.push(`<h4 class="ai-md-h3">${renderInline(escapeHtml(lt.slice(4)))}</h4>`);
+      i++;
+      continue;
+    }
+    if (lt.startsWith('## ')) {
+      flushPara();
+      closeList();
+      out.push(`<h3 class="ai-md-h2">${renderInline(escapeHtml(lt.slice(3)))}</h3>`);
+      i++;
+      continue;
+    }
+    if (lt.startsWith('# ')) {
+      flushPara();
+      closeList();
+      out.push(`<h2 class="ai-md-h1">${renderInline(escapeHtml(lt.slice(2)))}</h2>`);
+      i++;
+      continue;
+    }
+
+    // ── Unordered list ──
+    if (/^[-*+] /.test(lt)) {
+      flushPara();
+      if (!inList) {
+        out.push('<ul class="ai-md-list">');
+        inList = true;
+      }
+      out.push(`<li>${renderInline(escapeHtml(lt.slice(2)))}</li>`);
+      i++;
+      continue;
+    }
+
+    // ── Regular text → buffer for paragraph ──
+    closeList();
+    paraBuf.push(renderInline(escapeHtml(lt)));
+    i++;
   }
-
-  return rendered.join('');
+  flushPara();
+  closeList();
+  return out.join('');
 }
 
-/** Render a markdown table from lines */
-function renderTable(lines: string[]): string {
-  const parseRow = (line: string): string[] =>
-    line.split('|').map(c => c.trim()).filter((_, i, arr) => i > 0 && i < arr.length);
+/**
+ * Does a line look like a GFM table separator row?
+ * Examples that should match:
+ *   |---|---|         (canonical)
+ *   |:--|:-:|--:|     (left / center / right alignment)
+ *   ---|---|---       (no outer pipes)
+ *   | -- | -- |       (only 2 dashes — common LLM output)
+ *
+ * Examples that should NOT match:
+ *   ---               (horizontal rule)
+ *   text---more       (in-paragraph dashes)
+ */
+function isTableSeparator(line: string): boolean {
+  let t = line.trim();
+  if (!t) return false;
+  // Must contain a pipe somewhere — otherwise it's a horizontal rule.
+  if (!t.includes('|')) return false;
+  // Strip optional outer pipes.
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|')) t = t.slice(0, -1);
+  const segments = t.split('|').map((s) => s.trim());
+  if (segments.length === 0) return false;
+  // Each segment: optional leading colon, two-or-more dashes, optional trailing colon.
+  return segments.every((s) => /^:?-{2,}:?$/.test(s));
+}
 
+/** Parse a markdown table row, tolerating optional outer pipes. */
+function parseRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').map((c) => c.trim());
+}
+
+/**
+ * Parse the alignment row (`|:---|---:|:---:|`) into per-column hints.
+ * Returns one of 'left' | 'right' | 'center' | undefined for each column.
+ */
+function parseAlignments(line: string): Array<'left' | 'right' | 'center' | undefined> {
+  let t = line.trim();
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|')) t = t.slice(0, -1);
+  return t.split('|').map((seg) => {
+    const s = seg.trim();
+    const startsColon = s.startsWith(':');
+    const endsColon = s.endsWith(':');
+    if (startsColon && endsColon) return 'center';
+    if (endsColon) return 'right';
+    if (startsColon) return 'left';
+    return undefined;
+  });
+}
+
+/** Render a markdown table from its raw line array. */
+function renderTable(lines: string[]): string {
   const headers = parseRow(lines[0]);
-  // Skip separator line (lines[1])
-  const rows = lines.slice(2).filter(l => l.includes('|')).map(parseRow);
+  const aligns = parseAlignments(lines[1]);
+  const rows = lines.slice(2).filter((l) => l.trim().includes('|')).map(parseRow);
+
+  const styleFor = (i: number): string => {
+    const a = aligns[i];
+    return a ? ` style="text-align:${a}"` : '';
+  };
 
   let html = '<table class="ai-md-table"><thead><tr>';
-  for (const h of headers) {
-    html += `<th>${renderInline(escapeHtml(h))}</th>`;
+  for (let i = 0; i < headers.length; i++) {
+    html += `<th${styleFor(i)}>${renderInline(escapeHtml(headers[i]))}</th>`;
   }
   html += '</tr></thead><tbody>';
   for (const row of rows) {
     html += '<tr>';
     for (let i = 0; i < headers.length; i++) {
-      html += `<td>${renderInline(escapeHtml(row[i] ?? ''))}</td>`;
+      html += `<td${styleFor(i)}>${renderInline(escapeHtml(row[i] ?? ''))}</td>`;
     }
     html += '</tr>';
   }

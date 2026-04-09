@@ -17,6 +17,8 @@ export interface TransferRecord {
   savePath?: string;
   startTime?: number;
   endTime?: number;
+  /** Server label (e.g. "user@host" or "local") for display and search */
+  serverLabel?: string;
 }
 
 /** 传输控制委托：由 FileManager 实现 */
@@ -34,6 +36,8 @@ const STORAGE_KEY = 'meterm-transfer-history';
 
 export class TransferHistoryManager {
   private sessionId: string;
+  /** Server label for new records (e.g. "user@host:22" or "local") */
+  serverLabel: string = 'local';
   private transferHistory: TransferRecord[] = [];
   private maxHistoryLength = 200;
   private speedTracker: Map<string, { lastBytes: number; lastTime: number; speed: number }> = new Map();
@@ -76,7 +80,7 @@ export class TransferHistoryManager {
     }
     if (this.searchQuery) {
       const q = this.searchQuery.toLowerCase();
-      list = list.filter(r => r.filename.toLowerCase().includes(q) || r.path.toLowerCase().includes(q));
+      list = list.filter(r => r.filename.toLowerCase().includes(q) || r.path.toLowerCase().includes(q) || (r.serverLabel && r.serverLabel.toLowerCase().includes(q)));
     }
     return list;
   }
@@ -165,6 +169,7 @@ export class TransferHistoryManager {
       status: 'pending',
       timestamp: Date.now(),
       savePath,
+      serverLabel: this.serverLabel,
     };
 
     this.transferHistory.unshift(record);
@@ -198,7 +203,9 @@ export class TransferHistoryManager {
           this.speedTracker.delete(id);
         }
         if (status === 'paused') {
-          this.speedTracker.delete(id);
+          // 暂停时保留 tracker（不删除），恢复后能更快重算速度
+          const tracker = this.speedTracker.get(id);
+          if (tracker) tracker.speed = 0;
         }
       }
 
@@ -208,15 +215,19 @@ export class TransferHistoryManager {
         const tracker = this.speedTracker.get(id);
         if (tracker) {
           const dt = (now - tracker.lastTime) / 1000;
-          if (dt >= 0.5) {
+          if (dt >= 0.2) {
             const db = currentBytes - tracker.lastBytes;
             if (db > 0) {
-              tracker.speed = db / dt;
+              const instantSpeed = db / dt;
+              tracker.speed = tracker.speed > 0
+                ? tracker.speed * 0.75 + instantSpeed * 0.25
+                : instantSpeed;
               tracker.lastBytes = currentBytes;
               tracker.lastTime = now;
-            } else if (dt >= 3) {
-              // No new data for 3+ seconds — show stall
-              tracker.speed = 0;
+            } else if (dt >= 1) {
+              // Gradually decay displayed speed during short gaps instead of
+              // snapping between burst peak and zero.
+              tracker.speed *= 0.7;
               tracker.lastTime = now;
             }
             // Otherwise keep previous speed (avoids flicker during short gaps)
@@ -252,8 +263,36 @@ export class TransferHistoryManager {
     this.speedTracker.delete(id);
   }
 
+  /** 更新传输记录的文件大小（下载首个 chunk 到达时调用） */
+  updateTransferSize(id: string, size: number): void {
+    const record = this.transferHistory.find(r => r.id === id);
+    if (record && record.size === 0 && size > 0) {
+      record.size = size;
+    }
+  }
+
   findRecord(id: string): TransferRecord | undefined {
     return this.transferHistory.find(r => r.id === id);
+  }
+
+  /** Get all records, optionally filtered */
+  getRecords(typeFilter?: 'upload' | 'download' | null, statusFilter?: 'active' | 'completed' | 'failed' | null): TransferRecord[] {
+    let list = this.transferHistory;
+    if (typeFilter) list = list.filter(r => r.type === typeFilter);
+    if (statusFilter) {
+      list = list.filter(r => {
+        if (statusFilter === 'active') return r.status === 'inprogress' || r.status === 'paused' || r.status === 'pending';
+        if (statusFilter === 'completed') return r.status === 'completed';
+        if (statusFilter === 'failed') return r.status === 'failed' || r.status === 'cancelled';
+        return true;
+      });
+    }
+    return list;
+  }
+
+  /** Get speed for a record */
+  getSpeed(id: string): number {
+    return this.speedTracker.get(id)?.speed ?? 0;
   }
 
   /** 删除单条传输记录（仅已完成/失败/取消的记录可删除） */
@@ -277,7 +316,7 @@ export class TransferHistoryManager {
     const fill = item.querySelector('.progress-fill') as HTMLElement | null;
     if (fill) fill.style.width = `${progress}%`;
     const text = item.querySelector('.progress-text');
-    if (text) text.textContent = `${progress}%`;
+    if (text) text.textContent = `${Math.round(progress)}%`;
 
     const tracker = this.speedTracker.get(id);
     let speedEl = item.querySelector('.transfer-speed') as HTMLElement | null;
@@ -330,9 +369,9 @@ export class TransferHistoryManager {
 
     const progressBar = (record.status === 'inprogress' || record.status === 'paused')
       ? `<div class="progress-bar${record.status === 'paused' ? ' paused' : ''}">
-           <div class="progress-fill${record.status === 'paused' ? ' paused' : ''}" style="width: ${record.progress}%"></div>
+           <div class="progress-fill${record.status === 'paused' ? ' paused' : ''}" style="width:${record.progress}%"></div>
          </div>
-         <span class="progress-text">${record.progress}%</span>`
+         <span class="progress-text">${Math.round(record.progress)}%</span>`
       : '';
 
     let actionButtons = '';
@@ -381,6 +420,10 @@ export class TransferHistoryManager {
       ? `<div class="error-message">${escapeHtml(record.error)}</div>`
       : '';
 
+    const serverTag = record.serverLabel && record.serverLabel !== 'local'
+      ? `<span class="server-label" title="${escapeHtml(record.serverLabel)}">${escapeHtml(record.serverLabel)}</span>`
+      : '';
+
     return `
       <div class="history-item ${statusClass}" data-transfer-id="${record.id}">
         <div class="history-header">
@@ -390,7 +433,7 @@ export class TransferHistoryManager {
           ${actionButtons}
         </div>
         <div class="history-details">
-          <span class="file-path">${escapeHtml(record.path)}</span>
+          ${serverTag}<span class="file-path">${escapeHtml(record.path)}</span>
           <span class="transfer-time">${date}</span>
         </div>
         ${progressBar}

@@ -11,10 +11,13 @@ import './styles/settings.css';
 import './styles/ssh-modal.css';
 import './styles/drawer.css';
 import './styles/drawer-sidebar.css';
+import './styles/file-sidebar.css';
 import './styles/ai-bar.css';
 import './styles/split-pane.css';
 import './styles/ai-chat.css';
 import './styles/ai-settings.css';
+import './styles/ai-todo-board.css';
+import './styles/ai-attachments.css';
 import './styles/pairing.css';
 import './styles/sharing.css';
 import './styles/remote.css';
@@ -24,6 +27,7 @@ import './styles/viewer-popup.css';
 import './styles/toast.css';
 import './styles/misc.css';
 import './styles/pip.css';
+import './styles/fullscreen-mac.css';
 import '@xterm/xterm/css/xterm.css';
 
 import { TabManager } from './tabs';
@@ -38,6 +42,7 @@ import { initAboutWindow } from './about-window';
 import { initJumpServerBrowserWindow } from './jumpserver-browser-window';
 import { initEditorWindowShell } from './file-editor-init';
 import { initPip } from './pip';
+import { initMacFullscreen } from './fullscreen-mac';
 import { initLanguage, setLanguage } from './i18n';
 import { setSSHConnectHandler, migrateSSHCredentials } from './ssh';
 import { setRemoteConnectHandler, migrateRemoteCredentials, pruneUnreachableRecentRemotes } from './remote';
@@ -127,6 +132,13 @@ async function init(): Promise<void> {
 
   initLanguage();
   setSettings(loadSettings());
+
+  // Install in-process agent audit log. Writes one JSON line per
+  // significant event to {AppData}/agent-audit.jsonl
+  // (macOS: ~/Library/Application Support/com.meterm.app/).
+  // Lazy import keeps the main bundle lean.
+  void import('./ai-audit-log').then(({ installAuditLog }) => installAuditLog());
+
   if (settings.deviceName) void invoke('set_device_name', { name: settings.deviceName });
   setLanguage(settings.language);
   setCloseAllSessionsHandler(closeAllSessions);
@@ -186,6 +198,7 @@ async function init(): Promise<void> {
   setupKeyboardShortcuts();
   setupToolbarDrag();
   initPip();
+  initMacFullscreen();
 
   // Mark initialized early — right after close handler is registered, BEFORE
   // heavy async work (StatusBar, ensureMeTermReady, tldr).  This prevents

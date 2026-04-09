@@ -44,6 +44,38 @@ import { InlineCompletion } from './cmd-completion';
 import { globalCompletionIndex } from './cmd-completion-data';
 import { setupClickToMoveCursor } from './terminal-click-move';
 
+/**
+ * Detect xterm.js auto-responses to terminal queries (DA, DECRQM, DSR,
+ * window ops, OSC color reports, etc.).  These must NOT be sent back to
+ * the PTY — if they reach the shell while it's at an idle prompt the
+ * escape prefix gets consumed by zle and the payload appears as visible
+ * garbage text (e.g. "1016,2$y", "10;rgb:d4d4/…", "570;1043t").
+ */
+function isTerminalAutoResponse(data: string): boolean {
+  const c = data.charCodeAt(0);
+  if (c !== 0x1b) return false;               // must start with ESC
+  const c1 = data.charCodeAt(1);
+  if (c1 === 0x5b) {                           // ESC [ — CSI sequence
+    // DA1  : \x1b[?<digits;…>c
+    // DA2  : \x1b[><digits;…>c
+    // DSR  : \x1b[<digits;…>R   (cursor position report)
+    // DECRQM: \x1b[?<digits;…>$y
+    // Window ops: \x1b[<digits;…>t
+    // DSR status: \x1b[<digits>n
+    const tail = data.charAt(data.length - 1);
+    if (tail === 'c' || tail === 'R' || tail === 't' || tail === 'n') return true;
+    if (data.endsWith('$y')) return true;
+    return false;
+  }
+  if (c1 === 0x5d) {                           // ESC ] — OSC sequence
+    // OSC color reports: \x1b]<N>;rgb:…\x07  or  \x1b]<N>;rgb:…\x1b\\
+    if (data.charCodeAt(data.length - 1) === 0x07) return true;
+    if (data.endsWith('\x1b\\')) return true;
+    return false;
+  }
+  return false;
+}
+
 class TerminalRegistryClass {
   private terminals = new Map<string, ManagedTerminal>();
   private resizeGeneration = new Map<string, number>();
@@ -303,7 +335,7 @@ class TerminalRegistryClass {
     const fontSize = this.settings?.fontSize || 14;
     const rawWeight = this.settings?.fontWeight || 400;
     const fontFamily = this.settings
-      ? getFontFamily(this.settings.fontFamily, this.settings.enableNerdFont, rawWeight)
+      ? getFontFamily(this.settings.fontFamily, this.settings.enableNerdFont, rawWeight, this.settings.cjkFontFamily)
       : 'Menlo, Monaco, "Courier New", monospace';
     const fontWeight = this.settings
       ? getEffectiveFontWeight(this.settings.fontFamily, rawWeight)
@@ -474,6 +506,7 @@ class TerminalRegistryClass {
                   // Height increasing or equal — update floor.
                   // Cancel any pending decay since height recovered.
                   _heightFloor = num;
+                  _pendingHeight = 0;
                   if (_floorDecayTimer) {
                     clearTimeout(_floorDecayTimer);
                     _floorDecayTimer = null;
@@ -503,9 +536,22 @@ class TerminalRegistryClass {
           });
         }
 
+        // Expose floor reset so terminal-resize.ts can disable the floor
+        // before fitAddon.fit(), allowing legitimate resize height changes
+        // to pass through the interceptor.
+        mt._resetScrollFloor = () => {
+          _heightFloor = 0;
+          _pendingHeight = 0;
+          if (_floorDecayTimer) {
+            clearTimeout(_floorDecayTimer);
+            _floorDecayTimer = null;
+          }
+        };
+
         // Reset height floor on terminal resize (legitimate height change).
         terminal.onResize(() => {
           _heightFloor = 0;
+          _pendingHeight = 0;
           if (_floorDecayTimer) {
             clearTimeout(_floorDecayTimer);
             _floorDecayTimer = null;
@@ -540,9 +586,8 @@ class TerminalRegistryClass {
     terminal.onData((data) => {
       // Filter out terminal auto-responses that xterm.js generates in reply to
       // queries from shell/programs.  If sent back to PTY they appear as garbage
-      // text (e.g. "1;2c" from DA response \x1b[?1;2c) on the prompt.
-      // Matches: DA responses (\x1b[?...c), DSR responses (\x1b[...R / \x1b[...n)
-      if (/^\x1b\[\?[0-9;]*c$/.test(data)) return;
+      // text on the prompt when the shell is idle.
+      if (isTerminalAutoResponse(data)) return;
       // WKWebView IME 去重：10ms 内的相同数据只发送一次
       const now = performance.now();
       if (data === _dedupData && now - _dedupTime < 10) return;
@@ -901,7 +946,13 @@ class TerminalRegistryClass {
     mt.shellState.agentCommandSeq++;
     // PowerShell does not support Ctrl+U (unix-line-discard); skip prefix to avoid ^U echo.
     const prefix = shellType === 'powershell' ? '' : '\x15';
-    const payload = new TextEncoder().encode(prefix + command + '\n');
+    // Terminator: use CR (\r) to emulate a real Enter keypress, which
+    // matches what xterm.js sends when the user hits Return. A cooked-
+    // mode shell (bash/zsh/fish/PowerShell prompt) converts CR→LF via
+    // its line discipline, so commands still execute. Programs in raw
+    // mode (sudo's read -s, ssh password, ncurses apps) require CR to
+    // register Enter and would hang on a bare LF.
+    const payload = new TextEncoder().encode(prefix + command + '\r');
     sendToTerminal(mt, encodeMessage(MsgInput, payload));
   }
 
@@ -1022,7 +1073,7 @@ class TerminalRegistryClass {
     const fontSize = this.settings?.fontSize || 14;
     const rawWeight = this.settings?.fontWeight || 400;
     const fontFamily = this.settings
-      ? getFontFamily(this.settings.fontFamily, this.settings.enableNerdFont, rawWeight)
+      ? getFontFamily(this.settings.fontFamily, this.settings.enableNerdFont, rawWeight, this.settings.cjkFontFamily)
       : 'Menlo, Monaco, "Courier New", monospace';
     const fontWeight = this.settings
       ? getEffectiveFontWeight(this.settings.fontFamily, rawWeight)
@@ -1119,8 +1170,8 @@ class TerminalRegistryClass {
     let _dedupTime = 0;
 
     terminal.onData((data) => {
-      // Filter out terminal auto-responses (DA response \x1b[?...c) — see local onData above.
-      if (/^\x1b\[\?[0-9;]*c$/.test(data)) return;
+      // Filter out terminal auto-responses — see isTerminalAutoResponse().
+      if (isTerminalAutoResponse(data)) return;
       // WKWebView IME 去重：10ms 内的相同数据只发送一次
       const now = performance.now();
       if (data === _dedupData && now - _dedupTime < 10) return;

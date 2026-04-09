@@ -190,7 +190,7 @@
   width: 0%;
   background: var(--accent, #66b3ff);
   border-radius: 2px;
-  transition: width 0.3s ease;
+  transition: width 0.5s linear;
 }
 
 /* ── Capsule: AI ── */
@@ -348,3 +348,26 @@
   background: #7c3aed;
 }
 
+
+/* ── Capsule: pane number (phase 2) ──
+   Shown only for multi-pane tabs. Uses a circled digit glyph
+   (①..⑳) plus a short "Pane · N" suffix for the total pane count.
+   Styled similarly to the sessions capsule but with a distinct
+   accent. */
+.capsule-pane {
+  background: rgba(106, 164, 255, 0.12);
+  color: rgba(180, 210, 255, 0.95);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.capsule-pane .pane-glyph {
+  font-size: 14px;
+  line-height: 1;
+  font-weight: 700;
+}
+[data-theme="light"] .capsule-pane {
+  background: rgba(80, 120, 200, 0.12);
+  color: rgba(60, 100, 180, 0.95);
+}

@@ -1,6 +1,6 @@
 [package]
 name = "meterm"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 license = "MIT"
 
@@ -31,6 +31,7 @@ axum = { version = "0.8", features = ["ws"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
+futures-util = "0.3"
 
 # Cross-platform PTY
 xpty = "0.3"
@@ -39,6 +40,7 @@ xpty = "0.3"
 russh = "0.46"
 russh-sftp = { path = "crates/russh-sftp" }
 russh-keys = "0.46"
+ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 
 # mDNS service discovery
 mdns-sd = "0.18"
@@ -64,6 +66,8 @@ urlencoding = "2"
 # File time manipulation (for touch command)
 filetime = "0.2"
 tauri-plugin-clipboard-manager = "2"
+arboard = { version = "3", default-features = false }
+miniz_oxide = "0.8"
 tauri-plugin-notification = "2"
 notify-rust = "4"
 tauri-plugin-single-instance = "2"
@@ -75,6 +79,11 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "linux-
 dirs = "6"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Filesystem search (powering ai-tools-search.ts)
+walkdir = "2"
+globset = "0.4"
+regex = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"

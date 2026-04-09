@@ -1532,7 +1532,7 @@ html[data-theme="light"] .home-dash-group-chevron:hover {
 .home-search-overlay {
   position: fixed;
   /* top/left/right/bottom set dynamically via JS */
-  background: rgba(var(--bg-toolbar), 0.92);
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
   backdrop-filter: blur(20px) saturate(1.5);
   -webkit-backdrop-filter: blur(20px) saturate(1.5);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1794,7 +1794,7 @@ html[data-theme="light"] .home-dash-group-chevron:hover {
    ============================================================================ */
 
 [data-theme="light"] .home-search-overlay {
-  background: rgba(var(--bg-toolbar), 0.92);
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
   border-color: rgba(0, 0, 0, 0.08);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
 }

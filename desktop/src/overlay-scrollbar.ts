@@ -16,6 +16,21 @@ export interface OverlayScrollbarOptions {
   container: HTMLElement;
   /** Also create a horizontal overlay scrollbar (default: false) */
   horizontal?: boolean;
+  /**
+   * Optional gate: when provided, the scrollbar stays hidden whenever this
+   * returns false, regardless of scrollHeight vs clientHeight.  Useful for
+   * consumers (e.g. xterm.js) whose viewport can report a stale scrollHeight
+   * because of internal buffer state rather than real scrollable content.
+   */
+  shouldShow?: () => boolean;
+  /**
+   * Optional top offset in pixels to push the scrollbar track down from
+   * viewport.offsetTop. Useful when the viewport contains a sticky header
+   * that would visually overlap the thumb (inline mode only).
+   * Can be a number or a function returning the current offset (re-evaluated
+   * on every sync, so it can adapt to runtime size changes).
+   */
+  topOffset?: number | (() => number);
 }
 
 export interface OverlayScrollbarHandle {
@@ -58,6 +73,10 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
 
   // --- sync thumb position / size ---
   function sync(): void {
+    if (opts.shouldShow && !opts.shouldShow()) {
+      bar.style.display = 'none';
+      return;
+    }
     const sh = viewport.scrollHeight;
     const ch = viewport.clientHeight;
     if (sh <= ch) {
@@ -66,21 +85,28 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
     }
     bar.style.display = '';
 
+    // 解析 topOffset(支持函数形式,适应运行时尺寸变化)
+    const topOffset = typeof opts.topOffset === 'function'
+      ? (opts.topOffset() || 0)
+      : (opts.topOffset || 0);
+
     // In inline mode, bar is in viewport's parent (positioned ancestor).
     // Use offset* for precise positioning relative to the parent.
     if (inline) {
-      bar.style.top = `${viewport.offsetTop}px`;
+      bar.style.top = `${viewport.offsetTop + topOffset}px`;
       bar.style.bottom = 'auto';
       bar.style.left = `${viewport.offsetLeft + viewport.offsetWidth - 14}px`;
       bar.style.right = 'auto';
-      bar.style.height = `${ch}px`;
+      bar.style.height = `${Math.max(0, ch - topOffset)}px`;
     }
 
-    const ratio = ch / sh;
-    const thumbH = Math.max(20, ratio * ch);
+    // thumb 计算:可视区高度减去 topOffset(避免 thumb 进入被遮挡区)
+    const effectiveCh = Math.max(1, ch - topOffset);
+    const ratio = effectiveCh / sh;
+    const thumbH = Math.max(20, ratio * effectiveCh);
     const maxScroll = sh - ch;
     const pct = maxScroll > 0 ? viewport.scrollTop / maxScroll : 0;
-    const thumbTop = pct * (ch - thumbH);
+    const thumbTop = pct * (effectiveCh - thumbH);
     thumb.style.height = `${thumbH}px`;
     thumb.style.transform = `translateY(${thumbTop}px)`;
   }
@@ -119,9 +145,13 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
     if (!dragging) return;
     const ch = viewport.clientHeight;
     const sh = viewport.scrollHeight;
-    const ratio = ch / sh;
-    const thumbH = Math.max(20, ratio * ch);
-    const trackH = ch - thumbH;
+    const topOff = typeof opts.topOffset === 'function'
+      ? (opts.topOffset() || 0)
+      : (opts.topOffset || 0);
+    const effectiveCh = Math.max(1, ch - topOff);
+    const ratio = effectiveCh / sh;
+    const thumbH = Math.max(20, ratio * effectiveCh);
+    const trackH = Math.max(1, effectiveCh - thumbH);
     const maxScroll = sh - ch;
     const dy = e.clientY - dragStartY;
     viewport.scrollTop = dragStartScroll + (dy / trackH) * maxScroll;
@@ -175,6 +205,10 @@ export function createOverlayScrollbar(opts: OverlayScrollbarOptions): OverlaySc
     const hBarRef = hBar;
 
     function syncH(): void {
+      if (opts.shouldShow && !opts.shouldShow()) {
+        hBarRef.style.display = 'none';
+        return;
+      }
       const sw = viewport.scrollWidth;
       const cw = viewport.clientWidth;
       if (sw <= cw) { hBarRef.style.display = 'none'; return; }

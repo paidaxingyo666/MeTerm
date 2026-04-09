@@ -921,6 +921,10 @@ fn normalize_assets(mut assets: Vec<Asset>) -> Vec<Asset> {
         if asset.address.is_empty() && !asset.ip.is_empty() {
             asset.address = asset.ip.clone();
         }
+        // v2 compatibility: platform is string "Linux" → normalize to {"name": "Linux"}
+        if let Some(s) = asset.platform.as_str() {
+            asset.platform = serde_json::json!({"name": s});
+        }
     }
     assets
 }

@@ -1,0 +1,110 @@
+/* ─── AI Capsule: Generic File Attachment Strip ────────────── */
+/*
+ * Renders the pending-attachments queue as a horizontal chip strip
+ * above the AI bar / side-panel input area. Sits just below the
+ * pending-images strip (if any) so both can coexist.
+ *
+ * Visual design:
+ *   • Flat chip with subtle border, 4px radius
+ *   • Paperclip icon + filename + size + × button
+ *   • Full filename in tooltip (including absolute path)
+ *   • Max-width on the filename with ellipsis
+ */
+
+.ai-pending-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(14, 165, 233, 0.04);
+  border-bottom: 1px solid rgba(14, 165, 233, 0.12);
+}
+
+[data-theme="dark"] .ai-pending-attachments {
+  background: rgba(56, 189, 248, 0.06);
+  border-bottom-color: rgba(56, 189, 248, 0.15);
+}
+
+.ai-pending-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 8px;
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  max-width: 260px;
+  color: var(--text-primary, #0f172a);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ai-pending-attachment-chip:hover {
+  border-color: rgba(14, 165, 233, 0.6);
+  background: rgba(14, 165, 233, 0.06);
+}
+
+[data-theme="dark"] .ai-pending-attachment-chip {
+  background: #0f172a;
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #e2e8f0;
+}
+
+[data-theme="dark"] .ai-pending-attachment-chip:hover {
+  border-color: rgba(56, 189, 248, 0.6);
+  background: rgba(56, 189, 248, 0.10);
+}
+
+.ai-pending-attachment-icon {
+  display: inline-flex;
+  align-items: center;
+  color: #0ea5e9;
+}
+
+[data-theme="dark"] .ai-pending-attachment-icon {
+  color: #38bdf8;
+}
+
+.ai-pending-attachment-label {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.ai-pending-attachment-size {
+  color: var(--text-secondary, #64748b);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  padding: 0 4px;
+  border-left: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+[data-theme="dark"] .ai-pending-attachment-size {
+  color: #94a3b8;
+  border-left-color: rgba(148, 163, 184, 0.25);
+}
+
+.ai-pending-attachment-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #94a3b8);
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.ai-pending-attachment-remove:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
