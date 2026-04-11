@@ -1052,6 +1052,12 @@ class DrawerManagerClass {
     return instance?.serverConnectionInfo || null;
   }
 
+  /** Get the FileManager instance for a session (used by the AI agent
+   *  to register upload/download transfers in the transfer list). */
+  getFileManager(sessionId: string): import('./file-manager').FileManager | null {
+    return this.drawers.get(sessionId)?.fileManager ?? null;
+  }
+
   /** 获取 SSH 会话的文件管理器当前路径和文件名列表（供终端文件链接使用） */
   getRemoteDirEntries(sessionId: string): { cwd: string; names: Map<string, boolean> } | null {
     const instance = this.drawers.get(sessionId);

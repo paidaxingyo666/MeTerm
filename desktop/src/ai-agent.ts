@@ -121,6 +121,10 @@ export interface AgentCallbacks {
 // ─── Constants ──────────────────────────────────────────────────
 
 const DEFAULT_MAX_ITERATIONS = 15;
+/** Hard ceiling for `unlimited` mode (maxIterations === 0). Prevents
+ *  runaway loops if the LLM falls into a degenerate tool-call cycle
+ *  that the repeat-action detector doesn't catch. */
+const ABSOLUTE_MAX_ITERATIONS = 200;
 const MAX_CONSECUTIVE_ERRORS = 3;
 const MAX_CONTEXT_COMPRESSIONS = 2;
 
@@ -340,13 +344,20 @@ export class ToolAgent {
     return this.messages.length > 0 && !this.isStreaming;
   }
 
-  /** Cancel the current request / tool execution. */
+  /** Cancel the current request / tool execution. Also cancels any
+   *  in-flight SFTP transfers started by upload_file / download_file
+   *  so they don't keep running in the background after the agent stops. */
   abort(): void {
     this.aborted = true;
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
     }
+    // Best-effort cancel of any agent-initiated SFTP transfers that
+    // are still in progress. Import is dynamic to avoid a circular dep.
+    void import('./ai-tools-transfer').then(({ cancelAllAgentTransfers }) => {
+      void cancelAllAgentTransfers();
+    }).catch(() => {/* swallow */});
   }
 
   /** Clear conversation history and reset state. */
@@ -427,8 +438,8 @@ export class ToolAgent {
       temperature: settings.aiTemperature,
     };
 
-    const maxIterations: number = settings.aiAgentMaxIterations ?? DEFAULT_MAX_ITERATIONS;
-    const unlimited = maxIterations === 0;
+    const configuredMax: number = settings.aiAgentMaxIterations ?? DEFAULT_MAX_ITERATIONS;
+    const maxIterations = configuredMax === 0 ? ABSOLUTE_MAX_ITERATIONS : configuredMax;
 
     // Sync web_search tool with current settings (user may have toggled SearXNG)
     syncWebSearchTool(this.toolRegistry);
@@ -464,7 +475,7 @@ export class ToolAgent {
 
     // ── Loop (wrapped in try/finally to ensure agent mode cleanup) ──
     try {
-    while (unlimited || iteration < maxIterations) {
+    while (iteration < maxIterations) {
       if (this.aborted) {
         this.abortController = null;
         callbacks.onAborted?.(iteration);
@@ -767,7 +778,7 @@ export class ToolAgent {
             if (!decision || decision.kind === 'reject') {
               return {
                 result: decision?.kind === 'reject' ? decision.message : 'No decision',
-                isError: false,
+                isError: true,  // Rejected tools should be flagged as errors so the LLM doesn't misinterpret the denial as a success
               };
             }
             const started = Date.now();
@@ -1003,7 +1014,9 @@ export class ToolAgent {
       // Tools that manage their own (longer) timeouts internally.
       const selfManagedTimeout = toolName === 'wait_for_user_input'
         || toolName === 'watch_terminal'
-        || toolName === 'run_command';
+        || toolName === 'run_command'
+        || toolName === 'upload_file'
+        || toolName === 'download_file';
       if (selfManagedTimeout) {
         const result = await handler.execute(args, ctx);
         return { result, isError: false };

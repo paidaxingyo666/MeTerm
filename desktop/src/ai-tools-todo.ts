@@ -52,6 +52,8 @@ export class TodoState implements TodoStateRef {
   }
 
   set(items: TodoItem[]): void {
+    // Skip redundant updates (e.g. LLM calling todo_write([]) multiple times)
+    if (items.length === 0 && this.items.length === 0) return;
     this.items = items.map((it) => ({ ...it }));
     if (this.onUpdate) {
       try { this.onUpdate(this.get()); } catch { /* swallow */ }

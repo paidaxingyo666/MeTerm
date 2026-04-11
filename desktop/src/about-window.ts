@@ -10,6 +10,7 @@ import { listen } from '@tauri-apps/api/event';
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage, t } from './i18n';
 import { applyVibrancy } from './appearance';
+import { applyNbPalette } from './nb-palette';
 
 const GITHUB_URL = 'https://github.com/paidaxingyo666/MeTerm';
 const GITEE_URL = 'https://gitee.com/paidaxingy666/me-term';
@@ -18,6 +19,8 @@ function resolveThemeAttr(colorScheme: string): string {
   if (colorScheme === 'light') return 'light';
   if (colorScheme === 'darker') return 'darker';
   if (colorScheme === 'navy') return 'navy';
+  if (colorScheme === 'neo-brutalism') return 'neo-brutalism';
+  if (colorScheme === 'neo-brutalism-rounded') return 'neo-brutalism-rounded';
   if (colorScheme === 'auto') return resolveIsDark('auto') ? 'dark' : 'light';
   return 'dark';
 }
@@ -27,6 +30,7 @@ export function initAboutWindow(): void {
   const settings = loadSettings();
   setLanguage(settings.language);
   document.documentElement.setAttribute('data-theme', resolveThemeAttr(settings.colorScheme));
+  applyNbPalette(settings.colorScheme);
 
   void applyVibrancy(settings.enableVibrancy);
 
@@ -69,6 +73,7 @@ export function initAboutWindow(): void {
   void listen('settings-changed', () => {
     const s = loadSettings();
     document.documentElement.setAttribute('data-theme', resolveThemeAttr(s.colorScheme));
+    applyNbPalette(s.colorScheme);
     const nativeTheme = resolveThemeAttr(s.colorScheme) === 'light' ? 'light' as const : 'dark' as const;
     void getCurrentWindow().setTheme(nativeTheme);
     void applyVibrancy(s.enableVibrancy);

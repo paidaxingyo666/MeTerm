@@ -68,6 +68,7 @@ import {
 } from './app-state';
 import { togglePip } from './pip';
 import { restoreActiveJumpServersFromStorage } from './jumpserver-handler';
+import { applyNbPalette } from './nb-palette';
 
 // ── Lazy-cached DOM elements ──────────────────────────────────────
 
@@ -719,7 +720,12 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
     applyAiBarOpacity(settings.aiBarOpacity);
     applyBackgroundImage(settings, terminalPanelEl);
     void applyVibrancy(settings.enableVibrancy);
-    TerminalRegistry.setSettings(settings);
+    // setSettings is async (awaits loadFont) and re-sets all terminal
+    // themes at the end. NB palette must run AFTER it finishes so our
+    // custom terminal bg/fg aren't clobbered.
+    void TerminalRegistry.setSettings(settings).then(() => {
+      applyNbPalette(settings.colorScheme);
+    });
     void syncTrayLanguage();
     renderTabs();
     renderToolbarActions();

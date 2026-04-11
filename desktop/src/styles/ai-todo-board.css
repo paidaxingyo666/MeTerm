@@ -12,6 +12,9 @@
  */
 
 .ai-todo-board {
+  max-width: 95%;
+  box-sizing: border-box;
+  align-self: flex-start;
   margin: 10px 6px 12px 6px;
   border-radius: 10px;
   background: var(--bg-secondary, rgba(14, 165, 233, 0.04));

@@ -60,12 +60,11 @@ export function toolArgsInline(toolName: string, args: Record<string, unknown>):
  *  would double up the UI. */
 export function buildToolCard(msg: Extract<ConvEntry, { type: 'tool_call' }>): HTMLDivElement {
   if (msg.toolName === 'todo_write') {
-    // Zero-height spacer — keeps the message stream indices aligned
-    // with the historical entry order without rendering anything.
-    const spacer = document.createElement('div');
-    spacer.className = 'ai-tool-card-placeholder';
-    spacer.style.display = 'none';
-    return spacer;
+    // Invisible zero-cost placeholder — the plan is rendered by the
+    // persistent TodoBoard, not as an inline tool card.
+    const d = document.createElement('div');
+    d.hidden = true;
+    return d;
   }
   const card = document.createElement('div');
   card.className = 'ai-tool-card completed';
@@ -233,6 +232,77 @@ export function appendToolCallCard(
       <span class="ai-tool-status">${spinnerIcon(color, 12)}</span>
     `;
     card.appendChild(header);
+
+    // ── Transfer progress + controls for upload_file / download_file ──
+    if (toolName === 'upload_file' || toolName === 'download_file') {
+      const progressWrap = document.createElement('div');
+      progressWrap.className = 'ai-tool-transfer-progress';
+      progressWrap.innerHTML = `
+        <div class="ai-tool-transfer-bar"><div class="ai-tool-transfer-fill"></div></div>
+        <span class="ai-tool-transfer-label">waiting…</span>
+        <div class="ai-tool-transfer-controls">
+          <button class="ai-transfer-btn ai-transfer-cancel" type="button" title="Cancel transfer">&times;</button>
+        </div>
+      `;
+      card.appendChild(progressWrap);
+
+      const fill = progressWrap.querySelector('.ai-tool-transfer-fill') as HTMLElement;
+      const label = progressWrap.querySelector('.ai-tool-transfer-label') as HTMLElement;
+      const cancelBtn = progressWrap.querySelector('.ai-transfer-cancel') as HTMLButtonElement;
+
+      // Track the most recently seen sessionId + transferId from progress events.
+      let lastSessionId = '';
+      let lastTransferId = 0;
+
+      const fmtB = (n: number) => {
+        if (!Number.isFinite(n) || n < 0) return '0 B';
+        if (n < 1024) return `${n} B`;
+        if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+        if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+        return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+      };
+
+      const onProgress = (e: Event) => {
+        const ev = e as CustomEvent<{
+          toolName: string; written: number; total: number; pct: number;
+          sessionId: string; transferId: number;
+        }>;
+        if (ev.detail?.toolName !== toolName) return;
+        const allCards = container!.querySelectorAll<HTMLDivElement>(`.ai-tool-card[data-tool="${toolName}"]`);
+        if (allCards.length > 0 && allCards[allCards.length - 1] !== card) return;
+
+        const { written, total, pct, sessionId: sid, transferId: tid } = ev.detail;
+        lastSessionId = sid;
+        lastTransferId = tid;
+        fill.style.width = `${pct}%`;
+        label.textContent = `${fmtB(written)} / ${fmtB(total)}  (${pct.toFixed(1)}%)`;
+      };
+      document.addEventListener('ai-transfer-progress', onProgress);
+
+      // Cancel button: send control signal to Rust backend.
+      cancelBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!lastSessionId || !lastTransferId) return;
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = '…';
+        try {
+          const signal = toolName === 'upload_file'
+            ? 'control_session_file_upload'
+            : 'control_session_file_download';
+          const { invoke: inv } = await import('@tauri-apps/api/core');
+          await inv(signal, {
+            sessionId: lastSessionId,
+            transferId: lastTransferId,
+            signal: 'cancel',
+          });
+        } catch { /* best effort */ }
+      });
+
+      card.dataset.progressListener = 'active';
+      (card as any)._cleanupProgress = () => {
+        document.removeEventListener('ai-transfer-progress', onProgress);
+      };
+    }
   }
 
   container.appendChild(card);
@@ -397,15 +467,59 @@ export function updateToolResultCard(
     return;
   }
 
-  // Find the last tool card matching this tool
+  // Find the FIRST tool card matching this tool that is still pending
+  // (not yet marked .completed). This fixes the bug where multiple
+  // run_command cards exist but updateToolResultCard always updates
+  // the LAST one — leaving earlier cards stuck with a spinner forever.
   const cards = container.querySelectorAll<HTMLDivElement>(`.ai-tool-card[data-tool="${toolName}"]`);
-  const card = cards[cards.length - 1];
+  let card: HTMLDivElement | null = null;
+  for (let i = 0; i < cards.length; i++) {
+    if (!cards[i].classList.contains('completed')) {
+      card = cards[i];
+      break;
+    }
+  }
+  // Fallback to last card if all are already completed (shouldn't happen)
+  if (!card) card = cards[cards.length - 1] ?? null;
   if (!card) return;
+
+  // Detect soft-errors: the tool returned a non-error result string
+  // (isError=false) but the content indicates a problem the user
+  // should notice — CONFLICT (upload file already exists), cancelled,
+  // stalled, etc. We show a warning icon instead of green success.
+  const isConflictOrWarning = !isError && (
+    result.startsWith('CONFLICT:') ||
+    result.includes('cancelled by user')
+  );
+
+  // Cleanup transfer progress listener if this was an upload/download card.
+  if ((card as any)._cleanupProgress) {
+    (card as any)._cleanupProgress();
+    delete (card as any)._cleanupProgress;
+  }
+  // Replace the live progress bar with a final state.
+  const progressWrap = card.querySelector('.ai-tool-transfer-progress');
+  if (progressWrap) {
+    if (isError || isConflictOrWarning) {
+      progressWrap.remove();
+    } else {
+      const fill = progressWrap.querySelector('.ai-tool-transfer-fill') as HTMLElement;
+      const label = progressWrap.querySelector('.ai-tool-transfer-label') as HTMLElement;
+      if (fill) fill.style.width = '100%';
+      if (label) label.textContent = 'completed';
+    }
+  }
 
   // Update status icon
   const statusEl = card.querySelector('.ai-tool-status');
   if (statusEl) {
-    statusEl.innerHTML = isError ? statusIcon('error', 12) : statusIcon('success', 12);
+    if (isError) {
+      statusEl.innerHTML = statusIcon('error', 12);
+    } else if (isConflictOrWarning) {
+      statusEl.innerHTML = statusIcon('warning', 12);
+    } else {
+      statusEl.innerHTML = statusIcon('success', 12);
+    }
   }
 
   // Add collapsible result
@@ -458,8 +572,13 @@ export function updateToolResultImages(
   const container = instance.chatPanel.querySelector('.ai-chat-messages');
   if (!container) return;
 
+  // Find the first non-completed card (same fix as updateToolResultCard)
   const cards = container.querySelectorAll<HTMLDivElement>(`.ai-tool-card[data-tool="${toolName}"]`);
-  const card = cards[cards.length - 1];
+  let card: HTMLDivElement | null = null;
+  for (let i = 0; i < cards.length; i++) {
+    if (!cards[i].classList.contains('completed')) { card = cards[i]; break; }
+  }
+  if (!card) card = cards[cards.length - 1] ?? null;
   if (!card) return;
 
   // Don't double-add images if the tool fires multiple update calls.
@@ -561,12 +680,26 @@ export function showConfirmCard(
     notifyAgentWaiting(`${toolName} needs approval`, previewText);
 
     // Button handlers
+    let settled = false;
     const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(autoRejectTimer);
       card.classList.add('resolved');
       approveBtn.disabled = true;
       rejectBtn.disabled = true;
       editBtn.disabled = true;
     };
+
+    // Auto-reject after 5 minutes of no response — prevents the agent
+    // from being permanently stuck when the user's window is in the
+    // background and they missed the notification.
+    const autoRejectTimer = setTimeout(() => {
+      if (settled) return;
+      cleanup();
+      card.querySelector('.ai-confirm-header')!.innerHTML += ` <span class="ai-confirm-resolved">${statusIcon('warning', 10)} Timed out</span>`;
+      resolve(false);
+    }, 5 * 60 * 1000);
 
     approveBtn.addEventListener('click', () => {
       cleanup();
@@ -697,8 +830,10 @@ export function renderTodoBoard(
     </div>
   `;
 
-  // Item rows: status box + label.
-  const rows = todos.map((it, idx) => {
+  // Item rows: status box + label. Cap to 20 visible to avoid DOM bloat.
+  const MAX_VISIBLE_TODOS = 20;
+  const displayed = todos.length > MAX_VISIBLE_TODOS ? todos.slice(0, MAX_VISIBLE_TODOS) : todos;
+  const rows = displayed.map((it, idx) => {
     const status = it.status;
     const label = status === 'in_progress' ? it.activeForm : it.content;
     const box =
@@ -711,8 +846,11 @@ export function renderTodoBoard(
       <span class="ai-todo-status">${TODO_STATUS_LABELS[status]}</span>
     </div>`;
   }).join('');
+  const moreNote = todos.length > MAX_VISIBLE_TODOS
+    ? `<div class="ai-todo-row" style="opacity:0.6;justify-content:center;font-size:11px">… ${todos.length - MAX_VISIBLE_TODOS} more items hidden</div>`
+    : '';
 
-  board.innerHTML = `${headerHtml}<div class="ai-todo-board-list">${rows}</div>`;
+  board.innerHTML = `${headerHtml}<div class="ai-todo-board-list">${rows}${moreNote}</div>`;
 
   // Collapse toggle: tap header to fold the list, tap again to expand.
   const toggleBtn = board.querySelector<HTMLButtonElement>('.ai-todo-board-toggle');

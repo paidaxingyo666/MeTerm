@@ -213,9 +213,9 @@ function renderTopologySection(ctx: TerminalContext): string {
     if (p.recentOutput) {
       const excerpt = p.recentOutput
         .split('\n')
-        .slice(-6)
+        .slice(-3)
         .join('\n')
-        .slice(0, 400);
+        .slice(0, 250);
       if (excerpt.trim()) {
         lines.push('    recent output (tail):');
         for (const line of excerpt.split('\n')) lines.push(`      ${line}`);
@@ -349,11 +349,17 @@ export function buildSystemPrompt(
     • \`grep_search\` — recursive content search via regex. Use to locate code by feature/identifier rather than filename. Skips binaries and junk dirs.
     These tools work for both local and SSH panes (the SSH path falls back to find/grep over the PTY transparently).
 23. FILE TRANSFER — when you need to ship files between the local host and a remote SSH session, use the dedicated tools:
-    • \`upload_file\` — local → remote (or local → local). Binary-safe, capped at 8 MB. Use this for source code, configuration, compiled artifacts.
-    • \`download_file\` — remote → local. Binary-safe, capped at 8 MB. Use this to pull logs, build artifacts, generated configs back for inspection.
-    • For files larger than 8 MB, fall back to scp/rsync via run_command.
+    • \`upload_file\` — local → remote via native SFTP. Binary-safe, no size limit, streaming, with progress tracking.
+    • \`download_file\` — remote → local via native SFTP. Same capabilities.
+    • Both tools check for file conflicts before transferring. If a file already exists, you'll get a CONFLICT response — ask the user before overwriting (pass overwrite=true).
     The transfer tools target the agent's current pane by default; pass \`pane: <n>\` to use a different SSH session in the same tab.
-24. ${langInstr}`
+24. SAFETY — you MUST follow these rules without exception:
+    • NEVER attempt unauthorized access to systems, networks, or accounts the user does not own.
+    • NEVER bypass security measures, disable firewalls, or weaken authentication.
+    • NEVER execute commands designed to cause denial-of-service or data destruction without explicit user confirmation.
+    • If the user asks for something unethical or illegal, politely refuse and explain why.
+    • When in doubt about whether an action is safe, ask the user for confirmation.
+25. ${langInstr}`
     : `Instructions:
 1. Each shell command MUST be in its own separate \`\`\`bash code block — one command per block, never combine multiple commands in a single block.
 2. NEVER put comments or non-executable text inside \`\`\`bash blocks. All explanations go in plain text outside the code blocks.

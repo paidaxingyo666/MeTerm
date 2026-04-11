@@ -40,6 +40,8 @@ function resolveThemeAttr(colorScheme: string): string {
   if (colorScheme === 'darker') return 'darker';
   if (colorScheme === 'navy') return 'navy';
   if (colorScheme === 'light') return 'light';
+  if (colorScheme === 'neo-brutalism') return 'neo-brutalism';
+  if (colorScheme === 'neo-brutalism-rounded') return 'neo-brutalism-rounded';
   if (colorScheme === 'auto') return resolveIsDark('auto') ? 'dark' : 'light';
   return 'dark';
 }
@@ -664,6 +666,7 @@ function updateStatusBar(): void {
   // Image tab: show image info only, no editor controls
   if (tab.isImage) {
     statusBarEl.innerHTML = '';
+    statusBarEl.dataset.mode = 'image'; // Mark so text mode forces rebuild
     const infoSpan = document.createElement('span');
     infoSpan.className = 'editor-info';
     infoSpan.textContent = `${tab.mimeType}  ·  ${t('editorReadOnly')}`;
@@ -679,9 +682,14 @@ function updateStatusBar(): void {
   const lang = tab.forcedLang || getLang(tab.fileName, tab.editorView.state.doc.toString());
   const langLabel = LANG_OPTIONS.find(l => l.id === lang)?.label || lang.toUpperCase() || 'Plain Text';
 
+  // If switching from image mode → text mode, force a full rebuild
+  // so buttons (save, format, wrap, etc.) are recreated.
+  const wasImage = statusBarEl.dataset.mode === 'image';
+  if (wasImage) delete statusBarEl.dataset.mode;
+
   // Update or create elements (avoid full innerHTML rebuild to preserve button state)
   let infoSpan = statusBarEl.querySelector('.editor-info') as HTMLElement | null;
-  if (!infoSpan) {
+  if (!infoSpan || wasImage) {
     statusBarEl.innerHTML = '';
     infoSpan = document.createElement('span');
     infoSpan.className = 'editor-info';

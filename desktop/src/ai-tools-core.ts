@@ -182,6 +182,7 @@ export const TOKEN_BUDGET = {
 const DANGER_PATTERNS = [
   /\brm\s+(-[^\s]*\s+)*-[^\s]*r/,
   /\brm\s+(-[^\s]*\s+)*\//,
+  /\brm\s+-/,              // rm with any flag (e.g. rm -f, rm -i)
   /\bmkfs\b/,
   /\bdd\s+/,
   /\b(shutdown|reboot|poweroff|halt)\b/,

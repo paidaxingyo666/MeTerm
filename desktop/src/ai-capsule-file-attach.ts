@@ -23,10 +23,12 @@ import { invoke } from '@tauri-apps/api/core';
 import type { AttachedFile, AICapsuleInstance } from './ai-capsule-types';
 import { showToast } from './notify';
 
-/** Hard upper bound. Anything over this should be delivered via SFTP
- *  file-manager rather than the agent capsule — the Agent still has
- *  full access to files already present on disk via upload_file. */
-const MAX_ATTACHMENT_BYTES = 500 * 1024 * 1024; // 500 MB
+/** Hard upper bound for drag-dropped files. We need to hold the
+ *  entire file in JS memory as a number[] for the Tauri IPC call,
+ *  which costs ~8x the file size in heap. 50 MB → ~400 MB heap,
+ *  which is acceptable. For larger files, tell the user to provide
+ *  a local path and use upload_file directly. */
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024; // 50 MB
 
 /** Max number of attachments queued simultaneously. */
 const MAX_ATTACHMENTS = 16;
@@ -287,7 +289,10 @@ export function clearPendingAttachments(
   instance: AICapsuleInstance,
   deleteFiles: boolean = false,
 ): void {
-  if (deleteFiles) {
+  // Don't delete on-disk files while the agent is actively running —
+  // it may be reading/uploading them right now. The files will be
+  // cleaned up on the next clear() when the agent is idle.
+  if (deleteFiles && !instance.isStreaming) {
     for (const entry of instance.pendingAttachments) {
       void invoke('agent_delete_attachment', { path: entry.path }).catch(() => {/* ignore */});
     }

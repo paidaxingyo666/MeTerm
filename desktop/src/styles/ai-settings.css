@@ -277,6 +277,16 @@
 .ai-tool-card[data-tool="search_files"] { border-left-color: #EC4899; }
 .ai-tool-card[data-tool="wait_for_user_input"] { border-left-color: #FBBF24; }
 .ai-tool-card[data-tool="read_screen"] { border-left-color: #A78BFA; }
+.ai-tool-card[data-tool="web_search"]  { border-left-color: #6366F1; }
+.ai-tool-card[data-tool="type_text"]   { border-left-color: #F97316; }
+.ai-tool-card[data-tool="press_keys"]  { border-left-color: #EAB308; }
+.ai-tool-card[data-tool="watch_terminal"] { border-left-color: #8B5CF6; }
+.ai-tool-card[data-tool="upload_file"]    { border-left-color: #22C55E; }
+.ai-tool-card[data-tool="download_file"]  { border-left-color: #0EA5E9; }
+.ai-tool-card[data-tool="list_directory"] { border-left-color: #10B981; }
+.ai-tool-card[data-tool="glob_search"]   { border-left-color: #EC4899; }
+.ai-tool-card[data-tool="grep_search"]   { border-left-color: #F472B6; }
+.ai-tool-card[data-tool="todo_write"]    { border-left-color: #0EA5E9; }
 
 /* ─── Tool card attached images (read_screen, etc.) ─── */
 
@@ -716,6 +726,9 @@
 /* ─── Agent Confirm Cards ──────────────────────────────────────── */
 
 .ai-confirm-card {
+  max-width: 95%;
+  box-sizing: border-box;
+  align-self: flex-start;
   margin: 6px 0;
   padding: 8px 10px;
   background: rgba(239, 68, 68, 0.08);
@@ -749,6 +762,9 @@
   font-size: 12px;
   font-family: var(--mono-font);
   color: var(--text-primary);
+  display: block;
+  overflow-x: auto;
+  word-break: break-all;
 }
 
 .ai-confirm-buttons {

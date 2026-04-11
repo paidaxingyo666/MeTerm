@@ -834,6 +834,23 @@ export class FileManager {
     return this.files.find(f => f.name === name);
   }
 
+  /**
+   * Look up file info by searching all loaded directory listings in
+   * the cache — not just the current `this.files`. Used by the sidebar
+   * tree context menu where the file may be in any directory.
+   */
+  getFileInfoByPath(fullPath: string): FileInfo | undefined {
+    const name = fullPath.split('/').pop() || fullPath;
+    // Try current directory first (fastest path)
+    const found = this.files.find(f => f.name === name);
+    if (found) return found;
+    // Fall back to cached directories
+    const parentDir = fullPath.substring(0, fullPath.lastIndexOf('/')) || '/';
+    const cached = this._autocomplete?.dirCacheGet(parentDir);
+    if (cached) return cached.find(f => f.name === name);
+    return undefined;
+  }
+
   private dirCachePut(path: string, files: FileInfo[]): void {
     this._autocomplete?.dirCachePut(path, files);
   }
@@ -1287,6 +1304,31 @@ export class FileManager {
     }
   }
 
+  /**
+   * Register a new transfer record from an external source (e.g. the
+   * AI agent's upload_file / download_file tools). Returns the record
+   * id for subsequent progress updates.
+   */
+  registerTransfer(type: 'upload' | 'download', filename: string, path: string, size: number, savePath?: string): string {
+    return this.addTransferRecord(type, filename, path, size, savePath);
+  }
+
+  /**
+   * Update progress for a transfer registered via registerTransfer().
+   * Called from the AI agent's SFTP Channel callback on every progress event.
+   */
+  reportTransferProgress(id: string, progress: number, status: 'pending' | 'inprogress' | 'completed' | 'failed' | 'cancelled', error?: string): void {
+    this.updateTransferProgress(id, progress, status, error);
+  }
+
+  /**
+   * Update the total size for a transfer (called once when the
+   * backend reports the actual file size after opening).
+   */
+  reportTransferSize(id: string, size: number): void {
+    if (this._transferHistory) this._transferHistory.updateTransferSize(id, size);
+  }
+
   clearTransferHistory(): void {
     this._transferHistory!.clearTransferHistory();
   }
@@ -1336,7 +1378,13 @@ export class FileManager {
   }
 
   async cancelTransfer(id: string): Promise<void> {
-    await _cancelTransfer(this._transferCtx(), id);
+    const handled = await _cancelTransfer(this._transferCtx(), id);
+    if (!handled) {
+      // Fallback: the record may belong to an agent-initiated transfer
+      // that is not registered in ctx.activeUploads/activeDownloads.
+      const { cancelAgentTransfer } = await import('./ai-tools-transfer');
+      await cancelAgentTransfer(id);
+    }
   }
 
   async revealInFileManager(savePath: string): Promise<void> {

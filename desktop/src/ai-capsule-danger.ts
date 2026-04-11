@@ -6,6 +6,7 @@ import { createTldrCard } from './tldr-card';
 export const DANGER_PATTERNS = [
   /\brm\s+(-[^\s]*\s+)*-[^\s]*r/,   // rm -r, rm -rf, rm -fr, etc.
   /\brm\s+(-[^\s]*\s+)*\//, // rm /path (root-level deletes)
+  /\brm\s+-/,              // rm with any flag (e.g. rm -f, rm -i)
   /\bmkfs\b/,
   /\bdd\s+/,
   /\b(shutdown|reboot|poweroff|halt)\b/,

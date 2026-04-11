@@ -6,6 +6,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { revealAfterPaint } from './window-utils';
 import { readText as clipboardReadText } from '@tauri-apps/plugin-clipboard-manager';
 import { applyVibrancy } from './appearance';
+import { applyNbPalette } from './nb-palette';
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
@@ -16,12 +17,15 @@ function resolveThemeAttr(colorScheme: string): string {
   if (colorScheme === 'darker') return 'darker';
   if (colorScheme === 'navy') return 'navy';
   if (colorScheme === 'light') return 'light';
+  if (colorScheme === 'neo-brutalism') return 'neo-brutalism';
+  if (colorScheme === 'neo-brutalism-rounded') return 'neo-brutalism-rounded';
   if (colorScheme === 'auto') return resolveIsDark('auto') ? 'dark' : 'light';
   return 'dark';
 }
 
 function applyTheme(settings: AppSettings): void {
   document.documentElement.dataset.theme = resolveThemeAttr(settings.colorScheme);
+  applyNbPalette(settings.colorScheme);
 }
 
 function createCustomTitleBar(): HTMLElement {
@@ -62,8 +66,6 @@ export function initSettingsWindow(): void {
   setLanguage(settings.language);
   applyTheme(settings);
 
-  void applyVibrancy(settings.enableVibrancy);
-
   // Platform class for CSS
   document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);
   document.documentElement.classList.toggle('platform-linux', needsCustomControls && !isWindowsPlatform);
@@ -74,6 +76,8 @@ export function initSettingsWindow(): void {
 
   // Create settings container
   document.body.classList.add('settings-window-mode');
+
+  void applyVibrancy(settings.enableVibrancy);
 
   // Linux CSD: wrap all content in a div with border-radius for rounded corners
   const isLinux = needsCustomControls && !isWindowsPlatform;
@@ -120,6 +124,9 @@ export function initSettingsWindow(): void {
         // Update native window title bar theme
         const nativeTheme = resolveThemeAttr(settings.colorScheme) === 'light' ? 'light' as const : 'dark' as const;
         void getCurrentWindow().setTheme(nativeTheme);
+
+        // Update vibrancy for this window
+        void applyVibrancy(settings.enableVibrancy);
 
         void emit('settings-changed');
       },

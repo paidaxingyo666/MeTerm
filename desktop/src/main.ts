@@ -18,6 +18,7 @@ import './styles/ai-chat.css';
 import './styles/ai-settings.css';
 import './styles/ai-todo-board.css';
 import './styles/ai-attachments.css';
+import './styles/neo-brutalism.css';
 import './styles/pairing.css';
 import './styles/sharing.css';
 import './styles/remote.css';
@@ -34,6 +35,7 @@ import { TabManager } from './tabs';
 import { TerminalRegistry } from './terminal';
 import { loadSettings } from './themes';
 import { applyWindowOpacity, applyAiBarOpacity, applyColorScheme, applyBackgroundImage, applyVibrancy } from './appearance';
+import { applyNbPalette, listenForNbPaletteChanges } from './nb-palette';
 import { setHomeViewSettings } from './home';
 import { setGalleryViewSettings, setGalleryProgressGetter } from './gallery';
 import { initSettingsWindow } from './settings-window';
@@ -169,7 +171,10 @@ async function init(): Promise<void> {
     }
     setupJumpServerEventListener();
   });
-  TerminalRegistry.setSettings(settings);
+  // setSettings is async (awaits loadFont). Chain NB palette after it.
+  void TerminalRegistry.setSettings(settings).then(() => {
+    applyNbPalette(settings.colorScheme);
+  });
   setHomeViewSettings(settings);
   setGalleryViewSettings(settings);
   setGalleryProgressGetter((id) => sessionProgressMap.get(id));
@@ -178,6 +183,10 @@ async function init(): Promise<void> {
   applyColorScheme(settings);
   applyBackgroundImage(settings, terminalPanelEl);
   void applyVibrancy(settings.enableVibrancy);
+  // Listen for NB palette changes from the settings window (cross-window
+  // localStorage events). This is more reliable than emit('settings-changed')
+  // because it fires immediately when the other window writes to localStorage.
+  listenForNbPaletteChanges(() => loadSettings().colorScheme);
 
   if (settings.rememberWindowSize && settings.windowWidth > 0 && settings.windowHeight > 0) {
     // Windows-only guard: dynamically created secondary windows can stall on

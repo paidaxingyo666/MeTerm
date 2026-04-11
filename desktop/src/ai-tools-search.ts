@@ -112,7 +112,7 @@ export function createListDirectoryTool(): ToolHandler {
       const cmd = `if command -v stat >/dev/null 2>&1 && stat --version >/dev/null 2>&1; then \
 find '${safe}' -mindepth 1 -maxdepth 1 ${flagA ? '' : '! -name ".*"'} -printf '%y\\t%s\\t%T@\\t%f\\n' 2>/dev/null | head -n ${maxEntries}; \
 else \
-ls -la1 ${flagA} '${safe}' 2>/dev/null | awk 'NR>1 && $0!="" {kind="-"; if (substr($1,1,1)=="d") kind="d"; else if (substr($1,1,1)=="l") kind="l"; print kind"\\t"$5"\\t0\\t"$NF}' | head -n ${maxEntries}; \
+ls -l1 ${showHidden ? '-A' : ''} '${safe}' 2>/dev/null | awk 'NR>1 && $0!="" {kind="-"; if (substr($1,1,1)=="d") kind="d"; else if (substr($1,1,1)=="l") kind="l"; print kind"\\t"$5"\\t0\\t"$NF}' | head -n ${maxEntries}; \
 fi`;
       try {
         const out = await executeViaTerminal(pane.sessionId, cmd, 20, pane.shellType);

@@ -454,8 +454,16 @@ export function setupContextMenu(
       items.push({
         label: t('ctxMenuProperties'),
         action: () => {
-          const info = fm.getFileInfo(fileName);
-          if (info) showFileDetailsDialog(instance, info, fullPath);
+          // Try current dir first, then fall back to cached directories
+          // (sidebar tree nodes can be in any directory, not just currentPath)
+          const info = fm.getFileInfo(fileName) || fm.getFileInfoByPath(fullPath);
+          if (info) {
+            showFileDetailsDialog(instance, info, fullPath);
+          } else {
+            import('./notify').then(({ showToast }) => {
+              showToast({ title: t('ctxMenuProperties'), body: 'File info not available. Please wait for the directory to load and try again.' });
+            }).catch(() => {});
+          }
         },
       });
 

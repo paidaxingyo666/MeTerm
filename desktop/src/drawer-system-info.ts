@@ -156,8 +156,9 @@ function renderTile(label: string, value: string, percent?: number, colorClass?:
 
 /** Render compact tiles view (narrow sidebar) */
 function renderCompactSysInfo(instance: SysInfoFields, serverInfoEl: HTMLElement): void {
-  const info = instance.sysInfo!;
-  const memPct = info.mem_total > 0 ? (info.mem_used / info.mem_total) * 100 : 0;
+  const info = instance.sysInfo;
+  if (!info) return;
+  const memPct = (info.mem_total ?? 0) > 0 ? ((info.mem_used ?? 0) / info.mem_total) * 100 : 0;
 
   // Net rates
   let rxRate = 0;
@@ -175,10 +176,10 @@ function renderCompactSysInfo(instance: SysInfoFields, serverInfoEl: HTMLElement
   // No connection info in compact mode — just tiles in a single column
   serverInfoEl.innerHTML = `
     <div class="si-tiles">
-      ${renderTile('CPU', `${info.cpu_usage.toFixed(0)}%`, info.cpu_usage)}
+      ${renderTile('CPU', `${(info.cpu_usage ?? 0).toFixed(0)}%`, info.cpu_usage ?? 0)}
       ${renderTile('MEM', `${memPct.toFixed(0)}%`, memPct)}
       ${diskTiles}
-      ${renderTile('UP', formatUptime(info.uptime_seconds))}
+      ${renderTile('UP', formatUptime(info.uptime_seconds ?? 0))}
       ${renderTile('NET', `↓${formatRate(rxRate).replace('/s', '')}`)}
     </div>
   `;
@@ -189,7 +190,8 @@ function renderCompactSysInfo(instance: SysInfoFields, serverInfoEl: HTMLElement
 
 /** Render full expanded view (wide sidebar) */
 function renderExpandedSysInfo(instance: SysInfoFields, serverInfoEl: HTMLElement): void {
-  const info = instance.sysInfo!;
+  const info = instance.sysInfo;
+  if (!info) return;
   const memPercent = info.mem_total > 0 ? (info.mem_used / info.mem_total) * 100 : 0;
 
   const existingConn = serverInfoEl.querySelector('.server-info-conn');
@@ -216,16 +218,16 @@ function renderExpandedSysInfo(instance: SysInfoFields, serverInfoEl: HTMLElemen
     </div>
     <div class="server-info-item">
       <div class="server-info-label">${t('serverInfoUptime')}</div>
-      <div class="server-info-value">${formatUptime(info.uptime_seconds)}</div>
+      <div class="server-info-value">${formatUptime(info.uptime_seconds ?? 0)}</div>
     </div>
     <div class="server-info-item">
-      <div class="server-info-label">${t('serverInfoCPU')} · ${escapeHtml(String(info.cpu_cores))} cores</div>
-      <div class="server-info-value server-info-value-small">${escapeHtml(String(info.cpu_model))}</div>
-      ${renderProgressBar(info.cpu_usage)}
+      <div class="server-info-label">${t('serverInfoCPU')} · ${escapeHtml(String(info.cpu_cores ?? 0))} cores</div>
+      <div class="server-info-value server-info-value-small">${escapeHtml(String(info.cpu_model ?? ''))}</div>
+      ${renderProgressBar(info.cpu_usage ?? 0)}
     </div>
     <div class="server-info-item">
       <div class="server-info-label">${t('serverInfoMemory')}</div>
-      <div class="server-info-value server-info-value-small">${formatBytes(info.mem_used)} / ${formatBytes(info.mem_total)}</div>
+      <div class="server-info-value server-info-value-small">${formatBytes(info.mem_used ?? 0)} / ${formatBytes(info.mem_total ?? 0)}</div>
       ${renderProgressBar(memPercent)}
     </div>
     ${renderNetChart(instance)}

@@ -236,6 +236,7 @@ class AICapsuleManagerClass {
       showNoConfigHint: (inst) => this.showNoConfigHint(inst),
       createTrustSwitcher: () => this.createTrustSwitcher(),
       toggleChatHistory: (inst, fromSide) => this.toggleChatHistory(inst, fromSide ?? false),
+      injectUserMessage: (inst, text) => this.injectUserMessage(inst, text),
       getActiveInstance: () => this.getActiveInstance(),
     };
   }
@@ -814,7 +815,10 @@ class AICapsuleManagerClass {
   hideAll(): void {
     this.capsules.forEach((inst) => {
       inst.element.style.display = 'none';
-      if (inst.layoutMode !== 'side') {
+      if (inst.layoutMode === 'side') {
+        // Side mode: hide the side panel (it's a separate DOM element)
+        if (inst.sidePanel) inst.sidePanel.style.display = 'none';
+      } else {
         // Bottom mode: hide chat panel with the bar
         if (inst.chatPanel) inst.chatPanel.style.display = 'none';
       }
@@ -826,8 +830,9 @@ class AICapsuleManagerClass {
     if (inst) {
       if (this._barHidden) {
         inst.element.style.display = 'none';
-        // In bottom mode, also hide chat panel; side panel stays independent
-        if (inst.layoutMode !== 'side') {
+        if (inst.layoutMode === 'side') {
+          if (inst.sidePanel) inst.sidePanel.style.display = 'none';
+        } else {
           if (inst.chatPanel) inst.chatPanel.style.display = 'none';
         }
         this.ensureFloatingBtn();

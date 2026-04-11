@@ -55,6 +55,8 @@ export function resolveThemeAttr(colorScheme: string): string {
   if (colorScheme === 'darker') return 'darker';
   if (colorScheme === 'navy') return 'navy';
   if (colorScheme === 'light') return 'light';
+  if (colorScheme === 'neo-brutalism') return 'neo-brutalism';
+  if (colorScheme === 'neo-brutalism-rounded') return 'neo-brutalism-rounded';
   if (colorScheme === 'auto') return resolveIsDark('auto') ? 'dark' : 'light';
   return 'dark';
 }

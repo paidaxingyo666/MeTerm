@@ -154,7 +154,7 @@ export function createWriteFileTool(): ToolHandler {
         // SSH: write via heredoc. Single-quote the EOF marker to
         // disable expansion inside the body, and single-quote the
         // path to handle $ / spaces / etc.
-        const eofMarker = `METERM_EOF_${Math.random().toString(36).slice(2, 6)}`;
+        const eofMarker = `METERM_EOF_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
         const safePath = filePath.replace(/'/g, `'\\''`);
         const dirCmd = `mkdir -p "$(dirname '${safePath}')"`;
         const writeCmd = `${dirCmd} && cat > '${safePath}' << '${eofMarker}'\n${content}\n${eofMarker}`;

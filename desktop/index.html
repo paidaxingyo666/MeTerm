@@ -9,8 +9,13 @@
         try {
           var s = JSON.parse(localStorage.getItem('meterm-settings') || '{}');
           var cs = s.colorScheme || 'auto';
-          var dark = cs === 'dark' || cs === 'darker' || (cs === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-          bg = cs === 'darker' ? '#121214' : dark ? '#2d2d2d' : '#f5f5f5';
+          if (cs === 'neo-brutalism' || cs === 'neo-brutalism-rounded') {
+            // NB theme: use custom bg from nbCustomColors or default warm white
+            bg = (s.nbCustomColors && s.nbCustomColors['--nb-bg']) || '#FFFEF0';
+          } else {
+            var dark = cs === 'dark' || cs === 'darker' || cs === 'navy' || (cs === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            bg = cs === 'darker' ? '#121214' : cs === 'navy' ? '#1a1a2e' : dark ? '#2d2d2d' : '#f5f5f5';
+          }
         } catch(e) {}
         // Linux CSD needs transparent html for rounded corners — skip inline bg
         var isLinux = !navigator.userAgent.match(/windows|macintosh|mac os/i);
@@ -18,6 +23,7 @@
         // For sub-windows: also set body background via <style> (won't affect main window transparency)
         if (window.location.search.includes('window=')) {
           var st = document.createElement('style');
+          st.id = 'flash-prevention-bg';
           st.textContent = 'body{background:' + bg + '}';
           document.head.appendChild(st);
         }

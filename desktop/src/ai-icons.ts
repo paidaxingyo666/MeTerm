@@ -21,6 +21,10 @@ export const TOOL_COLORS: Record<string, string> = {
   list_directory: '#10B981',       // emerald (folder)
   glob_search: '#EC4899',          // pink (pattern matching)
   grep_search: '#F472B6',          // pink-400 (text matching)
+  web_search: '#6366F1',           // indigo (web/globe)
+  type_text: '#F97316',            // orange (keyboard input)
+  press_keys: '#EAB308',           // yellow (key press)
+  watch_terminal: '#8B5CF6',       // purple (monitoring)
 };
 
 export const STATUS_COLORS = {
@@ -157,6 +161,49 @@ export function toolIcon(toolName: string, size = 16): string {
         <line x1="5" y1="6" x2="9" y2="6" stroke="${color}" stroke-width="1" stroke-linecap="round" opacity="0.8"/>
         <line x1="5" y1="7.5" x2="8.5" y2="7.5" stroke="${color}" stroke-width="1" stroke-linecap="round" opacity="0.8"/>
         <line x1="5" y1="9" x2="9" y2="9" stroke="${color}" stroke-width="1" stroke-linecap="round" opacity="0.8"/>
+      </svg>`;
+
+    case 'web_search':
+      // Globe with magnifier
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="7" cy="7" r="5.5" stroke="${color}" stroke-width="1.4"/>
+        <ellipse cx="7" cy="7" rx="2.2" ry="5.5" stroke="${color}" stroke-width="1.2"/>
+        <line x1="1.5" y1="7" x2="12.5" y2="7" stroke="${color}" stroke-width="1" stroke-linecap="round" opacity="0.6"/>
+        <line x1="3" y1="4" x2="11" y2="4" stroke="${color}" stroke-width="0.9" stroke-linecap="round" opacity="0.4"/>
+        <line x1="3" y1="10" x2="11" y2="10" stroke="${color}" stroke-width="0.9" stroke-linecap="round" opacity="0.4"/>
+        <circle cx="12" cy="12" r="2.2" stroke="${color}" stroke-width="1.3" fill="var(--bg-primary, #1a1a2e)"/>
+        <line x1="13.5" y1="13.5" x2="15" y2="15" stroke="${color}" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>`;
+
+    case 'type_text':
+      // Keyboard with cursor
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1" y="4" width="14" height="9" rx="1.5" stroke="${color}" stroke-width="1.4"/>
+        <line x1="3.5" y1="6.5" x2="5" y2="6.5" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="6.5" y1="6.5" x2="8" y2="6.5" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="9.5" y1="6.5" x2="11" y2="6.5" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="12" y1="6.5" x2="13" y2="6.5" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="3.5" y1="9" x2="5.5" y2="9" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="6.5" y1="9" x2="9.5" y2="9" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="10.5" y1="9" x2="13" y2="9" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="5" y1="11.5" x2="11" y2="11.5" stroke="${color}" stroke-width="1.2" stroke-linecap="round"/>
+      </svg>`;
+
+    case 'press_keys':
+      // Single key cap
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2.5" y="3" width="11" height="10" rx="2" stroke="${color}" stroke-width="1.4"/>
+        <rect x="4.5" y="5" width="7" height="6" rx="1" stroke="${color}" stroke-width="1.2" fill="${color}" fill-opacity="0.1"/>
+        <path d="M7 9.5L8 7L9 9.5" stroke="${color}" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="7.3" y1="8.8" x2="8.7" y2="8.8" stroke="${color}" stroke-width="0.9" stroke-linecap="round"/>
+      </svg>`;
+
+    case 'watch_terminal':
+      // Terminal with eye
+      return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="${color}" stroke-width="1.4"/>
+        <path d="M4 8s1.5-2.5 4-2.5S12 8 12 8s-1.5 2.5-4 2.5S4 8 4 8z" stroke="${color}" stroke-width="1.2" stroke-linejoin="round" opacity="0.8"/>
+        <circle cx="8" cy="8" r="1.2" stroke="${color}" stroke-width="1.1" opacity="0.8"/>
       </svg>`;
 
     default:

@@ -40,6 +40,12 @@ export class PathAutocomplete {
     this.dirCache.set(path, { files, ts: Date.now() });
   }
 
+  /** Read cached directory contents. Returns undefined on cache miss. */
+  dirCacheGet(path: string): FileInfo[] | undefined {
+    const entry = this.dirCache.get(path);
+    return entry?.files;
+  }
+
   /** 静默查询目录内容（不影响 UI），供自动补全使用 */
   queryDirectory(path: string): Promise<FileInfo[]> {
     if (path === this.ctx.currentPath) return Promise.resolve(this.ctx.files);

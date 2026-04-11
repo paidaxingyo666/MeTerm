@@ -7,6 +7,7 @@ import { revealAfterPaint } from './window-utils';
 import { loadSettings, resolveIsDark } from './themes';
 import { initLanguage, setLanguage, t } from './i18n';
 import { applyVibrancy } from './appearance';
+import { applyNbPalette } from './nb-palette';
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
@@ -17,6 +18,8 @@ function resolveThemeAttr(colorScheme: string): string {
   if (colorScheme === 'light') return 'light';
   if (colorScheme === 'darker') return 'darker';
   if (colorScheme === 'navy') return 'navy';
+  if (colorScheme === 'neo-brutalism') return 'neo-brutalism';
+  if (colorScheme === 'neo-brutalism-rounded') return 'neo-brutalism-rounded';
   if (colorScheme === 'auto') return resolveIsDark('auto') ? 'dark' : 'light';
   return 'dark';
 }
@@ -122,6 +125,7 @@ export function initUpdaterWindow(): void {
   const settings = loadSettings();
   setLanguage(settings.language);
   document.documentElement.dataset.theme = resolveThemeAttr(settings.colorScheme);
+  applyNbPalette(settings.colorScheme);
   void applyVibrancy(settings.enableVibrancy);
   document.documentElement.classList.toggle('platform-windows', isWindowsPlatform);
   document.documentElement.classList.toggle('platform-linux', needsCustomControls && !isWindowsPlatform);
@@ -160,6 +164,7 @@ export function initUpdaterWindow(): void {
   void listen('settings-changed', () => {
     const s = loadSettings();
     document.documentElement.dataset.theme = resolveThemeAttr(s.colorScheme);
+    applyNbPalette(s.colorScheme);
     const nativeTheme = resolveThemeAttr(s.colorScheme) === 'light' ? 'light' as const : 'dark' as const;
     void getCurrentWindow().setTheme(nativeTheme);
     void applyVibrancy(s.enableVibrancy);

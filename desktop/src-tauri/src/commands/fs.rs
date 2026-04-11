@@ -402,17 +402,9 @@ pub async fn agent_save_attachment(
     let final_name = if trimmed.is_empty() { "attachment" } else { trimmed };
 
     // Timestamp + short random suffix for collision avoidance.
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let rand_suffix: String = (0..4)
-        .map(|_| {
-            let n = (ts.wrapping_mul(2862933555777941757).wrapping_add(3037000493) & 0x0f) as u8;
-            if n < 10 { (b'0' + n) as char } else { (b'a' + n - 10) as char }
-        })
-        .collect();
-    let prefixed = format!("{}-{}-{}", ts, rand_suffix, final_name);
+    // UUID v4 for collision-proof filenames (the uuid crate is already a dep).
+    let id = uuid::Uuid::new_v4();
+    let prefixed = format!("{}-{}", id, final_name);
 
     let dest = att_dir.join(&prefixed);
     let size = bytes.len() as u64;

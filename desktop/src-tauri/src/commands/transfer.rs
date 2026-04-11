@@ -1757,6 +1757,58 @@ pub async fn start_session_file_upload(
     Ok(())
 }
 
+// ─── SFTP remote stat (used by agent upload_file pre-check) ───
+
+#[derive(serde::Serialize)]
+pub struct SftpStatResult {
+    pub exists: bool,
+    pub size: Option<u64>,
+    pub is_dir: bool,
+}
+
+/// Stat a remote path via the session's dedicated SFTP connection.
+/// Returns { exists: false } when the path does not exist; never errors
+/// on "file not found" — only on connection/session failures.
+#[tauri::command]
+pub async fn sftp_stat_remote(
+    state: State<'_, Arc<ServerState>>,
+    session_id: String,
+    remote_path: String,
+) -> Result<SftpStatResult, String> {
+    let session = state
+        .session_manager
+        .get(&session_id)
+        .ok_or_else(|| "session not found".to_string())?;
+
+    let sftp = session
+        .sftp
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "SFTP not available for this session".to_string())?;
+
+    match sftp.metadata(remote_path).await {
+        Ok(meta) => {
+            let is_dir = meta.file_type().is_dir();
+            let size = meta.size;
+            Ok(SftpStatResult {
+                exists: true,
+                size,
+                is_dir,
+            })
+        }
+        Err(_) => {
+            // Any error (NotFound, permission, etc.) → treat as "does not exist".
+            // The upload will surface a proper error if it's a permission issue.
+            Ok(SftpStatResult {
+                exists: false,
+                size: None,
+                is_dir: false,
+            })
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn control_session_file_upload(
     state: State<'_, Arc<ServerState>>,

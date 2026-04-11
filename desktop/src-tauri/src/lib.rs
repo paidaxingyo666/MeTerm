@@ -1019,6 +1019,7 @@ pub fn run() {
             commands::fs::agent_write_file,
             commands::fs::agent_write_file_bytes,
             commands::fs::agent_copy_local_file,
+            commands::transfer::sftp_stat_remote,
             commands::fs::agent_save_attachment,
             commands::fs::agent_delete_attachment,
             commands::fs::agent_list_directory,

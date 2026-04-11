@@ -52,6 +52,9 @@ export interface ChatOpsHost {
   showNoConfigHint(instance: AICapsuleInstance): void;
   createTrustSwitcher(): HTMLDivElement;
   toggleChatHistory(instance: AICapsuleInstance, fromSidePanel?: boolean): void;
+  /** Inject a user message into an active agent run (without starting
+   *  a new run). Used when the user sends text while agent is streaming. */
+  injectUserMessage(instance: AICapsuleInstance, text: string): void;
   /** Return the AICapsuleInstance that currently has user focus.
    *  Used by tab-scoped UI (like the side panel) to route actions
    *  to the currently-focused pane within the tab. */
@@ -393,6 +396,18 @@ export function sendToLLMFrom(
   text: string,
   host: ChatOpsHost,
 ): void {
+  // Guard: if the agent is already streaming, inject the message into
+  // the running conversation instead of starting a new run. This
+  // prevents the race condition where a quick-prompt click or side-panel
+  // Enter fires a second concurrent runLoop — the old loop gets an
+  // implicit abort via agent.send() and the UI sees duplicated replies.
+  if (instance.isStreaming) {
+    if (text) {
+      host.injectUserMessage(instance, text);
+    }
+    return;
+  }
+
   // Snapshot pending images before we clear them — they'll be attached
   // to this user turn.  Allow empty text if at least one image or file
   // attachment is queued.

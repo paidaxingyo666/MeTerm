@@ -1,5 +1,6 @@
 import { type FileInfo } from './protocol';
 import { getFileIcon, isEditableFile } from './icons';
+import { isImageFile } from './file-editor-md';
 import { escapeHtml } from './status-bar';
 import { formatSize } from './file-utils';
 import { openFileInEditor } from './file-editor-bridge';
@@ -190,7 +191,7 @@ function attachDelegatedHandlers(scroller: HTMLElement, body: HTMLElement): void
       await ctx.loadDirectory(newPath);
     } else {
       const conn = ctx.transport || ctx.ws;
-      if (isEditableFile(path) && conn && ctx.isConnected) {
+      if ((isEditableFile(path) || isImageFile(path)) && conn && ctx.isConnected) {
         const fileInfo = state.sortedFiles.find((f) => f.name === path);
         const fileSize = fileInfo?.size || 0;
         const fullPath = ctx.currentPath === '/' ? `/${path}` : `${ctx.currentPath}/${path}`;

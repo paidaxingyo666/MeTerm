@@ -28,7 +28,17 @@ export function applySettingsToTerminal(mt: ManagedTerminal, settings: AppSettin
   const needsTransparency = isWindowsPlatform || opacity < 1 || hasBackgroundImage;
   const bgColor = hasBackgroundImage ? 'rgba(0,0,0,0)' : (opacity < 1 ? hexToRgba(bgHex, opacity) : bgHex);
   mt.terminal.options.allowTransparency = needsTransparency;
-  mt.terminal.options.theme = { ...theme, background: bgColor };
+  // Apply NB custom palette overrides if active
+  let finalTheme = { ...theme, background: bgColor };
+  if (settings.colorScheme === 'neo-brutalism' || settings.colorScheme === 'neo-brutalism-rounded') {
+    const nbc = settings.nbCustomColors;
+    if (nbc) {
+      if (nbc['--nb-bg']) finalTheme.background = nbc['--nb-bg'];
+      if (nbc['--nb-text']) finalTheme.foreground = nbc['--nb-text'];
+      if (nbc['--nb-accent']) finalTheme.cursor = nbc['--nb-accent'];
+    }
+  }
+  mt.terminal.options.theme = finalTheme;
   // Padding color fix: match container background to the canvas color so the
   // padding areas don't show a mismatched color from the parent.
   // When bg image is active, keep transparent so image shows through padding areas.
@@ -134,8 +144,29 @@ export function registerOscColorHandlers(
   terminal: Terminal,
   getSettings: () => AppSettings | null,
 ): void {
+  // SAFETY CHECK: OSC 10/11/12 responses are written back into the PTY
+  // as MsgInput. This is safe when the remote side is in RAW mode (TUI
+  // apps like vim/htop/tmux that actually issued the query). But when
+  // the shell is at its prompt (COOKED mode), the PTY line discipline
+  // treats the response as keyboard input and echoes it as visible
+  // garbage (e.g. "11;rgb:0000/0000/0000" after the prompt).
+  //
+  // This is the same problem described in notifyColorSchemeChange() for
+  // Windows ConPTY, but it also happens on SSH sessions after a long
+  // screen lock: wake → forceFullRefresh → SIGWINCH → shell re-queries
+  // OSC 11 while still in cooked mode → response echoed as text.
+  //
+  // Fix: only respond when the terminal is on the alternate screen
+  // buffer (= a TUI is active). Normal shell prompts on the primary
+  // buffer don't need color info, and responding there causes the echo.
+  const isAltScreen = () => {
+    try { return terminal.buffer.active.type === 'alternate'; }
+    catch { return false; }
+  };
+
   terminal.parser.registerOscHandler(10, (data: string) => {
-    if (data !== '?') return true; // Intercept color SET — prevent xterm.js from overriding our theme
+    if (data !== '?') return true;
+    if (!isAltScreen()) return true; // Don't respond at shell prompt
     const settings = getSettings();
     const theme = settings ? getTheme(settings.theme) : null;
     if (!theme) return true;
@@ -147,7 +178,8 @@ export function registerOscColorHandlers(
   });
 
   terminal.parser.registerOscHandler(11, (data: string) => {
-    if (data !== '?') return true; // Intercept color SET — prevent xterm.js from overriding our theme
+    if (data !== '?') return true;
+    if (!isAltScreen()) return true; // Don't respond at shell prompt
     const settings = getSettings();
     const theme = settings ? getTheme(settings.theme) : null;
     if (!theme) return true;
@@ -160,7 +192,8 @@ export function registerOscColorHandlers(
 
   // OSC 12: cursor color query
   terminal.parser.registerOscHandler(12, (data: string) => {
-    if (data !== '?') return true; // Intercept color SET — protect theme integrity
+    if (data !== '?') return true;
+    if (!isAltScreen()) return true; // Don't respond at shell prompt
     const settings = getSettings();
     const theme = settings ? getTheme(settings.theme) : null;
     if (!theme) return true;

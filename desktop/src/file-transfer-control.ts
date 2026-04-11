@@ -949,9 +949,9 @@ export function resumeTransfer(ctx: TransferContext, id: string): void {
   }
 }
 
-export async function cancelTransfer(ctx: TransferContext, id: string): Promise<void> {
+export async function cancelTransfer(ctx: TransferContext, id: string): Promise<boolean> {
   const record = ctx.findRecord(id);
-  if (!record || (record.status !== 'inprogress' && record.status !== 'paused' && record.status !== 'pending')) return;
+  if (!record || (record.status !== 'inprogress' && record.status !== 'paused' && record.status !== 'pending')) return false;
 
   if (record.type === 'upload') {
     const found = findUploadByRecordId(ctx, id);
@@ -977,6 +977,7 @@ export async function cancelTransfer(ctx: TransferContext, id: string): Promise<
       }
       ctx.updateTransferProgress(id, 0, 'cancelled', '用户取消');
     }
+    return true;
   } else if (record.type === 'download') {
     const found = findDownloadByRecordId(ctx, id);
     if (found) {
@@ -1005,7 +1006,9 @@ export async function cancelTransfer(ctx: TransferContext, id: string): Promise<
       }
       ctx.updateTransferProgress(id, 0, 'cancelled', '用户取消');
     }
+    return true;
   }
+  return false;
 }
 
 export function sendDownloadCtrl(ctx: TransferContext, msgType: number, numTid: number): void {

@@ -1,0 +1,2195 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Neo-Brutalism Theme for MeTerm
+   ═══════════════════════════════════════════════════════════════════
+   A bold, high-contrast design language with:
+     - Thick black borders (2-3px solid #000)
+     - Hard offset shadows (no blur)
+     - Zero border-radius (sharp corners)
+     - Pure solid backgrounds (no glass morphism)
+     - Saturated accent colors
+     - Heavy typography
+     - Square-cap SVG icons
+
+   All rules are scoped under :is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) so they
+   are fully isolated from existing themes. Switching away from
+   Neo-Brutalism restores the original look with zero side effects.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ─── A. CSS Variable Overrides ─────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) {
+  /* Backgrounds — solid, no transparency */
+  --bg-primary: 255, 254, 240;        /* warm white #FFFEF0 */
+  --bg-toolbar: 255, 254, 240;
+  --bg-button: 255, 255, 255;
+  --bg-button-hover: 255, 238, 88;    /* vivid yellow on hover */
+  --bg-status: 255, 254, 240;
+  --bg-card: 255, 255, 255;
+  --bg-card-hover: 255, 238, 88;
+  --bg-input: 255, 255, 255;
+  --bg-settings: 255, 254, 240;
+  --bg-context-menu: 255, 255, 255;
+  --bg-tray-tip: 255, 255, 255;
+  --bg-tray-tip-footer: 245, 245, 230;
+  --bg-tab: 255, 255, 255;
+  --bg-home-btn-hover: 255, 238, 88;
+
+  /* Text — pure black hierarchy */
+  --text-primary: #1A1A2E;
+  --text-heading: #000000;
+  --text-secondary: #333333;
+  --text-muted: #555555;
+  --text-dim: #777777;
+  --text-faint: #999999;
+  --text-button: #000000;
+  --text-card-title: #000000;
+  --text-disabled: #AAAAAA;
+
+  /* Borders — thick and black */
+  --border-primary: #000000;
+  --border-subtle: #000000;
+  --border-toolbar: #000000;
+  --border-context-menu: #000000;
+  --border-tray-tip-footer: #000000;
+  --border-home-btn-hover: #000000;
+
+  /* Accent — bold coral red */
+  --accent: #E94560;
+  --accent-rgb: 233, 69, 96;
+  --accent-bg: rgba(233, 69, 96, 0.15);
+  --accent-tray-btn-bg: rgba(233, 69, 96, 0.12);
+  --accent-tray-btn-bg-hover: rgba(233, 69, 96, 0.22);
+  --accent-tray-btn-border: #E94560;
+  --accent-tray-btn-text: #1A1A2E;
+  --accent-primary: #E94560;
+
+  /* Status */
+  --status-connected-bg: #A8E6CF;
+  --status-connected-text: #065F46;
+  --status-disconnected-bg: #FFB3B3;
+  --status-disconnected-text: #991B1B;
+  --status-default-bg: #E5E5E5;
+  --status-default-text: #555;
+
+  /* Misc */
+  --error-text: #E94560;
+  --danger: #E94560;
+  --danger-hover: #C73650;
+  --close-btn-text: #555;
+  --empty-icon: #999;
+  --kbd-bg: #F0F0E0;
+  --preview-placeholder: #AAA;
+
+  /* Shadows — hard offset, zero blur */
+  --shadow-panel: rgba(0, 0, 0, 0.9);
+  --shadow-context-menu: rgba(0, 0, 0, 0.8);
+  --shadow-tray-tip: rgba(0, 0, 0, 0.8);
+
+  --slider-thumb: #E94560;
+  --tray-tip-body: #333;
+  --tray-tip-check: #555;
+
+  /* AI-specific overrides */
+  --ai-bar-opacity: 1;
+  --app-window-opacity: 1;
+
+  /* ── Customizable Neo-Brutalism palette tokens ──
+   * Users can override these via the settings color picker.
+   * The picker writes inline styles to :root which take precedence. */
+  --nb-bg: #FFFEF0;
+  --nb-card-bg: #FFFFFF;
+  --nb-text: #1A1A2E;
+  --nb-border: #000000;
+  --nb-shadow: #000000;
+  --nb-accent: #E94560;
+  --nb-highlight: #FFD93D;
+  --nb-success: #06D6A0;
+  --nb-info: #4ECDC4;
+  --nb-danger-light: #FFB3B3;
+  --nb-surface-alt: #F0F0E0;
+}
+
+
+/* ─── B. Global Resets ──────────────────────────────────────────── */
+
+/* Kill ALL border-radius */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) *,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) *::before,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) *::after {
+  border-radius: 0 !important;
+}
+
+/* Kill ALL backdrop-filter (glass morphism) */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Kill ALL blur/saturate filters except on xterm canvas */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) *:not(canvas) {
+  filter: none !important;
+}
+
+/* Reset box-shadow to hard offset style */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-panel,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-panel,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-history-panel,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .session-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-btn,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-confirm-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-board,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-wait-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .drawer-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ssh-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .navigate-confirm-dialog,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toast-notification,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .context-menu,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tab-drag-ghost,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .jumpserver-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .remote-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-details-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-popup {
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+}
+
+/* Hard borders everywhere */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-panel,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-panel,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .session-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-confirm-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-board,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .drawer-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ssh-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toast-notification,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .context-menu,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .jumpserver-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .remote-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-details-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-popup {
+  border: 2px solid var(--nb-border, #000) !important;
+}
+
+
+/* ─── C. SVG Icon Overrides ─────────────────────────────────────── */
+
+/* Make all inline SVGs chunky and square-capped.
+   Only set color (for currentColor inheritance), NOT stroke directly
+   on the <svg> — that would add unwanted outlines to fill-only icons. */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg:not(.xterm-decoration-overview-ruler) {
+  stroke-linecap: square !important;
+  stroke-linejoin: miter !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Only override stroke on elements that ALREADY have a stroke attribute
+   (line icons). This avoids adding white outlines to fill-only icons. */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg [stroke]:not([stroke="none"]) {
+  stroke: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg [fill]:not([fill="none"]):not([fill="currentColor"]) {
+  fill: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Thicken strokes — target elements with explicit stroke-width */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg path[stroke-width],
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg line[stroke-width],
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg circle[stroke-width],
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg rect[stroke-width],
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg polyline[stroke-width] {
+  stroke-width: 2.2 !important;
+}
+
+/* Status icons stay crisp */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-status svg,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-confirm-resolved svg {
+  stroke-width: 2.5 !important;
+}
+
+/* Override inline stroke attributes on SVGs generated by ai-icons.ts.
+   The SVGs use inline stroke="<color>" + stroke-width="<n>". CSS
+   cannot override inline attributes directly, but !important on
+   child selectors works for SVG presentation attributes. */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg[viewBox] path,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg[viewBox] line,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg[viewBox] circle,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) svg[viewBox] rect {
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+}
+
+
+/* ─── D. Typography ─────────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) h1,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) h2,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) h3,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-panel-title,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-title,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .drawer-modal-title,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ssh-modal-title {
+  font-weight: 800 !important;
+  letter-spacing: -0.02em;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) body,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg-content,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-section label {
+  font-weight: 500;
+}
+
+
+/* ─── E. Buttons ────────────────────────────────────────────────── */
+
+/* Base button styling — border, shadow, font. We intentionally use
+   lower specificity for background and color so component-level
+   .active/.streaming-active/.chat-active states can override them
+   WITHOUT needing !important themselves. The trick: set bg/color
+   via a non-!important rule, but border/shadow via !important. */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) button,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-btn,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-btn,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-confirm-btn {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  font-weight: 600 !important;
+  transition: transform 0.08s, box-shadow 0.08s !important;
+  cursor: pointer;
+}
+
+/* Default bg/color — WITHOUT !important so .active overrides win */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) button:not(.active):not(.chat-active):not(.streaming-active):not(:disabled),
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-btn:not(.active),
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-btn:not(.active) {
+  background: var(--nb-card-bg, #fff);
+  color: var(--nb-text, #1A1A2E);
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) button:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-btn:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-btn:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) button:active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-btn:active {
+  transform: translate(2px, 2px) !important;
+  box-shadow: 0 0 0 var(--nb-shadow, #000) !important;
+}
+
+/* Toolbar + AI bar small icon buttons — keep minimal */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toolbar-icon-btn,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toolbar-action-btn,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-btn,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-close,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-minimize,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-clear,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-new,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tab-close,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tab-scroll-btn {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toolbar-icon-btn:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toolbar-action-btn:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-btn:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-close:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-minimize:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-clear:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-new:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tab-close:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* ─── Universal .active state for ALL buttons/tabs/toggles ─────── */
+/* Instead of listing every individual .xyz.active selector, we use
+   a single universal rule. The yellow background is the brutalism
+   "this is ON" signal. Specific overrides below for red/teal cases. */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) button.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .active > button,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .drawer-tab.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .btn-toggle-sidebar.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .btn-filter.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .btn-history.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .sidebar-actions button.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .stf-btn.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .editor-wrap-btn.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .editor-preview-btn.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pip-pin-btn.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .always-on-top-btn.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .remote-tab.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-tab.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-filter-btn.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .speed-limit-item.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .chmod-preset.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-search-overlay-tab.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-trust-btn.active {
+  background: var(--nb-highlight, #FFD93D) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Streaming state — red (danger/stop) */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-btn-llm.streaming-active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-btn-send.streaming-active {
+  background: var(--nb-accent, #E94560) !important;
+  color: #fff !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-btn-llm.streaming-active:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-btn-send.streaming-active:hover {
+  background: var(--nb-accent-hover, #C73650) !important;
+}
+
+/* Chat-active: LLM button → red, terminal button → teal */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-btn-llm.chat-active {
+  background: var(--nb-accent, #E94560) !important;
+  color: #fff !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-btn-term.chat-active {
+  background: var(--nb-info, #4ECDC4) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Disabled buttons */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) button:disabled,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) button[disabled] {
+  background: #E5E5E5 !important;
+  color: #999 !important;
+  box-shadow: 1px 1px 0 #999 !important;
+  border-color: #999 !important;
+  cursor: not-allowed !important;
+  transform: none !important;
+}
+
+/* Status capsule connection states */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .status-capsule.connected {
+  background: var(--nb-success-light, #A8E6CF) !important;
+  border-color: #065F46 !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .status-capsule.disconnected,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .status-capsule.error {
+  background: var(--nb-danger-light, #FFB3B3) !important;
+  border-color: #991B1B !important;
+}
+
+/* Approve button — green accent */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-confirm-approve {
+  background: var(--nb-success-light, #A8E6CF) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-confirm-approve:hover {
+  background: var(--nb-success, #06D6A0) !important;
+}
+
+/* Reject button — red accent */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-confirm-reject {
+  background: var(--nb-danger-light, #FFB3B3) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-confirm-reject:hover {
+  background: #FF6B6B !important;
+}
+
+
+/* ─── F. Form Controls ──────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) input,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) select,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) textarea,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-select,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-input {
+  border: 2px solid var(--nb-border, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  outline: none !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) input:focus,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) select:focus,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) textarea:focus,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-input:focus {
+  box-shadow: 3px 3px 0 var(--nb-accent, #E94560) !important;  /* accent-colored focus ring */
+  border-color: var(--nb-accent, #E94560) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) input::placeholder,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) textarea::placeholder {
+  color: #999 !important;
+  opacity: 1 !important;
+}
+
+/* Checkboxes */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) input[type="checkbox"] {
+  accent-color: var(--nb-accent, #E94560) !important;
+}
+
+/* Sliders */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) input[type="range"] {
+  accent-color: var(--nb-accent, #E94560) !important;
+}
+
+/* AI Bar custom placeholder overlay */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-placeholder {
+  color: #999 !important;
+  opacity: 1 !important;
+}
+
+
+/* ─── G. Toolbar & Tabs ─────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toolbar {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border-bottom: 2px solid var(--nb-border, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .title-tab {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  margin: 2px 1px;
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .title-tab.active {
+  background: var(--nb-highlight, #FFD93D) !important;
+  font-weight: 700 !important;
+}
+
+
+/* ─── H. Status Bar ─────────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) #status {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border-top: 2px solid var(--nb-border, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .status-capsule {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .status-dot {
+  box-shadow: none !important;
+  border: 1.5px solid var(--nb-border, #000);
+}
+
+
+/* ─── I. AI Bar ─────────────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: none !important;
+}
+
+
+/* ─── J. AI Chat Panel ──────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-panel {
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-header {
+  border-bottom: 2px solid var(--nb-border, #000) !important;
+  background: var(--nb-highlight, #FFD93D) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg.ai-msg-user {
+  background: var(--nb-info, #4ECDC4) !important;  /* teal for user */
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg.ai-msg-assistant {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg.ai-msg-assistant .ai-msg-content {
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Code blocks in AI messages */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg-content pre,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg-content code {
+  background: var(--nb-surface-alt, #F0F0E0) !important;
+  border: 1.5px solid var(--nb-border, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* AI tool cards */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-card {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-card.completed {
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-card-header {
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* AI confirm card */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-confirm-card {
+  background: #FFF3CD !important;  /* warm yellow alert */
+}
+
+/* AI wait card */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-wait-card {
+  background: #FFE0B2 !important;  /* warm orange */
+  border: 2px solid var(--nb-border, #000) !important;
+}
+
+
+/* ─── K. TodoBoard ──────────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-board {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-board::before {
+  background: #000 !important;  /* solid black accent bar */
+  width: 4px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-board-progress {
+  background: #E5E5E5 !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-board-bar {
+  background: var(--nb-success, #06D6A0) !important;  /* solid green, no gradient */
+  box-shadow: none !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-row.in_progress {
+  background: var(--nb-highlight, #FFD93D) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-box {
+  border: 2px solid var(--nb-border, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-box.checked {
+  background: var(--nb-success, #06D6A0) !important;
+  border-color: #000 !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-box.active {
+  background: var(--nb-highlight, #FFD93D) !important;
+  border-color: #000 !important;
+  animation: none !important;  /* no pulse, just solid color */
+}
+
+
+/* ─── L. Settings Panel ─────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-panel {
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-sidebar-item {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-sidebar-item:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-sidebar-item.active {
+  background: var(--nb-highlight, #FFD93D) !important;
+  border-left: 4px solid var(--nb-border, #000) !important;
+  font-weight: 700 !important;
+}
+
+
+/* ─── M. Home Page Cards ────────────────────────────────────────── */
+
+/* Session cards */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .session-card {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+  transition: transform 0.1s, box-shadow 0.1s !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .session-card:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 5px 5px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .session-card:active {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .session-status {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  font-weight: 700 !important;
+}
+
+/* Home action buttons (top area) */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-btn {
+  background: var(--nb-card-bg, #fff) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-btn:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-btn.ssh { border-left: 4px solid #118AB2 !important; }
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-btn.terminal { border-left: 4px solid #06D6A0 !important; }
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-btn.remote { border-left: 4px solid #9B59B6 !important; }
+
+/* Dashboard control buttons (Local/SSH/Remote/JumpServer) */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-ctrl-btn {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-ctrl-btn:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-ctrl-btn:active {
+  transform: translate(2px, 2px) !important;
+  box-shadow: 0 0 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-ctrl-btn.home-btn-ssh { border-left: 4px solid #118AB2 !important; }
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-ctrl-btn.home-btn-remote { border-left: 4px solid #06D6A0 !important; }
+
+/* Dashboard search box — target the WRAPPER not the input */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-search-wrap {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  height: 36px !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-search-wrap:focus-within {
+  border-color: var(--nb-accent, #E94560) !important;
+  box-shadow: 2px 2px 0 var(--nb-accent, #E94560) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-search-input {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Recent activity cards */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-recent-card {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-recent-card:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* Group cards */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-group-card {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-group-card:hover {
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-group-card-placeholder {
+  border: 2px dashed #000 !important;
+  background: transparent !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-group-name-input {
+  border: none !important;
+  border-bottom: 2px solid var(--nb-border, #000) !important;
+  background: transparent !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-new-group-btn {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 1px 1px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-new-group-btn:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* Connection rows */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-conn-row:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* Card right-click menu */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-card-menu {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-card-menu-item {
+  border: none !important;
+  box-shadow: none !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-card-menu-item:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-card-menu-item.danger:hover {
+  background: var(--nb-danger-light, #FFB3B3) !important;
+}
+
+/* Group modal dialog */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .group-modal-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .group-modal {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .group-modal-input {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .group-modal-input:focus {
+  border-color: var(--nb-accent, #E94560) !important;
+  box-shadow: 2px 2px 0 var(--nb-accent, #E94560) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .group-color-swatch {
+  border: 2px solid var(--nb-border, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .group-modal-btn {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .group-modal-btn-primary {
+  background: var(--nb-highlight, #FFD93D) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Dashboard section titles */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-section-title {
+  color: var(--nb-text, #1A1A2E) !important;
+  font-weight: 800 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+}
+
+/* Dashboard footer */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-footer {
+  border-top: 2px solid var(--nb-border, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-dash-footer-link:hover {
+  color: var(--nb-accent, #E94560) !important;
+}
+
+/* Search overlay internals */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-search-overlay {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-search-overlay-row:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-search-overlay-web-card {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-search-overlay-web-card:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-search-overlay-tab {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 1px 1px 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-search-overlay-count {
+  border: 1px solid var(--nb-border, #000) !important;
+  background: var(--nb-surface-alt, #F0F0E0) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-search-pagination-btn {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 1px 1px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-search-pagination-btn:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-search-pagination-select {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Tray tip notification */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tray-tip {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tray-tip-ok {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-highlight, #FFD93D) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Connection card */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-connection-card {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+
+
+/* ─── N. File Manager / Drawer ──────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .drawer-content {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border-left: 2px solid var(--nb-border, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-toolbar {
+  border-bottom: 2px solid var(--nb-border, #000) !important;
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-item:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-item.selected {
+  background: var(--nb-info, #4ECDC4) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .drawer-sidebar {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border-right: 2px solid var(--nb-border, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tree-node:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tree-node.selected {
+  background: var(--nb-success-light, #A8E6CF) !important;
+}
+
+
+/* ─── O. SSH / Remote Modals ────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ssh-modal-overlay,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .remote-overlay,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .drawer-modal-overlay,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .navigate-confirm-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ssh-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .remote-modal {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 6px 6px 0 var(--nb-shadow, #000) !important;
+}
+
+
+/* ─── P. JumpServer ─────────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .jumpserver-card {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .jumpserver-card:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+
+/* ─── Q. Toast Notifications ────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toast-notification {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toast-title {
+  font-weight: 800 !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+
+/* ─── R. Context Menu ───────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .context-menu {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .context-menu-item:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .context-menu-separator {
+  border-color: #000 !important;
+}
+
+
+/* ─── S. Scrollbars ─────────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .overlay-sb-thumb {
+  background: #000 !important;
+  opacity: 0.3;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .overlay-sb-thumb:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .overlay-sb-thumb.is-dragging {
+  opacity: 0.6;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .overlay-sb-track {
+  background: transparent !important;
+}
+
+/* Native scrollbar */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.3) !important;
+  border: 1px solid var(--nb-border, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) ::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+
+/* ─── T. Animations ─────────────────────────────────────────────── */
+
+/* Replace circular spinner with block pulse */
+@keyframes neo-block-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-status svg circle[attributeName] {
+  animation: none !important;
+}
+
+/* No scale on hover — use shadow shift instead (already handled in button section) */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-btn:hover {
+  transform: none !important;
+}
+
+/* Disable macOS traffic light vibrancy interaction */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toolbar-traffic-placeholder {
+  background: transparent !important;
+}
+
+
+/* ─── U. Transfer Progress Bar ──────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-transfer-bar {
+  background: #E5E5E5 !important;
+  border: 1.5px solid var(--nb-border, #000) !important;
+  height: 6px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-transfer-fill {
+  background: var(--nb-success, #06D6A0) !important;  /* solid green, no gradient */
+}
+
+
+/* ─── V. Attachment Chips ───────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-pending-attachment-chip,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-pending-image-chip {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+
+/* ─── W. Split Pane ─────────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .split-pane-divider {
+  background: #000 !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .split-pane-divider:hover {
+  background: var(--nb-accent, #E94560) !important;
+}
+
+
+/* ─── X. Pairing / Sharing ──────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pairing-overlay,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .sharing-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pairing-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .sharing-modal {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 6px 6px 0 var(--nb-shadow, #000) !important;
+}
+
+
+/* ─── Y. Terminal Area ──────────────────────────────────────────── */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .terminal-panel {
+  border: none;  /* terminal fills the space */
+}
+
+/* SSH reconnect overlay */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ssh-reconnect-overlay {
+  background: rgba(255, 254, 240, 0.9) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+}
+
+/* Terminal selection color (handled by xterm theme, but ensure it works) */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .xterm .xterm-selection div {
+  background: rgba(255, 217, 61, 0.5) !important;
+}
+
+
+/* ─── Z. Misc ───────────────────────────────────────────────────── */
+
+/* Empty state */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-empty-state {
+  color: #555 !important;
+}
+
+/* Resize handles — file-sidebar ↔ terminal ↔ ai-side-panel.
+   The handle is 8px wide with margin: 0 -3.5px, so it overlaps
+   adjacent panels by 3.5px on each side. On dark themes the
+   transparent gap is invisible, but on Neo-Brutalism's white bg
+   it shows as a visible seam. Fix: hide the ::after line entirely
+   and rely on the adjacent panel borders (already 2px solid #000)
+   as the visual divider. The handle just provides the drag zone. */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .sidebar-resize-handle::after,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-resize-handle::after {
+  background: transparent !important;
+  width: 0 !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .sidebar-resize-handle:hover::after,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-resize-handle:hover::after {
+  background: var(--nb-accent, #E94560) !important;
+  width: 3px !important;
+  left: calc(50% - 1.5px) !important;
+}
+
+/* Chat resize handle */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-resize-handle,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-popup-resize-handle {
+  background: #ccc !important;
+  border-top: 2px solid var(--nb-border, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-resize-handle::after,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-popup-resize-handle::after {
+  background: #000 !important;
+}
+
+/* History panel */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-history-row:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* Image lightbox */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-lightbox-overlay {
+  background: rgba(0, 0, 0, 0.8) !important;
+}
+
+/* Reasoning/thinking blocks */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-reasoning {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  background: var(--nb-surface-alt, #F0F0E0) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-reasoning-text {
+  border-left: 3px solid var(--nb-border, #000) !important;
+  color: #333 !important;
+}
+
+/* PiP */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pip-indicator {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* OSC progress bar */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .osc-progress-bar {
+  background: #E5E5E5 !important;
+  border: 1px solid var(--nb-border, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .osc-progress-fill {
+  background: var(--nb-success, #06D6A0) !important;
+}
+
+/* Update notification */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .update-toast {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+
+/* Server info tiles in drawer */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .si-tile {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+
+/* File editor */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-editor-panel {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+}
+
+/* Viewer popup */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-popup {
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+
+/* Text selection across the app */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) ::selection {
+  background: var(--nb-highlight, #FFD93D) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   ROUND 2 — Missed Items & Size Adjustments
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ─── Vibrancy kill ─────────────────────────────────────────────── */
+/* macOS vibrancy (native blur) must be completely disabled for
+   Neo-Brutalism — solid backgrounds only. */
+html.vibrancy-active:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]),
+html.vibrancy-active:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) body,
+html.vibrancy-active:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .toolbar,
+html.vibrancy-active:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) #status {
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+
+
+/* ─── Terminal background — kill transparency ───────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .terminal-bg-overlay {
+  background: var(--nb-bg, #FFFEF0) !important;
+  opacity: 1 !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .terminal-panel {
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+
+
+/* ─── File sidebar — kill transparency ──────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-sidebar,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .drawer-sidebar {
+  background: var(--nb-bg, #FFFEF0) !important;
+  opacity: 1 !important;
+  border-right: 2px solid var(--nb-border, #000) !important;
+}
+
+
+/* ─── Update window ─────────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .update-banner {
+  background: var(--nb-highlight, #FFD93D) !important;
+  border-bottom: 2px solid var(--nb-border, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .update-banner-btn {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .update-modal-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .update-modal {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 6px 6px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .update-modal-btn {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .update-progress-track {
+  background: #E5E5E5 !important;
+  border: 1.5px solid var(--nb-border, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .update-progress-fill {
+  background: var(--nb-success, #06D6A0) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .update-toast {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+
+/* ─── AI danger dialog / overlay ────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-chat-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-danger-dialog {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-accent, #E94560) !important;
+  box-shadow: 4px 4px 0 var(--nb-accent, #E94560) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+
+/* ─── Path autocomplete dropdown ────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .path-autocomplete {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .path-ac-item:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .path-ac-item.selected {
+  background: var(--nb-highlight, #FFD93D) !important;
+  outline: none !important;
+}
+
+
+/* ─── File loading overlay + spinner ────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-loading-overlay {
+  background: rgba(255, 254, 240, 0.9) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .loading-spinner {
+  border: 3px solid #E5E5E5 !important;
+  border-top-color: #000 !important;
+  /* keep rotation animation, just make it square */
+}
+
+
+/* ─── Context submenu ───────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .context-submenu {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+}
+
+
+/* ─── Bookmark popup ────────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .bookmark-popup {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+}
+
+
+/* ─── PiP mode ──────────────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pip-floating-pin-btn {
+  background: var(--nb-highlight, #FFD93D) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pip-tab-select-backdrop {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pip-tab-select-dialog {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 6px 6px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pip-tab-select-item {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pip-tab-select-item:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pip-tab-select-cancel {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+}
+
+
+/* ─── CodeMirror editor ─────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .cm-gutters {
+  background: var(--nb-surface-alt, #F0F0E0) !important;
+  border-right: 2px solid var(--nb-border, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .cm-editor {
+  background: var(--nb-bg, #FFFEF0) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .cm-activeLine {
+  background: rgba(255, 217, 61, 0.2) !important;
+}
+
+
+/* (Home search overlay moved to section M above) */
+
+
+/* ─── Home card menu color dot ──────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .home-card-menu-color {
+  border: 1.5px solid var(--nb-border, #000) !important;
+}
+
+
+/* ─── JumpServer account dialogs ────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-account-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-account-dialog {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 6px 6px 0 var(--nb-shadow, #000) !important;
+}
+
+
+/* ─── Pairing dialog (not just modal) ───────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pairing-dialog {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 6px 6px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+
+/* ─── Sharing panel ─────────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .sharing-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .sharing-panel {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+}
+
+
+/* ─── kbd element ───────────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) kbd {
+  background: var(--nb-surface-alt, #F0F0E0) !important;
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 1px 1px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+  font-weight: 600;
+}
+
+
+/* ─── SSH connecting spinner ────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ssh-connecting-spinner {
+  border: 3px solid #E5E5E5 !important;
+  border-top-color: #000 !important;
+}
+
+
+/* ─── Settings titlebar close (Windows) ─────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-titlebar-close:hover {
+  background: var(--nb-accent, #E94560) !important;
+  color: #fff !important;
+}
+
+
+/* ─── Sidebar resize handle ─────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .sidebar-resize-handle:hover::after {
+  background: var(--nb-accent, #E94560) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .drawer-split-handle:hover::after {
+  background: var(--nb-accent, #E94560) !important;
+}
+
+
+/* ─── Split pane backdrop kill ──────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .split-pane-mask {
+  background: rgba(255, 254, 240, 0.9) !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   SIZE ADJUSTMENTS — Reduce oversized shadows and borders
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Small components: status capsules, small buttons, chips */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .status-capsule,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-args-inline,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-board-counts,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-todo-status,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-pending-image-chip {
+  box-shadow: 1px 1px 0 var(--nb-shadow, #000) !important;
+  border-width: 1.5px !important;
+}
+
+/* Medium components: tool cards, confirm cards, history rows */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-tool-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-confirm-card,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-history-row,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .title-tab,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .si-tile {
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+}
+
+/* Chat messages — slightly smaller shadow */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg.ai-msg-user,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg.ai-msg-assistant {
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+}
+
+/* Large panels keep 4px shadow (already set, just confirming) */
+/* .settings-panel, .ai-chat-panel, .session-card — 4px 4px */
+
+/* Modals — reduce from 6px to 4px for less visual weight */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ssh-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .remote-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pairing-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .sharing-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pairing-dialog,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .update-modal,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .pip-tab-select-dialog,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-account-dialog {
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+}
+
+/* Home cards hover — reduce from 6px to 4px */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .session-card:hover {
+  box-shadow: 5px 5px 0 var(--nb-shadow, #000) !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   ROUND 3 — Fine-tuning per user feedback
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ─── AI Bar input — remove border/shadow to fix layout shift ──── */
+/* The AI bar input sits inside a tight 24px-high flex row. Adding
+   a 2px border + 2px shadow breaks alignment. Instead, keep the
+   input borderless (matching its original transparent style) and
+   let the outer .ai-bar container provide the visible boundary. */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-input {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-input:focus {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* The AI bar itself is the "input frame" — already has border+shadow
+   from section I. Just ensure it looks like a proper input container. */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+
+
+/* ─── Model select dropdown ─────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-model-dropdown {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  padding: 4px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-model-option {
+  border: none !important;
+  box-shadow: none !important;
+  padding: 5px 8px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-model-option:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-model-option.selected {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-model-separator {
+  border-color: #000 !important;
+  margin: 3px 4px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-model-group-header {
+  color: #555 !important;
+  font-weight: 700 !important;
+}
+
+
+/* ─── Trust level dropdown ──────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-trust-dropdown {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  padding: 4px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-trust-item {
+  border: none !important;
+  box-shadow: none !important;
+  padding: 6px 10px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-trust-item:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-trust-item.active {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+
+/* ─── All popups/dropdowns — solid white, no transparency ──────── */
+/* Every popup that uses backdrop-filter: blur() or rgba background
+   in the original theme needs an explicit solid-white override here.
+   The global * { backdrop-filter: none } kills the blur but leaves
+   the transparent background visible — we must fill it solid. */
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-history-panel,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-chat-history-panel,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-prompt-hint,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-prompt-hint-popup,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-model-dropdown,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tldr-popup {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* History rows inside the popups */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-bar-chat-history-panel .ai-chat-hist-row:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-chat-history-view .ai-chat-hist-row:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* Side model dropdown options — reuse bar dropdown style */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-model-dropdown .ai-bar-model-option {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-model-dropdown .ai-bar-model-option:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-model-dropdown .ai-bar-model-option.selected {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* tldr popup internals */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tldr-popup-overlay {
+  background: rgba(0, 0, 0, 0.4) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tldr-popup pre,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .tldr-popup code {
+  background: var(--nb-surface-alt, #F0F0E0) !important;
+  border: 1.5px solid var(--nb-border, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* AI side panel — solid background, hard border */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-panel {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border-left: 2px solid var(--nb-border, #000) !important;
+}
+
+/* Side panel input area */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-input-area {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-side-input {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* AI danger overlay — solid background */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-danger-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+
+/* ─── File manager path input + breadcrumb ─────────────────────── */
+/* The path bar has TWO states: breadcrumb (default) and path-input
+   (editing). Both need identical brutalism framing. */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .path-input,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .breadcrumb {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .path-input:focus {
+  border-color: var(--nb-accent, #E94560) !important;
+  box-shadow: 2px 2px 0 var(--nb-accent, #E94560) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .breadcrumb-item {
+  color: #333 !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .breadcrumb-item:hover {
+  color: var(--nb-accent, #E94560) !important;
+  background: rgba(233, 69, 96, 0.1) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .breadcrumb-item.active {
+  color: var(--nb-text, #1A1A2E) !important;
+  font-weight: 700 !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .breadcrumb-sep {
+  color: #999 !important;
+}
+
+/* File toolbar itself — clear border so buttons and input stand out */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-toolbar {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border-bottom: 2px solid var(--nb-border, #000) !important;
+  gap: 4px !important;
+  padding: 4px 6px !important;
+}
+
+/* File toolbar buttons — match brutalism style but smaller */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-toolbar button {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 1px 1px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+  padding: 2px 4px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-toolbar button:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* Transfer history search wrapper — match path input style */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-search-wrapper {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  padding: 0 5px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-search-wrapper:focus-within {
+  border-color: var(--nb-accent, #E94560) !important;
+  box-shadow: 2px 2px 0 var(--nb-accent, #E94560) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-search-input {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Transfer history toolbar buttons (filter tabs: 进行中/完成/失败) */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-filter-btn,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .btn-speed-limit,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .btn-clear-history {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 1px 1px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-filter-btn:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-filter-btn.active,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .btn-speed-limit:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .btn-clear-history:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* History toolbar container */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-toolbar {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border-bottom: 2px solid var(--nb-border, #000) !important;
+  padding: 4px 6px !important;
+}
+
+
+/* ─── Transfer history items — add gap between cards ────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-item {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  margin-bottom: 6px !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-item .history-filename {
+  color: var(--nb-text, #1A1A2E) !important;
+  font-weight: 600 !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-item .history-footer {
+  color: #555 !important;
+}
+
+/* Transfer progress bar inside history items */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-item .transfer-progress-track {
+  background: #E5E5E5 !important;
+  border: 1px solid var(--nb-border, #000) !important;
+  height: 4px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .history-item .transfer-progress-fill {
+  background: var(--nb-success, #06D6A0) !important;
+}
+
+
+/* ─── Status bar — shrink capsule to fit 24px height ────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .status-capsule {
+  border: 1px solid var(--nb-border, #000) !important;
+  box-shadow: 1px 1px 0 var(--nb-shadow, #000) !important;
+  height: 16px !important;
+  padding: 0 5px !important;
+  font-size: 10px !important;
+  line-height: 16px !important;
+}
+
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .status-dot {
+  width: 5px !important;
+  height: 5px !important;
+  border: 1px solid var(--nb-border, #000) !important;
+  box-shadow: none !important;
+}
+
+/* Transfer progress in status bar */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .transfer-progress-fill {
+  background: var(--nb-success, #06D6A0) !important;
+}
+
+/* Latency/session count text */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .status-capsule .latency-text,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .status-capsule .session-count {
+  font-size: 10px !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   ROUND 5 — Full sweep: every remaining component
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ─── JumpServer asset browser ──────────────────────────────────── */
+
+/* Main browser overlay + popup */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-asset-browser-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-asset-browser {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* Table */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-asset-table thead th {
+  background: var(--nb-surface-alt, #F0F0E0) !important;
+  border-bottom: 2px solid var(--nb-border, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+  font-weight: 700 !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-asset-table tbody tr {
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-asset-table tbody tr:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-asset-table tbody td {
+  border-bottom: 1px solid var(--nb-border, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-protocols {
+  color: #555 !important;
+}
+
+/* Account overlay + dialog */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-account-overlay,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-panel-account-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-account-dialog,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-panel-account-dialog {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-account-item {
+  color: var(--nb-text, #1A1A2E) !important;
+  border-bottom: 1px solid #ddd !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-account-item:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+/* Node sidebar items */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-node-item {
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-node-item:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-node-selected {
+  background: var(--nb-success-light, #A8E6CF) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+  font-weight: 700 !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-node-count {
+  color: #555 !important;
+}
+
+/* Embedded panel asset items — FIX INVISIBLE TEXT */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-panel-asset-name {
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-panel-asset-addr {
+  color: #555 !important;  /* was rgba(255,255,255,0.4) — invisible on white */
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-panel-sidebar-toggle {
+  color: #333 !important;
+}
+
+/* Narrow mode */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-node-dropdown {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-node-item {
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-node-item:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-node-label {
+  color: var(--nb-text, #1A1A2E) !important;
+  border-bottom-color: #000 !important;
+  font-weight: 700 !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-card {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-card:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+/* FIX INVISIBLE TEXT — hardcoded rgba(255,255,255,0.3-0.4) on white bg */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-card-name {
+  color: var(--nb-text, #1A1A2E) !important;
+  font-weight: 600 !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-card-meta {
+  color: #555 !important;  /* was rgba(255,255,255,0.4) */
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-card-comment {
+  color: #777 !important;  /* was rgba(255,255,255,0.3) */
+}
+/* Narrow filter buttons */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-narrow-filter-btn {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 1px 1px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+/* JumpServer search */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-search-input {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-search-input:focus {
+  border-color: var(--nb-accent, #E94560) !important;
+  box-shadow: 2px 2px 0 var(--nb-accent, #E94560) !important;
+}
+/* JumpServer filter bar */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-filter-bar {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border-bottom: 2px solid var(--nb-border, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-tree-node:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-tree-node.selected {
+  background: var(--nb-success-light, #A8E6CF) !important;
+}
+/* JumpServer breadcrumb */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-breadcrumb {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 1.5px solid var(--nb-border, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .js-breadcrumb-item:hover {
+  color: var(--nb-accent, #E94560) !important;
+}
+
+
+/* ─── Settings panel internals ──────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-select,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-input {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-select:focus,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-input:focus {
+  border-color: var(--nb-accent, #E94560) !important;
+  box-shadow: 2px 2px 0 var(--nb-accent, #E94560) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .custom-select-dropdown {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .custom-select-option:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-tab {
+  border: 1.5px solid transparent !important;
+  box-shadow: none !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .settings-tab:hover {
+  background: rgba(255, 217, 61, 0.3) !important;
+}
+/* Slider thumb → square */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) input[type="range"]::-webkit-slider-thumb {
+  border: 2px solid var(--nb-border, #000) !important;
+  background: var(--nb-accent, #E94560) !important;
+}
+
+
+/* ─── File editor panels ────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .editor-lang-picker,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .editor-font-picker {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .editor-lang-item:hover,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .editor-font-option:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+/* Editor tabs */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .editor-tab {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .editor-tab.active {
+  background: var(--nb-highlight, #FFD93D) !important;
+  font-weight: 700 !important;
+}
+/* Editor status bar */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .editor-status-bar {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border-top: 2px solid var(--nb-border, #000) !important;
+}
+
+
+/* ─── Markdown content in AI messages ───────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg-content table {
+  border: 2px solid var(--nb-border, #000) !important;
+  border-collapse: collapse !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg-content th {
+  background: var(--nb-surface-alt, #F0F0E0) !important;
+  border: 1.5px solid var(--nb-border, #000) !important;
+  font-weight: 700 !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg-content td {
+  border: 1px solid var(--nb-border, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg-content blockquote {
+  border-left: 4px solid var(--nb-border, #000) !important;
+  background: var(--nb-surface-alt, #F0F0E0) !important;
+  color: #333 !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-msg-content hr {
+  border: none !important;
+  border-top: 2px solid var(--nb-border, #000) !important;
+}
+/* Command block run/copy buttons */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-cmd-run,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-cmd-copy {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  box-shadow: 1px 1px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-cmd-run:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .ai-cmd-copy:hover {
+  background: var(--nb-success-light, #A8E6CF) !important;
+}
+
+
+/* ─── Sharing panel ─────────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .device-card {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .device-card:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .sharing-qr-canvas {
+  border: 2px solid var(--nb-border, #000) !important;
+}
+
+
+/* ─── Pairing dialogs ───────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .master-approval-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .master-approval-dialog {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .reclaim-overlay,
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-overlay {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-overlay-badge {
+  background: var(--nb-highlight, #FFD93D) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-request-btn {
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-request-btn:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+
+/* ─── Drawer sidebar tabs ───────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .drawer-tab {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .net-nic-select {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+
+
+/* ─── Misc dialogs ──────────────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .navigate-confirm-dialog {
+  background: var(--nb-bg, #FFFEF0) !important;
+  border: 3px solid var(--nb-border, #000) !important;
+  box-shadow: 4px 4px 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-link-tooltip {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 2px 2px 0 var(--nb-shadow, #000) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-link-context-menu {
+  background: var(--nb-card-bg, #fff) !important;
+  border: 2px solid var(--nb-border, #000) !important;
+  box-shadow: 3px 3px 0 var(--nb-shadow, #000) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .file-link-context-menu-item:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+
+
+/* ─── Viewer popup internals ────────────────────────────────────── */
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-popup-item {
+  border: 1.5px solid var(--nb-border, #000) !important;
+  background: var(--nb-card-bg, #fff) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-popup-item:hover {
+  background: var(--nb-highlight, #FFD93D) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-popup-kick {
+  border: 1.5px solid var(--nb-accent, #E94560) !important;
+  background: var(--nb-danger-light, #FFB3B3) !important;
+  color: var(--nb-text, #1A1A2E) !important;
+}
+:is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) .viewer-popup-kick:hover {
+  background: var(--nb-accent, #E94560) !important;
+  color: #fff !important;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   NEO-BRUTALISM ROUNDED VARIANT
+   ═══════════════════════════════════════════════════════════════════
+   Override the global border-radius: 0 with 5px for the rounded
+   variant. All other styles (colors, shadows, borders, typography)
+   are shared with the sharp variant via the :is() selector above.
+   ═══════════════════════════════════════════════════════════════════ */
+
+[data-theme="neo-brutalism-rounded"] *,
+[data-theme="neo-brutalism-rounded"] *::before,
+[data-theme="neo-brutalism-rounded"] *::after {
+  border-radius: 5px !important;
+}

@@ -74,6 +74,38 @@ export interface Translations {
   colorSchemeDarker: string;
   colorSchemeNavy: string;
   colorSchemeLight: string;
+  colorSchemeNeoBrutalism: string;
+  colorSchemeNeoBrutalismRounded: string;
+  nbPaletteTitle: string;
+  nbBg: string;
+  nbText: string;
+  nbBorder: string;
+  nbShadow: string;
+  nbAccent: string;
+  nbHighlight: string;
+  nbSuccess: string;
+  nbInfo: string;
+  nbDanger: string;
+  nbSurfaceAlt: string;
+  nbReset: string;
+  nbPresetSunset: string;
+  nbPresetOcean: string;
+  nbPresetSakura: string;
+  nbPresetForest: string;
+  nbPresetLavender: string;
+  nbPresetMidnight: string;
+  nbPresetCyber: string;
+  nbPresetAbyss: string;
+  nbPresetCandy: string;
+  nbPresetRetro: string;
+  nbPresetNord: string;
+  nbPresetDracula: string;
+  nbPresetSolarized: string;
+  nbPresetOnyx: string;
+  nbPresetEmber: string;
+  nbPresetMatrix: string;
+  nbPresetStealth: string;
+  nbPresetMocha: string;
   rememberWindowSize: string;
   rememberDrawerLayout: string;
   pipScale: string;
@@ -710,6 +742,38 @@ const translations: Record<Language, Translations> = {
     colorSchemeDarker: 'Midnight',
     colorSchemeNavy: 'Deep Navy',
     colorSchemeLight: 'Light',
+    colorSchemeNeoBrutalism: 'Neo-Brutalism',
+    colorSchemeNeoBrutalismRounded: 'Neo-Brutalism (Rounded)',
+    nbPaletteTitle: 'Neo-Brutalism Palette',
+    nbBg: 'Background',
+    nbText: 'Text',
+    nbBorder: 'Border',
+    nbShadow: 'Shadow',
+    nbAccent: 'Accent',
+    nbHighlight: 'Highlight',
+    nbSuccess: 'Success',
+    nbInfo: 'Info',
+    nbDanger: 'Danger',
+    nbSurfaceAlt: 'Surface Alt',
+    nbReset: 'Reset Palette',
+    nbPresetSunset: '🌅 Sunset',
+    nbPresetOcean: '🌊 Ocean',
+    nbPresetSakura: '🌸 Sakura',
+    nbPresetForest: '🌲 Forest',
+    nbPresetLavender: '💜 Lavender',
+    nbPresetMidnight: '🌙 Midnight',
+    nbPresetCyber: '👾 Cyberpunk',
+    nbPresetAbyss: '🌀 Abyss',
+    nbPresetCandy: '🍬 Candy',
+    nbPresetRetro: '📺 Retro',
+    nbPresetNord: '❄️ Nord',
+    nbPresetDracula: '🧛 Dracula',
+    nbPresetSolarized: '☀️ Solarized',
+    nbPresetOnyx: '🖤 Onyx',
+    nbPresetEmber: '🔥 Ember',
+    nbPresetMatrix: '💚 Matrix',
+    nbPresetStealth: '🥷 Stealth',
+    nbPresetMocha: '☕ Mocha',
     rememberWindowSize: 'Remember Window Size',
     rememberDrawerLayout: 'Remember Drawer Layout',
     pipScale: 'PiP Window Scale',
@@ -1342,6 +1406,38 @@ const translations: Record<Language, Translations> = {
     colorSchemeDarker: '纯黑',
     colorSchemeNavy: '深海蓝',
     colorSchemeLight: '浅色',
+    colorSchemeNeoBrutalism: '新粗野主义',
+    colorSchemeNeoBrutalismRounded: '新粗野主义 (圆角)',
+    nbPaletteTitle: '新粗野主义配色',
+    nbBg: '主背景',
+    nbText: '主文字',
+    nbBorder: '边框',
+    nbShadow: '阴影',
+    nbAccent: '强调色',
+    nbHighlight: '高亮色',
+    nbSuccess: '成功',
+    nbInfo: '信息',
+    nbDanger: '危险',
+    nbSurfaceAlt: '辅助背景',
+    nbReset: '重置配色',
+    nbPresetSunset: '🌅 日落',
+    nbPresetOcean: '🌊 海洋',
+    nbPresetSakura: '🌸 樱花',
+    nbPresetForest: '🌲 森林',
+    nbPresetLavender: '💜 薰衣草',
+    nbPresetMidnight: '🌙 午夜',
+    nbPresetCyber: '👾 赛博朋克',
+    nbPresetAbyss: '🌀 深渊',
+    nbPresetCandy: '🍬 糖果',
+    nbPresetRetro: '📺 复古',
+    nbPresetNord: '❄️ 极光',
+    nbPresetDracula: '🧛 德古拉',
+    nbPresetSolarized: '☀️ 曝光',
+    nbPresetOnyx: '🖤 玛瑙黑',
+    nbPresetEmber: '🔥 余烬',
+    nbPresetMatrix: '💚 矩阵',
+    nbPresetStealth: '🥷 隐匿',
+    nbPresetMocha: '☕ 摩卡',
     rememberWindowSize: '记住窗口大小',
     rememberDrawerLayout: '记住抽屉布局',
     pipScale: '画中画窗口缩放比例',

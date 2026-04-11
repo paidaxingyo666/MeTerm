@@ -116,6 +116,10 @@ export const DEFAULT_PERMISSION_RULES: PermissionRule[] = [
   // Deny: destructive git operations even in acceptAll mode.
   { tool: 'run_command', match: { command: '^\\s*git\\s+push\\s+.*--force' }, action: 'deny' },
   { tool: 'run_command', match: { command: '^\\s*git\\s+reset\\s+--hard' }, action: 'deny' },
+  // Ask: sudo, curl mutations, wget POST, destructive disk ops.
+  { tool: 'run_command', match: { command: '^\\s*sudo\\s+' }, action: 'ask' },
+  { tool: 'run_command', match: { command: '\\bcurl\\b.*(-X\\s*(POST|PUT|DELETE|PATCH)|--data|--upload-file|-d\\s)' }, action: 'ask' },
+  { tool: 'run_command', match: { command: '\\bwget\\b.*--post' }, action: 'ask' },
   // Allow common read-only commands without prompting.
   { tool: 'run_command', match: { command: '^(ls|pwd|cat|head|tail|file|stat|du|df|ps|top|uname|hostname|whoami|id|date|uptime|git\\s+(status|log|diff|branch|show))\\b' }, action: 'allow' },
 ];
@@ -142,8 +146,11 @@ export function decidePermission(
   if (mode === 'bypass') return { kind: 'allow' };
 
   // Plan mode: only read-only tools allowed, everything else silently denied.
+  // Exception: todo_write is a pure in-memory operation (no filesystem / PTY
+  // side effects) and is essential for task planning, so we allow it even
+  // though isConcurrencySafe is false (it's serialized, not read-only).
   if (mode === 'plan') {
-    if (handler?.isConcurrencySafe) return { kind: 'allow' };
+    if (handler?.isConcurrencySafe || toolName === 'todo_write') return { kind: 'allow' };
     return {
       kind: 'deny',
       reason: 'Plan mode is active — only read-only tools are allowed. The agent cannot modify anything.',
