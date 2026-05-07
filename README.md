@@ -60,12 +60,14 @@
 
 **Terminal enhancements:**
 
-- AI Assistant Capsule — Floating dialog, supports OpenAI-compatible / Anthropic / Gemini protocols, connect any LLM
-- SFTP File Manager — Upload/download/resume/drag-and-drop/queue/remote file editing
-  Desktop SSH uploads and downloads use an optimized native SSH transfer backend to avoid terminal-path bottlenecks
+- AI Assistant & Agent — Floating dialog or side panel, supports OpenAI-compatible / Anthropic / Gemini protocols; Agent mode adds multi-pane awareness, file transfer, task planning, structured search, and per-session PTY lock
+- SFTP File Manager — Breadcrumb navigation, keyboard nav, file search, multi-select, remote copy/move, chmod, bookmarks, speed limit, transfer notifications, drag-and-drop, resume, parallel high-speed transfers via adaptive SFTP pipeline
+- Built-in Editor — Remote file editing, Markdown preview, image preview, word wrap, multi-format formatting (JSON/XML/HTML/CSS)
+- Shell Hook Integration — OSC 7766/7768 semantic prompts: click-to-move cursor, drag-select-to-edit in command area; automatic fallback when hook is unavailable
 - Command completion & tldr help cards
 - Home quick search — Local commands + web search (requires self-hosted [SearXNG](https://github.com/searxng/searxng))
-- Backgrounds & Themes — 8 terminal themes, 5 color schemes
+- Themes & Backgrounds — 8 terminal themes, Neo-Brutalism theme (standard + rounded variants, 11 presets: Cyberpunk / Abyss / Lavender / Midnight / Candy / Retro / Aurora / Dracula / Exposure / Pure Black series + custom palette with real-time cross-window sync)
+- Terminal font enhancements — Font weight control, text sharpening, font size shortcuts (Ctrl/Cmd +/-)
 - Session recording & replay
 
 **Collaboration & networking:**
@@ -79,6 +81,11 @@
 
 - Windows right-click menu integration (Open in MeTerm)
 - Clickable file paths in terminal output (open files/folders directly)
+- SSH proxy support — SOCKS5 / HTTP CONNECT, independent proxy config per JumpServer
+- OSC enhancements — OSC 52 clipboard passthrough, OSC 8 hyperlinks, image display protocol
+- Chrome-style tab switching shortcuts (Ctrl/Cmd 1-9)
+- Window always-on-top pin button
+- Auto-create local session on startup (optional)
 - Auto updates · Internationalization (EN/ZH) · Desktop notifications
 
 ---

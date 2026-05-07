@@ -216,6 +216,7 @@ fn build_router(state: Arc<ServerState>) -> Router {
         .route("/api/sessions", get(handlers::list_sessions).post(handlers::create_session))
         .route("/api/sessions/ssh", post(handlers::create_ssh_session))
         .route("/api/sessions/ssh/test", post(handlers::test_ssh_connection))
+        .route("/api/sessions/{id}/refresh-sftp", post(handlers::refresh_sftp_session))
         .route("/api/sessions/{id}", get(handlers::get_session).delete(handlers::delete_session))
         .route("/api/sessions/{id}/master", post(handlers::request_master))
         .route("/api/sessions/{id}/private", post(handlers::set_private))

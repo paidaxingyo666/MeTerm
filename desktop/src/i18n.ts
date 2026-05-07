@@ -623,6 +623,15 @@ export interface Translations {
   jsLoadingAccounts: string;
   jsNoAccounts: string;
   jsSelectAccount: string;
+  // ── JumpServer session expiration / logout ──
+  jsSessionExpired: string;
+  jsSessionExpiredDesc: string;
+  jsReconnectAction: string;
+  jsLogoutAction: string;
+  jsLogoutConfirm: string;
+  jsLoginRequired: string;
+  jsReloginFailed: string;
+  jsReturnToMainWindow: string;
   homeNewJumpServer: string;
   jsSaveAndConnect: string;
   homeSearchPlaceholder: string;
@@ -1257,6 +1266,14 @@ const translations: Record<Language, Translations> = {
     jsLoadingAccounts: 'Loading accounts…',
     jsNoAccounts: 'No accounts available',
     jsSelectAccount: 'Select Account',
+    jsSessionExpired: 'JumpServer session expired',
+    jsSessionExpiredDesc: 'Please sign in again to continue. Existing terminal sessions are not affected.',
+    jsReconnectAction: 'Sign in again',
+    jsLogoutAction: 'Sign out',
+    jsLogoutConfirm: 'Sign out of {name}? Existing terminal sessions will be preserved.',
+    jsLoginRequired: 'Please sign in to JumpServer first',
+    jsReloginFailed: 'Sign-in failed. Check your credentials and try again.',
+    jsReturnToMainWindow: 'Return to main window',
     homeNewJumpServer: 'JumpServer',
     jsSaveAndConnect: 'Save & Connect',
     homeSearchPlaceholder: 'Search connections, commands or docs',
@@ -1921,6 +1938,14 @@ const translations: Record<Language, Translations> = {
     jsLoadingAccounts: '加载账户中…',
     jsNoAccounts: '没有可用账户',
     jsSelectAccount: '选择账户',
+    jsSessionExpired: 'JumpServer 会话已过期',
+    jsSessionExpiredDesc: '请重新登录以继续使用资产浏览器。已打开的终端会话不受影响。',
+    jsReconnectAction: '重新登录',
+    jsLogoutAction: '退出登录',
+    jsLogoutConfirm: '退出登录 {name}？已打开的终端会话会保留。',
+    jsLoginRequired: '请先重新登录 JumpServer',
+    jsReloginFailed: '登录失败，请检查凭据后重试。',
+    jsReturnToMainWindow: '返回主窗口',
     homeNewJumpServer: 'JumpServer',
     jsSaveAndConnect: '保存并连接',
     homeSearchPlaceholder: '搜索连接、指令或文档',

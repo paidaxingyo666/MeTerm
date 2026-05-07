@@ -203,6 +203,24 @@ export function collapseActiveThinking(instance: AICapsuleInstance): void {
   }
 }
 
+/**
+ * Strip stray XML-like fragments that some providers/models emit into the
+ * reasoning stream:
+ *   - `<think>` / `</think>` / `<thinking>` / `</thinking>` —
+ *     models that wrap thoughts in explicit tags occasionally leak the
+ *     literal closing tag at the end of `reasoning_content`.
+ *   - `</arg_value>` / `</tool_call>` / `</args>` —
+ *     when message history is char-truncated mid-XML, the dangling close
+ *     tag gets fed back into the next round and parroted into reasoning.
+ * We strip on the cumulative buffer (not the chunk) so that tags split
+ * across stream chunks are still caught after the buffer reassembles them.
+ */
+function sanitizeReasoning(buffer: string): string {
+  return buffer
+    .replace(/<\/?think(?:ing)?>/gi, '')
+    .replace(/<\/(?:arg_value|tool_call|args|tool_use)>/gi, '');
+}
+
 export function appendReasoningToken(instance: AICapsuleInstance, token: string): void {
   instance.reasoningBuffer += token;
 
@@ -232,7 +250,7 @@ export function appendReasoningToken(instance: AICapsuleInstance, token: string)
   }
 
   const textEl = block.querySelector('.ai-reasoning-text');
-  if (textEl) textEl.textContent += token;
+  if (textEl) textEl.textContent = sanitizeReasoning(instance.reasoningBuffer);
 
   container.scrollTop = container.scrollHeight;
 }
@@ -254,7 +272,10 @@ export function finalizeMessage(
   collapseActiveThinking(instance);
 
   if (instance.reasoningBuffer) {
-    instance.messages.push({ type: 'thinking', content: '', reasoning: instance.reasoningBuffer, timestamp: Date.now() });
+    const cleaned = sanitizeReasoning(instance.reasoningBuffer);
+    if (cleaned) {
+      instance.messages.push({ type: 'thinking', content: '', reasoning: cleaned, timestamp: Date.now() });
+    }
     instance.reasoningBuffer = '';
   }
 

@@ -294,6 +294,61 @@ pub async fn create_ssh_session(
     )
 }
 
+/// Refresh the SFTP client for an existing SSH session with new credentials.
+///
+/// Used for JumpServer asset sessions where the `JMS-{token}` password expires
+/// ~60s after creation. The frontend obtains a fresh connection token and calls
+/// this endpoint to swap the SFTP client without disturbing the pty terminal.
+pub async fn refresh_sftp_session(
+    Path(session_id): Path<String>,
+    Extension(state): Extension<Arc<ServerState>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let session = match state.session_manager.get(&session_id) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "session not found" })),
+            )
+        }
+    };
+
+    // Clone the existing config; override with new credentials from body.
+    let mut new_config = match session.ssh_config.lock().unwrap().clone() {
+        Some(c) => c,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "session has no SSH config (not an SSH session?)" })),
+            )
+        }
+    };
+
+    if let Some(u) = body.get("username").and_then(|v| v.as_str()) {
+        new_config.username = u.to_string();
+    }
+    if let Some(p) = body.get("password").and_then(|v| v.as_str()) {
+        new_config.password = p.to_string();
+    }
+
+    // Try to open a fresh SFTP connection with new creds.
+    match super::terminal::ssh::SshTerminal::connect_sftp(&new_config).await {
+        Some(new_sftp) => {
+            // Atomic swap
+            *session.sftp.lock().unwrap() = Some(new_sftp);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "ok": true })),
+            )
+        }
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "error": "failed to open new SFTP connection" })),
+        ),
+    }
+}
+
 pub async fn test_ssh_connection(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
     let config = match parse_ssh_config(&body) {
         Ok(c) => c,

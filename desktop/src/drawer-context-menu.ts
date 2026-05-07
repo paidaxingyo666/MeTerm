@@ -156,19 +156,21 @@ export function setupContextMenu(
     const isLocal = instance.executorType === 'local';
     const settings = loadSettings();
 
-    // ── 复用的"视图 ▶"子菜单(刷新 / 隐藏文件 / 收藏) ──
+    // ── 顶级"刷新"项（从子菜单提升上来） ──
+    const refreshItem: MenuItem = {
+      label: t('ctxMenuRefresh'),
+      action: () => {
+        fm.loadDirectory(fm.getCurrentPath());
+        import('./file-sidebar').then(({ SidebarManager }) => {
+          SidebarManager.refreshTree(instance.sessionId);
+        });
+      }
+    };
+
+    // ── 复用的"视图 ▶"子菜单(隐藏文件 / 收藏) ──
     const viewSubmenu: MenuItem = {
       label: t('ctxMenuView'),
       children: [
-        {
-          label: t('ctxMenuRefresh'),
-          action: () => {
-            fm.loadDirectory(fm.getCurrentPath());
-            import('./file-sidebar').then(({ SidebarManager }) => {
-              SidebarManager.refreshTree(instance.sessionId);
-            });
-          }
-        },
         {
           label: t('ctxMenuShowHidden'),
           checked: fm.getShowHiddenFiles(),
@@ -193,18 +195,19 @@ export function setupContextMenu(
     };
 
     // ── 复用的"新建"项(文件/文件夹) ──
+    // 把父目录路径作为参数传给对话框,避免依赖 setCurrentPathForContext 的 5s 超时;
+    // 否则用户在对话框停留过久后,getFullPath 会回退到 currentPath,在树视图模式下
+    // 会把新建项创建到错误的目录(报错或创建到抽屉根)。
     const newFileItem: MenuItem = {
       label: t('ctxMenuNewFile'),
       action: () => {
-        fm.setCurrentPathForContext(newFileDir);
-        showCreateFileDialog(instance);
+        showCreateFileDialog(instance, newFileDir);
       },
     };
     const newFolderItem: MenuItem = {
       label: t('ctxMenuNewFolder'),
       action: () => {
-        fm.setCurrentPathForContext(newFileDir);
-        showMkdirDialog(instance);
+        showMkdirDialog(instance, newFileDir);
       },
     };
 
@@ -243,6 +246,7 @@ export function setupContextMenu(
         danger: true,
       });
       items.push({ separator: true, label: '' });
+      items.push(refreshItem);
       items.push(viewSubmenu);
     }
     // ──────────────────────────────────────────────────────
@@ -258,6 +262,7 @@ export function setupContextMenu(
       items.push(newFileItem);
       items.push(newFolderItem);
       items.push({ separator: true, label: '' });
+      items.push(refreshItem);
       items.push(viewSubmenu);
     }
     // ──────────────────────────────────────────────────────
@@ -468,6 +473,7 @@ export function setupContextMenu(
       });
 
       items.push({ separator: true, label: '' });
+      items.push(refreshItem);
       items.push(viewSubmenu);
     }
 
@@ -598,9 +604,12 @@ export function showModal(options: {
   });
 }
 
-async function showCreateFileDialog(instance: DrawerInstance): Promise<void> {
+async function showCreateFileDialog(instance: DrawerInstance, parentDir?: string): Promise<void> {
   const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
   const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
+  // Capture parent dir BEFORE the async modal so it can't drift if the
+  // context-path timeout fires while the user is typing.
+  const targetParent = parentDir ?? instance.fileManager?.getCurrentPath() ?? '/';
   const fileName = await showModal({
     title: '新建文件',
     input: { placeholder: '文件名称' },
@@ -608,7 +617,8 @@ async function showCreateFileDialog(instance: DrawerInstance): Promise<void> {
     container,
   });
   if (fileName && instance.fileManager) {
-    await instance.fileManager.createFile(fileName);
+    const absPath = targetParent === '/' ? `/${fileName}` : `${targetParent}/${fileName}`;
+    await instance.fileManager.createFileAt(absPath);
   }
 }
 
@@ -666,9 +676,12 @@ export async function showRenameDialog(instance: DrawerInstance, oldName: string
   }
 }
 
-async function showMkdirDialog(instance: DrawerInstance): Promise<void> {
+async function showMkdirDialog(instance: DrawerInstance, parentDir?: string): Promise<void> {
   const drawerContent = instance.element.querySelector('.drawer-content') as HTMLElement | null;
   const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
+  // Capture parent dir BEFORE the async modal so it can't drift if the
+  // context-path timeout fires while the user is typing.
+  const targetParent = parentDir ?? instance.fileManager?.getCurrentPath() ?? '/';
   const dirName = await showModal({
     title: '新建文件夹',
     input: { placeholder: '文件夹名称' },
@@ -676,7 +689,8 @@ async function showMkdirDialog(instance: DrawerInstance): Promise<void> {
     container,
   });
   if (dirName && instance.fileManager) {
-    await instance.fileManager.createDirectory(dirName);
+    const absPath = targetParent === '/' ? `/${dirName}` : `${targetParent}/${dirName}`;
+    await instance.fileManager.createDirectoryAt(absPath);
   }
 }
 

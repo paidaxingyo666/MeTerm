@@ -12,36 +12,39 @@
  */
 
 .ai-todo-board {
+  /* Width / margin match .ai-tool-card so the plan slots into the chat
+   * stream without standing out as oversized. */
+  width: 95%;
   max-width: 95%;
   box-sizing: border-box;
   align-self: flex-start;
-  margin: 10px 6px 12px 6px;
-  border-radius: 10px;
-  background: var(--bg-secondary, rgba(14, 165, 233, 0.04));
-  border: 1px solid rgba(14, 165, 233, 0.35);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06),
-              0 0 0 1px rgba(14, 165, 233, 0.08) inset;
+  /* The chat panel is a flex column with limited height; without
+   * flex-shrink:0 the todo board collapses to 0 when later messages
+   * grow and the user sees nothing where the plan should be. */
+  flex-shrink: 0;
+  margin: 3px 0;
+  border-radius: 6px;
+  background: rgba(14, 165, 233, 0.05);
+  border: 1px solid rgba(14, 165, 233, 0.22);
   overflow: hidden;
   position: relative;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text-primary, #1f2937);
 }
 
 [data-theme="dark"] .ai-todo-board {
   background: rgba(14, 165, 233, 0.06);
-  border-color: rgba(56, 189, 248, 0.35);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4),
-              0 0 0 1px rgba(56, 189, 248, 0.10) inset;
+  border-color: rgba(56, 189, 248, 0.28);
   color: var(--text-primary, #f1f5f9);
 }
 
 .ai-todo-board::before {
-  /* Accent vertical bar on the left edge */
+  /* Accent vertical bar matching .ai-tool-card's 2px border-left. */
   content: '';
   position: absolute;
   left: 0; top: 0; bottom: 0;
-  width: 3px;
-  background: linear-gradient(180deg, #0EA5E9 0%, #0284C7 100%);
+  width: 2px;
+  background: #0EA5E9;
 }
 
 /* ── Header ────────────────────────────────────────────────── */
@@ -49,10 +52,11 @@
 .ai-todo-board-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 12px 8px 14px;
-  font-weight: 600;
-  font-size: 12.5px;
+  gap: 6px;
+  padding: 5px 10px 5px 12px;
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-secondary);
   user-select: none;
 }
 
@@ -60,20 +64,22 @@
 
 .ai-todo-board-title {
   color: var(--text-primary, #0f172a);
-  letter-spacing: 0.1px;
+  font-weight: 500;
+  font-family: var(--mono-font);
 }
 
 [data-theme="dark"] .ai-todo-board-title { color: #e0f2fe; }
 
 .ai-todo-board-counts {
-  margin-left: 4px;
+  margin-left: 2px;
   font-variant-numeric: tabular-nums;
   font-weight: 500;
   color: var(--text-secondary, #64748b);
   background: rgba(14, 165, 233, 0.10);
-  padding: 1px 8px;
+  padding: 0 6px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 10.5px;
+  line-height: 16px;
 }
 
 [data-theme="dark"] .ai-todo-board-counts {
@@ -84,13 +90,13 @@
 .ai-todo-board-active {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   margin-left: auto;
-  padding-right: 8px;
-  font-weight: 500;
-  font-size: 11.5px;
+  padding-right: 4px;
+  font-weight: 400;
+  font-size: 11px;
   color: var(--text-secondary, #64748b);
-  max-width: 60%;
+  max-width: 55%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -111,9 +117,10 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 3px;
   margin-left: auto; /* placed after active, when active absent it goes here */
   transition: background 0.15s;
 }
@@ -134,7 +141,7 @@
 
 .ai-todo-board-progress {
   position: relative;
-  height: 3px;
+  height: 2px;
   background: rgba(14, 165, 233, 0.10);
   overflow: hidden;
 }
@@ -147,25 +154,24 @@
   height: 100%;
   background: #0EA5E9;
   transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 0 6px rgba(14, 165, 233, 0.5);
 }
 
 /* ── List ──────────────────────────────────────────────────── */
 
 .ai-todo-board-list {
-  padding: 6px 12px 10px 14px;
+  padding: 4px 10px 6px 12px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .ai-todo-row {
   display: grid;
-  grid-template-columns: 18px 1fr auto;
-  gap: 9px;
+  grid-template-columns: 14px 1fr auto;
+  gap: 7px;
   align-items: center;
-  padding: 5px 6px;
-  border-radius: 6px;
+  padding: 3px 4px;
+  border-radius: 4px;
   transition: background 0.12s;
 }
 
@@ -184,9 +190,7 @@
 }
 
 .ai-todo-row.in_progress {
-  background: rgba(14, 165, 233, 0.10);
-  border: 1px solid rgba(14, 165, 233, 0.30);
-  box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.10);
+  background: rgba(14, 165, 233, 0.08);
 }
 
 [data-theme="dark"] .ai-todo-row.in_progress {
@@ -195,28 +199,31 @@
 }
 
 .ai-todo-row.in_progress .ai-todo-text {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-primary, #0f172a);
 }
 
 [data-theme="dark"] .ai-todo-row.in_progress .ai-todo-text { color: #f0f9ff; }
 
 .ai-todo-text {
-  font-size: 12.5px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.4;
   word-break: break-word;
 }
 
 .ai-todo-status {
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  /* Keep cap-style English compact but avoid uppercase mangling
+     Chinese glyphs like 已完成 / 进行中. */
+  letter-spacing: 0.2px;
   color: var(--text-secondary, #94a3b8);
   font-variant-numeric: tabular-nums;
-  padding: 1px 6px;
+  padding: 0 5px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.15);
+  line-height: 14px;
+  white-space: nowrap;
 }
 
 .ai-todo-row.in_progress .ai-todo-status {
@@ -242,9 +249,9 @@
 /* ── Status box (checkbox-like) ───────────────────────────── */
 
 .ai-todo-box {
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
   display: inline-flex;
   align-items: center;
   justify-content: center;

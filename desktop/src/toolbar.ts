@@ -24,7 +24,7 @@ import { createNewSession, createNewPrivateSession, closeAllSessions, createNewW
 import { renderTabs } from './tab-renderer';
 import { pendingUpdateVersion, openUpdaterWindow } from './updater';
 import { settings, isHomeView, isGalleryView, isWindowsPlatform, isLinuxPlatform, activeJumpServers } from './app-state';
-import { toggleJumpServerPanel, isJumpServerPanelOpen } from './jumpserver-panel';
+import { toggleJumpServerPanel, isJumpServerPanelOpen, showJsConnectionContextMenu } from './jumpserver-panel';
 import { isPipActive, togglePip } from './pip';
 import { DrawerManager } from './drawer';
 import { toggleFileManager } from './file-manager-toggle';
@@ -481,6 +481,11 @@ function showJumpServerDropdown(anchor: HTMLElement): void {
       cleanup();
       toggleJumpServerPanel(config);
     };
+    item.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      cleanup();
+      showJsConnectionContextMenu(e.clientX, e.clientY, config);
+    });
     menu.appendChild(item);
   }
 

@@ -116,12 +116,17 @@
 .file-link-context-menu {
   position: fixed;
   z-index: 99999;
-  background: var(--bg-primary, #1e1e2e);
-  border: none;
+  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
   padding: 3px 0;
   min-width: 160px;
+}
+[data-theme="light"] .file-link-context-menu {
+  border-color: rgba(255, 255, 255, 0.5);
 }
 .file-link-context-menu-item {
   padding: 6px 14px;

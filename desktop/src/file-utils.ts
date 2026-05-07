@@ -54,22 +54,27 @@ export function getDiskErrorMessage(err: unknown): string {
   return msg;
 }
 
-/** 验证文件名合法性 */
+/**
+ * 验证文件名合法性（用于远程 SSH/SFTP 文件管理器）。
+ *
+ * Linux/SFTP 文件系统只禁 `/` 与 NUL (`\x00`)，其它字符（含空格、冒号、中文、
+ * Windows 保留字符等）在 POSIX 下均为合法文件名，不应拒绝——否则已存在的文件
+ * 会被误判为"非法"导致无法 rename。Path traversal 单独在下方拦截。
+ */
 export function validateFileName(name: string): boolean {
-  // Check for invalid characters
-  const invalidChars = /[<>:"/\\|?*\x00-\x1F]/;
-  if (invalidChars.test(name)) {
+  // NUL byte is the only truly invalid char in POSIX filenames
+  if (name.includes('\x00')) {
     console.error('Invalid characters in filename');
     return false;
   }
 
-  // Check for path traversal
+  // Path traversal / separator
   if (name.includes('..') || name.includes('/')) {
     console.error('Path traversal detected');
     return false;
   }
 
-  // Check length
+  // Length
   if (name.length === 0 || name.length > 255) {
     console.error('Invalid filename length');
     return false;

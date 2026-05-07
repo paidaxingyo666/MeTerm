@@ -100,8 +100,11 @@ export function microCompact(
     // because their value is not reducible via character slicing.
     if (!isStringContent(msg.content)) continue;
     if (msg.content.length > maxOlderToolChars) {
-      const head = msg.content.slice(0, maxOlderToolChars);
-      msg.content = `${head}\n...(older tool output truncated; ${msg.content.length} chars)`;
+      msg.content = safeTruncate(
+        msg.content,
+        maxOlderToolChars,
+        `\n...(older tool output truncated; ${msg.content.length} chars)`,
+      );
       modified = true;
     }
   }
@@ -138,6 +141,20 @@ export function trimHistory(messages: ChatMessage[]): void {
 }
 
 /**
+ * Truncate at a clean boundary (last newline within a small lookback window)
+ * so we don't leave half an XML/code-fence element dangling. Models
+ * occasionally parrot dangling fragments like `</arg_value>` back into
+ * the next turn's reasoning when we cut mid-structure.
+ */
+function safeTruncate(s: string, max: number, suffix: string): string {
+  if (s.length <= max) return s;
+  let cut = max;
+  const newline = s.lastIndexOf('\n', max);
+  if (newline > max - 200 && newline > 0) cut = newline;
+  return s.slice(0, cut) + suffix;
+}
+
+/**
  * Aggressively compress history when the model reports context overflow.
  *   Phase 1: Truncate long tool outputs and assistant messages
  *   Phase 2: Remove oldest message turns (keeping tool pairs intact)
@@ -155,11 +172,11 @@ export function compressContext(messages: ChatMessage[]): boolean {
   for (const msg of messages) {
     if (!isStringContent(msg.content)) continue;
     if (msg.role === 'tool' && msg.content.length > TOOL_MAX) {
-      msg.content = msg.content.slice(0, TOOL_MAX) + '\n...(output truncated)';
+      msg.content = safeTruncate(msg.content, TOOL_MAX, '\n...(output truncated)');
       compressed = true;
     }
     if (msg.role === 'assistant' && msg.content.length > ASSISTANT_MAX) {
-      msg.content = msg.content.slice(0, ASSISTANT_MAX) + '...(truncated)';
+      msg.content = safeTruncate(msg.content, ASSISTANT_MAX, '\n...(truncated)');
       compressed = true;
     }
   }

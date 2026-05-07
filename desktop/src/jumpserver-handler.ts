@@ -44,6 +44,7 @@ import {
 import { showMFADialog } from './jumpserver-ui';
 import { openJumpServerBrowserWindow } from './jumpserver-browser';
 import { recordJSAssetConnection } from './connection-groups';
+import { isSessionExpired, clearExpiredFlag } from './jumpserver-auth-state';
 
 /**
  * Extract a human-readable error message from JumpServer API error strings.
@@ -79,9 +80,9 @@ export async function openJumpServerBrowser(config: JumpServerConfig): Promise<v
  * Skips authentication if already registered as active.
  * Returns true if authenticated, false if cancelled or failed.
  */
-export async function ensureJSAuthenticated(config: JumpServerConfig): Promise<boolean> {
-  // Already authenticated in this session — skip
-  if (activeJumpServers.has(config.name)) return true;
+export async function ensureJSAuthenticated(config: JumpServerConfig, force = false): Promise<boolean> {
+  // Skip if already authenticated AND not forced AND not in expired state
+  if (!force && !isSessionExpired(config.name) && activeJumpServers.has(config.name)) return true;
 
   StatusBar.setConnection('connecting', `JumpServer: ${config.name}`);
 
@@ -121,6 +122,7 @@ export async function ensureJSAuthenticated(config: JumpServerConfig): Promise<b
 
     // Register as active JumpServer
     activeJumpServers.set(config.name, config);
+    clearExpiredFlag(config.name);
     syncActiveJumpServersToStorage();
     void emit('jumpserver-state-changed');
     renderToolbarActions();
@@ -417,5 +419,23 @@ export function setupJumpServerEventListener(): void {
     await getCurrentWindow().setFocus();
     const { startDockedBrowser } = await import('./jumpserver-panel');
     await startDockedBrowser(config);
+  });
+
+  // Listen for session-expired event from pop-out window — reopen panel in main window
+  void listen<{ configName: string }>('jumpserver-session-expired-reopen', async (event) => {
+    const currentLabel = getCurrentWindow().label;
+    if (currentLabel !== lastFocusedMainWindowLabel) return;
+
+    const { configName } = event.payload;
+    const config = activeJumpServers.get(configName);
+    if (!config) return;
+
+    // Mark as expired so the panel renders its banner immediately
+    const { markSessionExpired } = await import('./jumpserver-auth-state');
+    markSessionExpired(configName);
+
+    await getCurrentWindow().setFocus();
+    const { openJumpServerPanel } = await import('./jumpserver-panel');
+    openJumpServerPanel(config);
   });
 }

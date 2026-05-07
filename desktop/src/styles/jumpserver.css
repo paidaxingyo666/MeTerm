@@ -1103,3 +1103,60 @@ html:not(.platform-windows) .js-narrow .js-narrow-node-dropdown {
 [data-theme="light"] .js-account-item:hover {
   background: rgba(0, 0, 0, 0.04);
 }
+
+/* ── Session-expired banner (replaces panel content when session expires) ── */
+.js-panel-expired-banner {
+  padding: 32px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+}
+.js-expired-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--status-orange, #d19a66);
+}
+.js-expired-desc {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  line-height: 1.5;
+  max-width: 280px;
+}
+.js-expired-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.js-expired-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color, #3a3a3a);
+  background: transparent;
+  color: var(--text-primary, #e8e8e8);
+  cursor: pointer;
+}
+.js-expired-btn:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.05));
+}
+.js-expired-btn-primary {
+  background: var(--accent-primary, rgba(59, 130, 246, 0.8));
+  border-color: var(--accent-primary, rgba(59, 130, 246, 0.8));
+  color: #fff;
+}
+.js-expired-btn-primary:hover {
+  background: var(--accent-primary, rgba(59, 130, 246, 1));
+  border-color: var(--accent-primary, rgba(59, 130, 246, 1));
+}
+.js-expired-error {
+  font-size: 12px;
+  color: var(--status-red, #e06c75);
+  min-height: 16px;
+  margin-top: -4px;
+}
+.js-expired-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -64,16 +64,14 @@ function wireGlobalPasteOnce(): void {
     if (!isPasteCombo) return;
 
     const target = e.target as Node | null;
-    let instance: AICapsuleInstance | null = null;
-    if (target) instance = findOwningInstance(target);
-    // Fallback: if the paste isn't aimed at any registered root
-    // (e.g. user is focused on body / a different element entirely)
-    // ask the capsule manager who's "active". This still routes the
-    // image into the right session in side mode where the user might
-    // have clicked the side panel chat area.
-    if (!instance && _activeInstanceGetter) {
-      instance = _activeInstanceGetter();
-    }
+    if (!target) return;
+    // Require the keystroke to land inside a registered AI bar / side
+    // panel root. We previously fell back to "the currently active
+    // instance" when no root owned the target, but that meant Cmd+V in
+    // the terminal would silently pull a screenshot from the system
+    // clipboard into the AI bar — confusing and definitely not what the
+    // user asked for. AI bar paste must be intentional.
+    const instance = findOwningInstance(target);
     if (!instance) return;
 
     // Fire-and-forget: if Rust finds an image we attach it.

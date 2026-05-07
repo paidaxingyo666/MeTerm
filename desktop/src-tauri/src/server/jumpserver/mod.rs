@@ -230,9 +230,13 @@ impl JumpServerClient {
 
     /// Try multiple API paths in order (matches Go doGetMulti).
     /// On 401/403, retries with cookie-only auth before trying next path.
+    /// Returns SESSION_EXPIRED:<base_url> if every response was 401/403 (no network errors).
     async fn do_get_multi(&self, paths: &[&str]) -> Result<(String, serde_json::Value), String> {
         let session_auth = self.is_session_auth();
         eprintln!("[jumpserver] do_get_multi: session_auth={} token={:?}", session_auth, self.token.as_deref().map(|t| &t[..t.len().min(20)]));
+
+        let mut saw_any_request = false;
+        let mut all_auth_failed = true;
 
         for path in paths {
             let url = format!("{}{}", self.base_url, path);
@@ -246,9 +250,14 @@ impl JumpServerClient {
 
             let r = match resp {
                 Ok(r) => r,
-                Err(e) => { eprintln!("[jumpserver] GET error: {}", e); continue; }
+                Err(e) => {
+                    eprintln!("[jumpserver] GET error: {}", e);
+                    all_auth_failed = false;
+                    continue;
+                }
             };
 
+            saw_any_request = true;
             let status = r.status().as_u16();
             eprintln!("[jumpserver] GET {} → {}", path, status);
 
@@ -256,6 +265,7 @@ impl JumpServerClient {
                 if let Ok(data) = r.json::<serde_json::Value>().await {
                     return Ok((path.to_string(), data));
                 }
+                all_auth_failed = false;
                 continue;
             }
 
@@ -273,10 +283,15 @@ impl JumpServerClient {
                 continue;
             }
 
-            // 404/500 → try next path
+            all_auth_failed = false;
             continue;
         }
-        Err("all API paths failed".to_string())
+
+        if saw_any_request && all_auth_failed {
+            Err(format!("SESSION_EXPIRED: {}", self.base_url))
+        } else {
+            Err("all API paths failed".to_string())
+        }
     }
 
     /// Build auth headers. Cookies are managed automatically by reqwest cookie_store.

@@ -62,10 +62,21 @@ class SidebarManagerClass {
     window.addEventListener('meterm-drawer-destroyed', ((e: CustomEvent) => {
       this.destroy(e.detail.sessionId);
     }) as EventListener);
-    // Listen for file operations to refresh sidebar tree
-    window.addEventListener('meterm-file-op-done', ((e: CustomEvent) => {
-      const inst = this.sidebars.get(e.detail.sessionId);
-      if (inst?.isOpen) inst.tree.refreshAll();
+    // Listen for file operations to refresh sidebar tree.
+    // For "create" ops (mkdir/touch) we additionally reveal the parent so
+    // the new item is visible even if the parent wasn't previously expanded.
+    window.addEventListener('meterm-file-op-done', ((e: Event) => {
+      const ce = e as CustomEvent<{ sessionId: string; operation?: string; path?: string }>;
+      const inst = this.sidebars.get(ce.detail.sessionId);
+      if (!inst?.isOpen) return;
+      const { operation, path } = ce.detail || {};
+      void (async () => {
+        await inst.tree.refreshAll();
+        if ((operation === 'mkdir' || operation === 'touch') && typeof path === 'string' && path) {
+          const parentDir = path.substring(0, path.lastIndexOf('/')) || '/';
+          try { await inst.tree.revealPath(parentDir); } catch { /* ignore */ }
+        }
+      })();
     }) as EventListener);
   }
 

@@ -19,6 +19,7 @@ import {
 } from './protocol';
 import { handleFileReadResponse, handleSaveResponse } from './file-editor-bridge';
 import { isMacPlatform } from './app-state';
+import { refreshJumpServerSftp } from './jumpserver-sftp-refresh';
 import { encodeMessage, validateFileName, formatSize } from './file-utils';
 import { PathAutocomplete } from './file-autocomplete';
 import { TransferHistoryManager } from './file-transfer-history';
@@ -620,6 +621,60 @@ export class FileManager {
         return;
       }
 
+      // SFTP auth expired (JumpServer connection token timeout).
+      // Silently refresh credentials and recover: directory loads auto-retry;
+      // in-flight transfers are marked failed — user retries after the toast.
+      if (error.code === 'SFTP_AUTH_FAILED') {
+        console.warn('[file-manager] SFTP auth failed, refreshing credentials:', error.message);
+
+        // Capture BEFORE clearing state — the async .then() runs after the clears below.
+        const wasLoadingDirectory = this.isLoadingDirectory || this._rawDirCallbacks.size > 0;
+
+        // If the error has a transferId, mark that transfer as failed immediately.
+        if (errorTransferId !== undefined) {
+          const up = this.activeUploads.get(errorTransferId);
+          if (up?.recordId) {
+            this.updateTransferProgress(up.recordId, 0, 'failed', 'SFTP session expired, please retry');
+          }
+          this.activeUploads.delete(errorTransferId);
+          const dn = this.activeDownloads.get(errorTransferId);
+          if (dn?.currentDownloadId) {
+            this.updateTransferProgress(dn.currentDownloadId, 0, 'failed', 'SFTP session expired, please retry');
+          }
+          this.activeDownloads.delete(errorTransferId);
+        }
+
+        // Reject any pending raw directory callbacks so callers don't hang.
+        for (const [, cb] of this._rawDirCallbacks) {
+          cb.reject(new Error('SFTP_AUTH_FAILED'));
+        }
+        this._rawDirCallbacks.clear();
+
+        // If a directory load was in progress, stop its spinner.
+        if (this.isLoadingDirectory) {
+          this.hideLoading();
+          this.isLoadingDirectory = false;
+          if (this.loadingTimeout) { clearTimeout(this.loadingTimeout); this.loadingTimeout = null; }
+        }
+
+        // Kick off the refresh (deduped). Use the captured bool to avoid reading
+        // cleared state inside the async callback (both conditions are false by then).
+        void refreshJumpServerSftp(this.sessionId).then((ok) => {
+          if (ok) {
+            console.log('[file-manager] SFTP refreshed successfully');
+            // If the current directory view was loading or had pending callbacks when
+            // the auth error arrived, retry loading it after the credential swap.
+            if (wasLoadingDirectory) {
+              this.loadDirectory(this.currentPath);
+            }
+          } else {
+            console.warn('[file-manager] SFTP refresh failed; user must manually reconnect terminal');
+          }
+        });
+
+        return;
+      }
+
       // SFTP 未就绪时：reject pending loadDirectoryRaw 回调，自动重试 loadDirectory
       if (error.code === 'SFTP_NOT_AVAILABLE') {
         // Reject all raw directory callbacks so callers get immediate feedback
@@ -1011,8 +1066,16 @@ export class FileManager {
           if (this.pendingFileOp) this.hideFileOpLoading();
           this.loadDirectory(this.currentPath);
         }
-        // Notify sidebar tree to refresh
-        window.dispatchEvent(new CustomEvent('meterm-file-op-done', { detail: { sessionId: this.sessionId } }));
+        // Notify sidebar tree to refresh — pass operation + path so the
+        // tree can reveal the parent of newly-created items (otherwise an
+        // unexpanded parent will hide the new node until manual refresh).
+        window.dispatchEvent(new CustomEvent('meterm-file-op-done', {
+          detail: {
+            sessionId: this.sessionId,
+            operation: response.operation,
+            path: response.path,
+          },
+        }));
       } else {
         const errorMsg = response.message || response.error || 'Unknown error';
         console.error(`Operation failed: ${errorMsg}`);
@@ -1103,6 +1166,15 @@ export class FileManager {
     this.sendFileOp({ operation: 'touch', path: this.getFullPath(name) });
   }
 
+  /** Create a file at an absolute path. Used by sidebar tree where the
+   * target directory is captured up front (before any async dialog) so it
+   * can't drift if the context-path timeout fires. */
+  async createFileAt(absPath: string): Promise<void> {
+    const name = absPath.split('/').pop() || '';
+    if (!validateFileName(name)) { alert('Invalid filename'); return; }
+    this.sendFileOp({ operation: 'touch', path: absPath });
+  }
+
   async chmodFile(path: string, mode: number): Promise<void> {
     const resolved = path.startsWith('/') ? path : this.getFullPath(path);
     this.sendFileOp({ operation: 'chmod', path: resolved, mode }, '修改权限...');
@@ -1131,6 +1203,13 @@ export class FileManager {
   async createDirectory(name: string): Promise<void> {
     if (!validateFileName(name)) { alert('Invalid directory name'); return; }
     this.sendFileOp({ operation: 'mkdir', path: this.getFullPath(name) });
+  }
+
+  /** Create a directory at an absolute path. See createFileAt. */
+  async createDirectoryAt(absPath: string): Promise<void> {
+    const name = absPath.split('/').pop() || '';
+    if (!validateFileName(name)) { alert('Invalid directory name'); return; }
+    this.sendFileOp({ operation: 'mkdir', path: absPath });
   }
 
   private getModalContainer(): HTMLElement {

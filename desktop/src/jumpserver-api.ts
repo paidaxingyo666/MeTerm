@@ -7,6 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { port, authToken } from './app-state';
+import { parseJumpServerError } from './jumpserver-errors';
 
 // ── Types ──
 
@@ -193,7 +194,7 @@ export async function loadJSSecrets(name: string): Promise<{ password?: string; 
   return {};
 }
 
-async function deleteJSSecrets(name: string): Promise<void> {
+export async function deleteJSSecrets(name: string): Promise<void> {
   try {
     await invoke('delete_credential', { service: JS_KEYCHAIN_SERVICE, account: name });
   } catch {
@@ -216,10 +217,22 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!resp.ok) {
     const text = await resp.text();
+    const typed = parseJumpServerError(text);
+    if (typed) throw typed;
     throw new Error(`HTTP ${resp.status}: ${text}`);
   }
 
-  return resp.json() as Promise<T>;
+  const json = await resp.json() as T;
+
+  // Some endpoints return 200 with { ok: false, error: "SESSION_EXPIRED: ..." }
+  // (depends on how the Rust handler wraps errors). Check the result shape too.
+  const maybeErr = (json as unknown as { ok?: boolean; error?: string }).error;
+  if (maybeErr && typeof maybeErr === 'string') {
+    const typed = parseJumpServerError(maybeErr);
+    if (typed) throw typed;
+  }
+
+  return json;
 }
 
 /**

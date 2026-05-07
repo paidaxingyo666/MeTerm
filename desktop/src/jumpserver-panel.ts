@@ -17,8 +17,11 @@ import {
   getNodes,
   getAccounts,
 } from './jumpserver-api';
-import { connectToAsset } from './jumpserver-handler';
+import { connectToAsset, ensureJSAuthenticated } from './jumpserver-handler';
 import { activeJumpServers } from './app-state';
+import { isJumpServerSessionExpired } from './jumpserver-errors';
+import { markSessionExpired, isSessionExpired, logoutJumpServer } from './jumpserver-auth-state';
+import { confirm } from '@tauri-apps/plugin-dialog';
 import { openJumpServerBrowserWindow } from './jumpserver-browser';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -301,6 +304,15 @@ function renderPanelContent(container: HTMLElement, config: JumpServerConfig): v
   header.querySelector('[data-action="close"]')!.addEventListener('click', closeJumpServerPanel);
   container.appendChild(header);
 
+  // Context menu: wired to header, implemented in Task 7
+  attachHeaderContextMenu(header, config);
+
+  // Session expired → render banner instead of loading content
+  if (isSessionExpired(config.name)) {
+    renderExpiredBanner(container, config);
+    return;
+  }
+
   // Search bar with filter button (same as standalone narrow mode)
   const searchBar = document.createElement('div');
   searchBar.className = 'js-panel-search';
@@ -389,6 +401,13 @@ function renderPanelContent(container: HTMLElement, config: JumpServerConfig): v
       }
       renderNodeDropdown(result.nodes);
     } catch (err) {
+      // Session-expired errors are thrown from fetchJSON for both non-2xx bodies
+      // and 2xx {ok:false, error} shapes — so catching the typed error is sufficient.
+      if (isJumpServerSessionExpired(err)) {
+        markSessionExpired(config.name);
+        openJumpServerPanel(config);
+        return;
+      }
       nodeDropdown.innerHTML = `<div class="js-error">${escapeHtml(String(err))}</div>`;
     }
   };
@@ -508,6 +527,13 @@ function renderPanelContent(container: HTMLElement, config: JumpServerConfig): v
       totalAssets = result.total || result.assets.length;
       renderAssetList();
     } catch (err) {
+      // Session-expired errors are thrown from fetchJSON for both non-2xx bodies
+      // and 2xx {ok:false, error} shapes — so catching the typed error is sufficient.
+      if (isJumpServerSessionExpired(err)) {
+        markSessionExpired(config.name);
+        openJumpServerPanel(config);
+        return;
+      }
       assets.innerHTML = `<div class="js-error">${escapeHtml(String(err))}</div>`;
     }
   };
@@ -634,6 +660,119 @@ function renderPanelContent(container: HTMLElement, config: JumpServerConfig): v
   loadNodeTree();
   loadAssetList();
   setTimeout(() => searchInput.focus(), 100);
+}
+
+// ── Session-expired banner ──
+
+function attachHeaderContextMenu(header: HTMLElement, config: JumpServerConfig): void {
+  header.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showJsConnectionContextMenu(e.clientX, e.clientY, config);
+  });
+}
+
+/**
+ * Shared popup menu for JumpServer connection actions (re-login / sign-out).
+ * Used by the panel header and by toolbar dropdown items (Task 8).
+ */
+export function showJsConnectionContextMenu(x: number, y: number, config: JumpServerConfig): void {
+  // Remove any existing menu first
+  document.getElementById('js-connection-context-menu')?.remove();
+
+  const menu = document.createElement('div');
+  menu.id = 'js-connection-context-menu';
+  menu.className = 'custom-context-menu';
+
+  const cleanup = (): void => {
+    menu.remove();
+    document.removeEventListener('mousedown', onPointerDown, true);
+    window.removeEventListener('blur', cleanup);
+  };
+
+  const onPointerDown = (event: MouseEvent): void => {
+    const target = event.target as Node | null;
+    if (!target || menu.contains(target)) return;
+    cleanup();
+  };
+
+  const reloginItem = document.createElement('button');
+  reloginItem.className = 'custom-context-menu-item';
+  reloginItem.type = 'button';
+  reloginItem.textContent = t('jsReconnectAction');
+  reloginItem.onclick = async () => {
+    cleanup();
+    const ok = await ensureJSAuthenticated(config);
+    if (ok) {
+      if (isJumpServerPanelOpen()) openJumpServerPanel(config);
+    }
+  };
+  menu.appendChild(reloginItem);
+
+  const logoutItem = document.createElement('button');
+  logoutItem.className = 'custom-context-menu-item';
+  logoutItem.type = 'button';
+  logoutItem.textContent = t('jsLogoutAction');
+  logoutItem.onclick = async () => {
+    cleanup();
+    const msg = t('jsLogoutConfirm').replace('{name}', config.name);
+    const ok = await confirm(msg, { title: 'JumpServer', kind: 'warning' });
+    if (ok) await logoutJumpServer(config.name);
+  };
+  menu.appendChild(logoutItem);
+
+  document.body.appendChild(menu);
+
+  // Position + clamp to viewport
+  menu.style.left = `${Math.max(6, x)}px`;
+  menu.style.top = `${Math.max(6, y)}px`;
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth - 6) {
+    menu.style.left = `${Math.max(6, window.innerWidth - rect.width - 6)}px`;
+  }
+  if (rect.bottom > window.innerHeight - 6) {
+    menu.style.top = `${Math.max(6, window.innerHeight - rect.height - 6)}px`;
+  }
+
+  window.addEventListener('blur', cleanup);
+  requestAnimationFrame(() => {
+    document.addEventListener('mousedown', onPointerDown, true);
+  });
+}
+
+function renderExpiredBanner(container: HTMLElement, config: JumpServerConfig): void {
+  const banner = document.createElement('div');
+  banner.className = 'js-panel-expired-banner';
+  banner.innerHTML = `
+    <div class="js-expired-title">${escapeHtml(t('jsSessionExpired'))}</div>
+    <div class="js-expired-desc">${escapeHtml(t('jsSessionExpiredDesc'))}</div>
+    <div class="js-expired-error" data-role="error"></div>
+    <div class="js-expired-actions">
+      <button class="js-expired-btn js-expired-btn-primary" data-action="relogin">${escapeHtml(t('jsReconnectAction'))}</button>
+      <button class="js-expired-btn" data-action="logout">${escapeHtml(t('jsLogoutAction'))}</button>
+    </div>
+  `;
+  const errorEl = banner.querySelector('[data-role="error"]') as HTMLElement;
+  const reloginBtn = banner.querySelector('[data-action="relogin"]') as HTMLButtonElement;
+  reloginBtn.addEventListener('click', async () => {
+    errorEl.textContent = '';
+    reloginBtn.disabled = true;
+    try {
+      const ok = await ensureJSAuthenticated(config);
+      if (ok) {
+        openJumpServerPanel(config);
+      } else {
+        errorEl.textContent = t('jsReloginFailed');
+      }
+    } finally {
+      reloginBtn.disabled = false;
+    }
+  });
+  banner.querySelector('[data-action="logout"]')!.addEventListener('click', async () => {
+    const msg = t('jsLogoutConfirm').replace('{name}', config.name);
+    const ok = await confirm(msg, { title: 'JumpServer', kind: 'warning' });
+    if (ok) await logoutJumpServer(config.name);
+  });
+  container.appendChild(banner);
 }
 
 // ── Account picker inline ──

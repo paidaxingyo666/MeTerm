@@ -20,6 +20,7 @@ import {
   type JumpServerNode,
   type JumpServerAccount,
 } from './jumpserver-api';
+import { parseJumpServerError, isJumpServerSessionExpired } from './jumpserver-errors';
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
@@ -46,7 +47,44 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
       ...options?.headers,
     },
   });
-  return resp.json() as Promise<T>;
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    const typed = parseJumpServerError(text);
+    if (typed) throw typed;
+    throw new Error(`HTTP ${resp.status}: ${text}`);
+  }
+
+  const json = await resp.json() as T;
+  const maybeErr = (json as unknown as { error?: string }).error;
+  if (maybeErr && typeof maybeErr === 'string') {
+    const typed = parseJumpServerError(maybeErr);
+    if (typed) throw typed;
+  }
+  return json;
+}
+
+/**
+ * Replace a container's content with a "session expired — return to main window" message.
+ * Clicking the action emits a Tauri event so the main window re-opens the panel (where its
+ * own banner flow handles re-authentication), then closes this pop-out window.
+ */
+function renderExpiredInBrowserWindow(container: HTMLElement, configName: string): void {
+  container.innerHTML = '';
+  const banner = document.createElement('div');
+  banner.className = 'js-panel-expired-banner';
+  banner.innerHTML = `
+    <div class="js-expired-title">${escapeHtml(t('jsSessionExpired'))}</div>
+    <div class="js-expired-desc">${escapeHtml(t('jsSessionExpiredDesc'))}</div>
+    <div class="js-expired-actions">
+      <button class="js-expired-btn js-expired-btn-primary" data-action="return">${escapeHtml(t('jsReturnToMainWindow'))}</button>
+    </div>
+  `;
+  banner.querySelector('[data-action="return"]')!.addEventListener('click', async () => {
+    await emit('jumpserver-session-expired-reopen', { configName });
+    await getCurrentWindow().close();
+  });
+  container.appendChild(banner);
 }
 
 interface AssetsResult {
@@ -574,6 +612,11 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       renderNodes(result.nodes);
       renderNodeDropdown(result.nodes);
     } catch (err) {
+      if (isJumpServerSessionExpired(err)) {
+        renderExpiredInBrowserWindow(sidebar, config.name);
+        renderExpiredInBrowserWindow(main, config.name);
+        return;
+      }
       sidebar.innerHTML = `<div class="js-error">${escapeHtml(String(err))}</div>`;
     }
   };
@@ -802,6 +845,10 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       totalAssets = result.total || result.assets.length;
       renderAssetList();
     } catch (err) {
+      if (isJumpServerSessionExpired(err)) {
+        renderExpiredInBrowserWindow(main, config.name);
+        return;
+      }
       main.innerHTML = `<div class="js-error">${escapeHtml(String(err))}</div>`;
     }
   };
@@ -987,6 +1034,10 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       statusBar.textContent = `Connected: ${asset.name || asset.address}`;
       statusBar.style.color = 'var(--status-green)';
     } catch (err) {
+      if (isJumpServerSessionExpired(err)) {
+        renderExpiredInBrowserWindow(main, config.name);
+        return;
+      }
       statusBar.textContent = `Error: ${String(err)}`;
       statusBar.style.color = 'var(--status-red)';
     }

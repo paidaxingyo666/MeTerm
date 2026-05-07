@@ -17,7 +17,10 @@ import {
   isHomeView, isGalleryView,
   sshConfigMap, remoteInfoMap, remoteTabNumbers,
   sessionProgressMap, jumpServerConfigMap,
+  activeJumpServers,
 } from './app-state';
+import { isSessionExpired } from './jumpserver-auth-state';
+import { ensureJSAuthenticated } from './jumpserver-handler';
 
 // ── Callback injection (set from main.ts init) ──
 let _activateTab: (tabId: string) => Promise<void> = async () => {};
@@ -120,6 +123,28 @@ export function showReconnectOverlay(sessionId: string, tabId: string): void {
     try {
       // For JumpServer sessions, re-create connection token before reconnecting
       const jsConfig = jumpServerConfigMap.get(sessionId);
+
+      // JumpServer session expired or logged out → can't create a new connection token.
+      // Prompt re-login; don't call createConnectionToken (it would fail with 401).
+      if (jsConfig) {
+        const cfgName = jsConfig.config.name;
+        if (isSessionExpired(cfgName) || !activeJumpServers.has(cfgName)) {
+          btn.classList.remove('is-reconnecting');
+          overlay.classList.remove('reconnecting');
+          btn.querySelector('span')!.textContent = t('jsReconnectAction');
+          errorEl.textContent = t('jsLoginRequired');
+          StatusBar.setConnection('disconnected', '');
+
+          const ok = await ensureJSAuthenticated(jsConfig.config, true);
+          if (ok) {
+            errorEl.textContent = '';
+            btn.querySelector('span')!.textContent = t('reconnect') || 'Reconnect';
+            // User must click reconnect again — intentional to avoid chained retries
+          }
+          return;
+        }
+      }
+
       let reconnectConfig = config;
       if (jsConfig) {
         const tokenResult = await createConnectionToken(

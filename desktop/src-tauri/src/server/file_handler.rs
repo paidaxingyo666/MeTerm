@@ -8,6 +8,124 @@ use serde::{Deserialize, Serialize};
 use super::protocol;
 
 // ---------------------------------------------------------------------------
+// SFTP auth-failure classification helpers
+// ---------------------------------------------------------------------------
+
+/// Classifies whether a russh-sftp / ssh error string indicates an authentication
+/// failure. Uses specific multi-word phrases that russh/libssh2 emit to avoid
+/// false positives on user-controlled paths (e.g., a file named "authentication
+/// failed.txt" in an ENOENT error shouldn't trigger SFTP_AUTH_FAILED).
+///
+/// Known patterns:
+/// - libssh2 "Session(-18): ..." (canonical auth-failure code)
+/// - russh "all authentication methods failed" (NoAuthMethod)
+/// - russh "no auth method available"
+/// - "password authentication failed" / "keyboard-interactive authentication failed"
+/// - libssh2 "authentication failed (publickey,password)" pattern
+///
+/// 注意：宽泛的 "authentication failed" / "auth failed" 已被移除，因为路径中包含这些
+/// 词的 ENOENT 错误（如文件名含 "authentication failed"）会被误判为认证失败。
+pub(crate) fn is_sftp_auth_error(err_msg: &str) -> bool {
+    let lower = err_msg.to_ascii_lowercase();
+    // libssh2 session 级认证错误（数字形式，极不可能出现在路径中）
+    lower.contains("session(-18)")
+        // russh: NoAuthMethod 的 Display 输出
+        || lower.contains("all authentication methods failed")
+        // russh: 另一种 NoAuthMethod 输出
+        || lower.contains("no auth method available")
+        // 精确组合短语——仅当 "authentication" 与具体机制词组合时才匹配
+        || lower.contains("keyboard-interactive authentication failed")
+        || lower.contains("password authentication failed")
+        // libssh2 标准消息，括号内包含机制列表，不会是普通路径
+        || lower.contains("authentication failed (publickey")
+    // 注意：单独的 "permission denied"（文件级 EACCES）不是认证失败，不匹配
+}
+
+/// 若响应字节包含 SFTP 认证失败的错误信息，则将其替换为带有结构化
+/// `SFTP_AUTH_FAILED` code 的 MSG_ERROR，以便前端透明刷新 JumpServer 凭据。
+/// 对于格式异常或非认证错误的输入，直接原样返回。
+///
+/// 覆盖的 JSON 形状：
+/// - `{ "error": "Authentication failed" }` — 文件列表/操作响应
+/// - `{ "transferId": ..., "error": "..." }` — 上传/下载错误（MSG_ERROR）
+/// - `{ "code": "...", "message": "...", "transferId": ... }` — SFTP 传输错误
+pub(crate) fn maybe_upgrade_sftp_auth_error(resp: Vec<u8>) -> Vec<u8> {
+    // 最短帧：1 字节 msg_type + 至少 1 字节 payload
+    if resp.len() < 2 {
+        return resp;
+    }
+    // protocol 帧格式：[msg_type: u8][payload...]
+    let payload = &resp[1..];
+    // 尝试解析 payload 为 JSON，递归查找 "error" 或 "message" 字符串字段
+    let v: serde_json::Value = match serde_json::from_slice(payload) {
+        Ok(v) => v,
+        Err(_) => return resp,
+    };
+    let err_msg = match find_error_field(&v) {
+        Some(s) => s,
+        None => return resp,
+    };
+    if !is_sftp_auth_error(err_msg) {
+        return resp;
+    }
+    // 替换为带结构化 code 的 MSG_ERROR
+    let upgraded = serde_json::json!({
+        "code": "SFTP_AUTH_FAILED",
+        "message": err_msg,
+    });
+    protocol::encode_message(
+        protocol::MSG_ERROR,
+        serde_json::to_vec(&upgraded).unwrap_or_default().as_slice(),
+    )
+}
+
+/// 递归搜索 JSON 中第一个字符串值的 `"error"` 字段。
+/// 若未找到 `"error"` 字段，则回退查找 `"message"` 字段，以覆盖
+/// `{ "code": "...", "message": "Authentication failed", "transferId": ... }`
+/// 形状的 SFTP 传输错误。
+fn find_error_field(v: &serde_json::Value) -> Option<&str> {
+    match v {
+        serde_json::Value::Object(map) => {
+            // 优先检查本层的 "error" 字段
+            if let Some(serde_json::Value::String(s)) = map.get("error") {
+                return Some(s.as_str());
+            }
+            // 递归子节点
+            for (_, child) in map {
+                if let Some(s) = find_error_field(child) {
+                    return Some(s);
+                }
+            }
+            // 回退：检查本层 "message" 字段（用于 SFTP 传输错误形状）
+            if let Some(serde_json::Value::String(s)) = map.get("message") {
+                return Some(s.as_str());
+            }
+            None
+        }
+        serde_json::Value::Array(arr) => {
+            for child in arr {
+                if let Some(s) = find_error_field(child) {
+                    return Some(s);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// 向客户端发送 SFTP 错误响应，若错误内容表明认证失败则自动升级为
+/// `SFTP_AUTH_FAILED` MSG_ERROR，以便前端透明刷新 JumpServer 凭据。
+pub(crate) fn send_sftp_error(
+    session: &super::session::Session,
+    client_id: &str,
+    resp: Vec<u8>,
+) {
+    let resp = maybe_upgrade_sftp_auth_error(resp);
+    session.send_to_client(client_id, resp);
+}
+
+// ---------------------------------------------------------------------------
 // Data types (match Go protocol/file_messages.go)
 // ---------------------------------------------------------------------------
 
@@ -593,7 +711,8 @@ pub async fn handle_sftp_file_list_with_progress(
         total: if truncated { Some(total_count) } else { None },
     };
     let data = serde_json::to_vec(&resp).unwrap_or_default();
-    session.send_to_client(client_id, protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data));
+    // send_sftp_error 会检查响应中的 error 字段是否为认证失败，若是则升级为 SFTP_AUTH_FAILED
+    send_sftp_error(session, client_id, protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data));
 }
 
 /// Recursively remove a file or directory via SFTP.

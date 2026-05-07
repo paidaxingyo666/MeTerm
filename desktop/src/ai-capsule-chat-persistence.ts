@@ -268,8 +268,15 @@ export function renderChatHistoryDetail(
       const addHistoryCb = (cmd: string) => deps.addHistory(instance, cmd, 'ai');
       content.innerHTML = renderMarkdown(msg.content, instance.sessionId, addHistoryCb);
     } else if (msg.type === 'thinking') {
-      // Reasoning — standalone block (no bubble)
-      if (msg.reasoning) {
+      // Reasoning — standalone block (no bubble).
+      // Strip stray think/tool-XML fragments that older sessions might have
+      // persisted before we started sanitizing on finalize.
+      const cleanedReasoning = msg.reasoning
+        ? msg.reasoning
+            .replace(/<\/?think(?:ing)?>/gi, '')
+            .replace(/<\/(?:arg_value|tool_call|args|tool_use)>/gi, '')
+        : '';
+      if (cleanedReasoning) {
         const block = document.createElement('div');
         block.className = 'ai-thinking-block';
         const details = document.createElement('details');
@@ -278,7 +285,7 @@ export function renderChatHistoryDetail(
         summary.innerHTML = `${thinkingIcon(12)} <span>${t('aiThinking')}</span>`;
         const textEl = document.createElement('div');
         textEl.className = 'ai-reasoning-text';
-        textEl.textContent = msg.reasoning;
+        textEl.textContent = cleanedReasoning;
         details.appendChild(summary);
         details.appendChild(textEl);
         block.appendChild(details);

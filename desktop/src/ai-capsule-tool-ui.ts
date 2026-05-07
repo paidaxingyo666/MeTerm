@@ -6,6 +6,16 @@ import { attachLightboxClick } from './ai-image-lightbox';
 import { TabManager } from './tabs';
 import { createOverlayScrollbar } from './overlay-scrollbar';
 import type { TodoItem } from './ai-tools-todo';
+import {
+  toolDisplayName,
+  todoStatusLabel,
+  planTitle,
+  planCollapseLabel,
+  planExpandLabel,
+  planMoreItemsLabel,
+  waitPausedLabel,
+  waitResolvedLabel,
+} from './ai-tool-i18n';
 
 /**
  * 给工具结果区域附加全局 overlay 滚动条(替换原生 scrollbar)。
@@ -81,7 +91,7 @@ export function buildToolCard(msg: Extract<ConvEntry, { type: 'tool_call' }>): H
     : '';
   header.innerHTML = `
     <span class="ai-tool-icon">${toolIcon(msg.toolName, 14)}</span>
-    <span class="ai-tool-name">${escapeHtml(msg.toolName)}</span>
+    <span class="ai-tool-name" title="${escapeHtml(msg.toolName)}">${escapeHtml(toolDisplayName(msg.toolName))}</span>
     ${badgeHtml}
     ${toolArgsInline(msg.toolName, msg.args)}
     <span class="ai-tool-status">${status}</span>`;
@@ -226,7 +236,7 @@ export function appendToolCallCard(
     header.className = 'ai-tool-card-header';
     header.innerHTML = `
       <span class="ai-tool-icon">${toolIcon(toolName, 14)}</span>
-      <span class="ai-tool-name">${escapeHtml(toolName)}</span>
+      <span class="ai-tool-name" title="${escapeHtml(toolName)}">${escapeHtml(toolDisplayName(toolName))}</span>
       ${badgeHtml}
       ${toolArgsInline(toolName, args)}
       <span class="ai-tool-status">${spinnerIcon(color, 12)}</span>
@@ -349,7 +359,7 @@ function renderWaitForUserInputCard(
   header.className = 'ai-tool-card-header ai-wait-card-header';
   header.innerHTML = `
     <span class="ai-tool-icon">${toolIcon('wait_for_user_input', 16)}</span>
-    <span class="ai-tool-name">${escapeHtml('Agent paused — please type in the terminal')}</span>
+    <span class="ai-tool-name">${escapeHtml(waitPausedLabel())}</span>
   `;
   card.appendChild(header);
 
@@ -426,13 +436,10 @@ function renderWaitForUserInputCard(
       : status === 'aborted' ? 'warning'
       : status === 'timeout' ? 'error'
       : 'success';
-    const label = status === 'completed' ? 'wait_for_user_input · resumed'
-      : status === 'aborted' ? 'wait_for_user_input · cancelled'
-      : status === 'timeout' ? 'wait_for_user_input · timed out'
-      : `wait_for_user_input · ${status}`;
+    const label = waitResolvedLabel(status);
     header.innerHTML = `
       <span class="ai-tool-icon">${toolIcon('wait_for_user_input', 14)}</span>
-      <span class="ai-tool-name">${escapeHtml(label)}</span>
+      <span class="ai-tool-name" title="wait_for_user_input">${escapeHtml(label)}</span>
       <span class="ai-tool-status">${statusIcon(statusKind, 12)}</span>
     `;
     document.removeEventListener('ai-wait-for-user-input-end', onEnd);
@@ -622,7 +629,7 @@ export function showConfirmCard(
     header.className = 'ai-confirm-header';
     header.innerHTML = `
       <span class="ai-tool-icon">${toolIcon(toolName, 14)}</span>
-      <span class="ai-tool-name">${escapeHtml(toolName)}</span>
+      <span class="ai-tool-name" title="${escapeHtml(toolName)}">${escapeHtml(toolDisplayName(toolName))}</span>
     `;
 
     // Command preview
@@ -765,19 +772,13 @@ export function showConfirmCard(
 // `tool_call` entries from todo_write keep the audit trail. The board
 // is purely a derived view of the agent's current TodoState.
 
-const TODO_STATUS_LABELS: Record<TodoItem['status'], string> = {
-  pending: 'pending',
-  in_progress: 'in progress',
-  completed: 'completed',
-};
-
 function findOrCreateTodoBoard(container: Element): HTMLDivElement {
   let board = container.querySelector<HTMLDivElement>(':scope > .ai-todo-board');
   if (!board) {
     board = document.createElement('div');
     board.className = 'ai-todo-board';
     board.setAttribute('role', 'group');
-    board.setAttribute('aria-label', 'Agent task plan');
+    board.setAttribute('aria-label', planTitle());
   }
   // Always (re-)anchor to the end of the container so the board sits
   // below the most recent tool/assistant message.
@@ -819,11 +820,11 @@ export function renderTodoBoard(
   // Header: title + counts + optional active row + collapse toggle.
   const headerHtml = `
     <div class="ai-todo-board-header">
-      <span class="ai-todo-board-icon">${toolIcon('todo_write', 16)}</span>
-      <span class="ai-todo-board-title">Task plan</span>
+      <span class="ai-todo-board-icon">${toolIcon('todo_write', 14)}</span>
+      <span class="ai-todo-board-title">${escapeHtml(planTitle())}</span>
       <span class="ai-todo-board-counts">${done} / ${total}</span>
-      ${active ? `<span class="ai-todo-board-active">${spinnerIcon(color, 12)} <em>${escapeHtml(active.activeForm)}</em></span>` : ''}
-      <button class="ai-todo-board-toggle" aria-label="Collapse">${chevron('down')}</button>
+      ${active ? `<span class="ai-todo-board-active">${spinnerIcon(color, 11)} <em>${escapeHtml(active.activeForm)}</em></span>` : ''}
+      <button class="ai-todo-board-toggle" aria-label="${escapeHtml(planCollapseLabel())}">${chevron('down')}</button>
     </div>
     <div class="ai-todo-board-progress">
       <div class="ai-todo-board-bar" style="width:${pct}%; background:${color};"></div>
@@ -843,11 +844,11 @@ export function renderTodoBoard(
     return `<div class="ai-todo-row ${status}" data-idx="${idx}">
       ${box}
       <span class="ai-todo-text">${escapeHtml(label)}</span>
-      <span class="ai-todo-status">${TODO_STATUS_LABELS[status]}</span>
+      <span class="ai-todo-status">${escapeHtml(todoStatusLabel(status))}</span>
     </div>`;
   }).join('');
   const moreNote = todos.length > MAX_VISIBLE_TODOS
-    ? `<div class="ai-todo-row" style="opacity:0.6;justify-content:center;font-size:11px">… ${todos.length - MAX_VISIBLE_TODOS} more items hidden</div>`
+    ? `<div class="ai-todo-row" style="opacity:0.6;justify-content:center;font-size:11px">… ${escapeHtml(planMoreItemsLabel(todos.length - MAX_VISIBLE_TODOS))}</div>`
     : '';
 
   board.innerHTML = `${headerHtml}<div class="ai-todo-board-list">${rows}${moreNote}</div>`;
@@ -863,6 +864,7 @@ export function renderTodoBoard(
       list.style.display = nowCollapsed ? 'none' : '';
       board.dataset.collapsed = nowCollapsed ? '1' : '0';
       toggleBtn.innerHTML = nowCollapsed ? chevron('right') : chevron('down');
+      toggleBtn.setAttribute('aria-label', nowCollapsed ? planExpandLabel() : planCollapseLabel());
     });
   }
 

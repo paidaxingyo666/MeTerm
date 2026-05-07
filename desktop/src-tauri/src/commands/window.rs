@@ -405,6 +405,11 @@ pub fn hide_main_window(app: AppHandle) {
 /// platforms or in dev mode (binary not inside a .app bundle).
 #[tauri::command]
 pub fn restart_app_via_open(app: AppHandle) {
+    // Mark the app as quitting BEFORE requesting exit so that the
+    // `CloseRequested` / `ExitRequested` handlers in lib.rs don't block us
+    // with the "confirm quit" dialog when terminal tabs are open.
+    app.state::<crate::AppLifecycleState>().mark_quitting();
+
     #[cfg(target_os = "macos")]
     {
         if let Ok(exe) = std::env::current_exe() {
@@ -416,9 +421,15 @@ pub fn restart_app_via_open(app: AppHandle) {
             {
                 if bundle.extension().map_or(false, |e| e == "app") {
                     let bundle_path = bundle.display().to_string();
-                    // Spawn a detached shell that waits for us to exit, then re-opens the app
+                    // Spawn a detached shell that waits for us to exit, then re-opens the app.
+                    // sleep is generous (2s) because sidecar shutdown + tab cleanup on exit
+                    // can take a moment, and we must NOT call `open -a` while the old instance
+                    // is still alive (single-instance plugin would just focus the old one).
                     let _ = std::process::Command::new("sh")
-                        .args(["-c", &format!("sleep 1 && open -a '{}'", bundle_path)])
+                        .args([
+                            "-c",
+                            &format!("sleep 2 && open -a '{}'", bundle_path),
+                        ])
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .spawn();

@@ -124,6 +124,7 @@ pub async fn dispatch_message(
                 tokio::spawn(async move {
                     let resp =
                         super::file_handler::handle_sftp_file_operation(&payload, &sftp).await;
+                    let resp = super::file_handler::maybe_upgrade_sftp_auth_error(resp);
                     session.send_to_client(&client_id, resp);
                 });
             } else {
@@ -142,6 +143,7 @@ pub async fn dispatch_message(
                 let session = session.clone();
                 tokio::spawn(async move {
                     let resp = super::file_handler::handle_sftp_file_read(&payload, &sftp).await;
+                    let resp = super::file_handler::maybe_upgrade_sftp_auth_error(resp);
                     session.send_to_client(&client_id, resp);
                 });
             } else {
@@ -160,6 +162,7 @@ pub async fn dispatch_message(
                 let session = session.clone();
                 tokio::spawn(async move {
                     let resp = super::file_handler::handle_sftp_file_save(&payload, &sftp).await;
+                    let resp = super::file_handler::maybe_upgrade_sftp_auth_error(resp);
                     session.send_to_client(&client_id, resp);
                 });
             } else {
@@ -410,23 +413,45 @@ async fn handle_upload_start(session: &Arc<Session>, client_id: &str, payload: &
         let sftp = session.sftp.lock().unwrap().clone();
 
         if total_size == 0 {
-            let ok = if let Some(ref sftp) = sftp {
-                sftp.create(path.clone()).await.is_ok()
+            if let Some(ref sftp) = sftp {
+                match sftp.create(path.clone()).await {
+                    Ok(_) => {
+                        let resp = serde_json::json!({"success": true, "transferId": transfer_id});
+                        session.send_to_client(
+                            client_id,
+                            protocol::encode_message(
+                                protocol::MSG_FILE_OPERATION_RESP,
+                                serde_json::to_vec(&resp).unwrap_or_default().as_slice(),
+                            ),
+                        );
+                    }
+                    Err(e) => {
+                        let err = serde_json::json!({"code": "WRITE_FAILED", "message": format!("Failed to create file: {}", e), "transferId": transfer_id});
+                        super::file_handler::send_sftp_error(
+                            &session,
+                            client_id,
+                            protocol::encode_message(
+                                protocol::MSG_ERROR,
+                                serde_json::to_vec(&err).unwrap_or_default().as_slice(),
+                            ),
+                        );
+                    }
+                }
             } else {
-                std::fs::File::create(&path).is_ok()
-            };
-            let resp = if ok {
-                serde_json::json!({"success": true, "transferId": transfer_id})
-            } else {
-                serde_json::json!({"ok": false, "error": "Failed to create file", "transferId": transfer_id})
-            };
-            session.send_to_client(
-                client_id,
-                protocol::encode_message(
-                    protocol::MSG_FILE_OPERATION_RESP,
-                    serde_json::to_vec(&resp).unwrap_or_default().as_slice(),
-                ),
-            );
+                let ok = std::fs::File::create(&path).is_ok();
+                let resp = if ok {
+                    serde_json::json!({"success": true, "transferId": transfer_id})
+                } else {
+                    serde_json::json!({"ok": false, "error": "Failed to create file", "transferId": transfer_id})
+                };
+                session.send_to_client(
+                    client_id,
+                    protocol::encode_message(
+                        protocol::MSG_FILE_OPERATION_RESP,
+                        serde_json::to_vec(&resp).unwrap_or_default().as_slice(),
+                    ),
+                );
+            }
             return;
         }
 
@@ -456,7 +481,8 @@ async fn handle_upload_start(session: &Arc<Session>, client_id: &str, payload: &
                 }
                 Err(e) => {
                     let err = serde_json::json!({"code": "WRITE_FAILED", "message": format!("create part: {}", e), "transferId": transfer_id});
-                    session.send_to_client(
+                    super::file_handler::send_sftp_error(
+                        &session,
                         client_id,
                         protocol::encode_message(
                             protocol::MSG_ERROR,
@@ -548,12 +574,13 @@ async fn handle_upload_chunk(session: &Arc<Session>, client_id: &str, payload: &
             if write_err {
                 guard.remove(&transfer_id);
                 drop(guard);
-                let resp = serde_json::json!({"success": false, "message": "Write error during upload", "transferId": transfer_id});
-                session.send_to_client(
+                let err = serde_json::json!({"code": "WRITE_FAILED", "message": "Write error during upload (pending flush)", "transferId": transfer_id});
+                super::file_handler::send_sftp_error(
+                    &session,
                     client_id,
                     protocol::encode_message(
-                        protocol::MSG_FILE_OPERATION_RESP,
-                        serde_json::to_vec(&resp).unwrap_or_default().as_slice(),
+                        protocol::MSG_ERROR,
+                        serde_json::to_vec(&err).unwrap_or_default().as_slice(),
                     ),
                 );
                 return;
@@ -569,12 +596,13 @@ async fn handle_upload_chunk(session: &Arc<Session>, client_id: &str, payload: &
                     Err(_) => {
                         guard.remove(&transfer_id);
                         drop(guard);
-                        let resp = serde_json::json!({"success": false, "message": "Write error during upload", "transferId": transfer_id});
-                        session.send_to_client(
+                        let err = serde_json::json!({"code": "WRITE_FAILED", "message": "Write error during upload (flow control)", "transferId": transfer_id});
+                        super::file_handler::send_sftp_error(
+                            &session,
                             client_id,
                             protocol::encode_message(
-                                protocol::MSG_FILE_OPERATION_RESP,
-                                serde_json::to_vec(&resp).unwrap_or_default().as_slice(),
+                                protocol::MSG_ERROR,
+                                serde_json::to_vec(&err).unwrap_or_default().as_slice(),
                             ),
                         );
                         return;
@@ -662,12 +690,13 @@ async fn handle_upload_chunk(session: &Arc<Session>, client_id: &str, payload: &
             } else {
                 guard.remove(&transfer_id);
                 drop(guard);
-                let resp = serde_json::json!({"success": false, "message": "Write failed", "transferId": transfer_id});
-                session.send_to_client(
+                let err = serde_json::json!({"code": "WRITE_FAILED", "message": "Write failed during upload chunk", "transferId": transfer_id});
+                super::file_handler::send_sftp_error(
+                    &session,
                     client_id,
                     protocol::encode_message(
-                        protocol::MSG_FILE_OPERATION_RESP,
-                        serde_json::to_vec(&resp).unwrap_or_default().as_slice(),
+                        protocol::MSG_ERROR,
+                        serde_json::to_vec(&err).unwrap_or_default().as_slice(),
                     ),
                 );
             }
@@ -694,11 +723,27 @@ async fn handle_upload_resume(session: &Arc<Session>, client_id: &str, payload: 
         let part_path = format!("{}.meterm.part", path);
 
         let part_size = if let Some(ref sftp) = sftp {
-            sftp.metadata(part_path.clone())
-                .await
-                .ok()
-                .and_then(|m| m.size)
-                .map(|s| s as i64)
+            match sftp.metadata(part_path.clone()).await {
+                Ok(m) => m.size.map(|s| s as i64),
+                Err(e) => {
+                    let err_str = format!("{}", e);
+                    // Auth failure → surface as SFTP auth error, not "no partial upload"
+                    if super::file_handler::is_sftp_auth_error(&err_str) {
+                        let err = serde_json::json!({"code": "WRITE_FAILED", "message": err_str, "transferId": transfer_id});
+                        super::file_handler::send_sftp_error(
+                            &session,
+                            client_id,
+                            protocol::encode_message(
+                                protocol::MSG_ERROR,
+                                serde_json::to_vec(&err).unwrap_or_default().as_slice(),
+                            ),
+                        );
+                        return;
+                    }
+                    // Legitimate "no partial upload" (ENOENT etc.)
+                    None
+                }
+            }
         } else {
             std::fs::metadata(&part_path).ok().map(|m| m.len() as i64)
         };
@@ -737,7 +782,8 @@ async fn handle_upload_resume(session: &Arc<Session>, client_id: &str, payload: 
                 Ok(f) => (Some(f), None),
                 Err(e) => {
                     let err = serde_json::json!({"code": "WRITE_FAILED", "message": format!("{}", e), "transferId": transfer_id});
-                    session.send_to_client(
+                    super::file_handler::send_sftp_error(
+                        &session,
                         client_id,
                         protocol::encode_message(
                             protocol::MSG_ERROR,
@@ -930,7 +976,8 @@ pub async fn handle_sftp_file_download(
         Ok(m) => m,
         Err(e) => {
             let err = serde_json::json!({"code": "READ_FAILED", "message": format!("stat: {}", e), "transferId": transfer_id});
-            session.send_to_client(
+            super::file_handler::send_sftp_error(
+                session,
                 client_id,
                 protocol::encode_message(
                     protocol::MSG_ERROR,
@@ -946,7 +993,8 @@ pub async fn handle_sftp_file_download(
         Ok(f) => f,
         Err(e) => {
             let err = serde_json::json!({"code": "READ_FAILED", "message": format!("open: {}", e), "transferId": transfer_id});
-            session.send_to_client(
+            super::file_handler::send_sftp_error(
+                session,
                 client_id,
                 protocol::encode_message(
                     protocol::MSG_ERROR,
