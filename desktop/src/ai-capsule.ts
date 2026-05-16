@@ -26,6 +26,7 @@ import { isDangerousCommand, confirmDangerousCommand } from './ai-capsule-danger
 import { buildToolCard as buildToolCardFn, appendToolCallCard as appendToolCallCardFn, updateToolResultCard as updateToolResultCardFn, updateToolResultImages as updateToolResultImagesFn, showConfirmCard as showConfirmCardFn } from './ai-capsule-tool-ui';
 import { bindChatContextMenu as bindChatContextMenuFn, resolveMessageIndex as resolveMessageIndexFn, showBubbleContextMenu as showBubbleContextMenuFn } from './ai-capsule-context-menu';
 import { createTrustSwitcher as createTrustSwitcherFn } from './ai-capsule-trust';
+import { createThinkingToggle as createThinkingToggleFn } from './ai-capsule-thinking-toggle';
 import {
   getHistoryKey, loadHistory as loadHistoryFn,
   addHistory as addHistoryFn, enterSearchMode as enterSearchModeFn,
@@ -180,6 +181,7 @@ class AICapsuleManagerClass {
     const isSSH = DrawerManager.has(sessionId);
     const element = createBarElementFn(sessionId, isSSH, this._popupState, {
       createTrustSwitcher: () => this.createTrustSwitcher(),
+      createThinkingToggle: () => this.createThinkingToggle(),
       hideBar: () => this.hideBar(),
     });
     const historyKey = getHistoryKey(sessionId);
@@ -235,6 +237,7 @@ class AICapsuleManagerClass {
       buildAgentCallbacks: (inst) => this.buildAgentCallbacks(inst),
       showNoConfigHint: (inst) => this.showNoConfigHint(inst),
       createTrustSwitcher: () => this.createTrustSwitcher(),
+      createThinkingToggle: () => this.createThinkingToggle(),
       toggleChatHistory: (inst, fromSide) => this.toggleChatHistory(inst, fromSide ?? false),
       injectUserMessage: (inst, text) => this.injectUserMessage(inst, text),
       getActiveInstance: () => this.getActiveInstance(),
@@ -412,6 +415,11 @@ class AICapsuleManagerClass {
   /** Create the trust-level quick switcher button for the AI bar (delegated). */
   private createTrustSwitcher(): HTMLDivElement {
     return createTrustSwitcherFn(this.capsules, (inst, text) => this.appendSystemNotice(inst, text));
+  }
+
+  /** Create the thinking-mode quick-toggle button (delegated). */
+  private createThinkingToggle(): HTMLDivElement {
+    return createThinkingToggleFn(this.capsules, (inst, text) => this.appendSystemNotice(inst, text));
   }
 
   private bindCommandButtons(instance: AICapsuleInstance, container: Element): void {

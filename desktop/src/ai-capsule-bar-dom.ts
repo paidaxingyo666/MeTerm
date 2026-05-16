@@ -16,6 +16,7 @@ import {
 
 export interface BarDomCallbacks {
   createTrustSwitcher: () => HTMLDivElement;
+  createThinkingToggle: () => HTMLDivElement;
   hideBar: () => void;
 }
 
@@ -182,6 +183,10 @@ export function createBarElement(
   // Trust level switcher
   const trustSwitcher = cb.createTrustSwitcher();
   bar.appendChild(trustSwitcher);
+
+  // Thinking-mode quick toggle (per-request flag — flipping mid-run is safe)
+  const thinkingToggle = cb.createThinkingToggle();
+  bar.appendChild(thinkingToggle);
 
   // Hide AI bar button (always last)
   const hideBtn = document.createElement('button');

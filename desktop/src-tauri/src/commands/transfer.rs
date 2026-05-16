@@ -13,7 +13,9 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 use crate::server::dispatch::{validate_path, wait_download_ctrl};
 use crate::server::session::{DownloadSignal, Session, UploadSignal};
-use crate::server::terminal::ssh::SshConfig;
+use crate::server::terminal::ssh::{
+    resolve_private_key_pem, SshAuthMethod, SshConfig, DEFAULT_KEY_FILES,
+};
 use crate::server::ServerState;
 
 const LOCAL_DOWNLOAD_CHUNK_SIZE: usize = 1024 * 1024;
@@ -540,23 +542,72 @@ fn verify_ssh2_host_key(session: &ssh2::Session, config: &SshConfig) -> Result<(
 }
 
 fn authenticate_ssh2_session(session: &ssh2::Session, config: &SshConfig) -> Result<(), String> {
-    if !config.private_key.is_empty() {
-        session
-            .userauth_pubkey_memory(
-                &config.username,
-                None,
-                &config.private_key,
-                if config.passphrase.is_empty() {
-                    None
+    // Stay aligned with the russh terminal path: branch on auth_method, and
+    // when key auth is selected with an empty path, walk the OpenSSH ladder
+    // (ssh-agent → default identity files). No silent fallback to password.
+    match config.auth_method {
+        SshAuthMethod::Key if config.private_key.trim().is_empty() => {
+            let mut diagnostics: Vec<String> = Vec::new();
+
+            // 1) ssh-agent — libssh2 has a single API that walks all agent
+            //    identities internally.
+            if session.userauth_agent(&config.username).is_ok() && session.authenticated() {
+                return Ok(());
+            } else {
+                diagnostics.push("ssh-agent: no identity accepted".to_string());
+            }
+
+            // 2) Default identity files.
+            if let Some(ssh_dir) = dirs::home_dir().map(|h| h.join(".ssh")) {
+                for name in DEFAULT_KEY_FILES {
+                    let path = ssh_dir.join(name);
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let pem = match std::fs::read_to_string(&path) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            diagnostics.push(format!("{}: read failed: {}", name, e));
+                            continue;
+                        }
+                    };
+                    match session.userauth_pubkey_memory(&config.username, None, &pem, None) {
+                        Ok(()) if session.authenticated() => return Ok(()),
+                        Ok(()) => diagnostics.push(format!("{}: server rejected", name)),
+                        Err(e) => diagnostics.push(format!("{}: {}", name, e)),
+                    }
+                }
+            }
+
+            return Err(format!(
+                "no usable SSH identity for SFTP (tried: {})",
+                if diagnostics.is_empty() {
+                    "ssh-agent + ~/.ssh defaults".to_string()
                 } else {
-                    Some(config.passphrase.as_str())
-                },
-            )
-            .map_err(|e| format!("SSH key auth: {}", e))?;
-    } else {
-        session
-            .userauth_password(&config.username, &config.password)
-            .map_err(|e| format!("SSH password auth: {}", e))?;
+                    diagnostics.join("; ")
+                }
+            ));
+        }
+        SshAuthMethod::Key => {
+            let pem = resolve_private_key_pem(&config.private_key)?;
+            session
+                .userauth_pubkey_memory(
+                    &config.username,
+                    None,
+                    &pem,
+                    if config.passphrase.is_empty() {
+                        None
+                    } else {
+                        Some(config.passphrase.as_str())
+                    },
+                )
+                .map_err(|e| format!("SSH key auth: {}", e))?;
+        }
+        SshAuthMethod::Password => {
+            session
+                .userauth_password(&config.username, &config.password)
+                .map_err(|e| format!("SSH password auth: {}", e))?;
+        }
     }
 
     if session.authenticated() {

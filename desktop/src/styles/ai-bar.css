@@ -635,7 +635,8 @@
 .ai-bar--side-active .ai-bar-btn-chat-history,
 .ai-bar--side-active .ai-bar-chat-history-panel,
 .ai-bar--side-active .ai-bar-btn-attach,
-.ai-bar--side-active .ai-bar-trust-switcher {
+.ai-bar--side-active .ai-bar-trust-switcher,
+.ai-bar--side-active .ai-bar-thinking-toggle {
   display: none !important;
 }
 /* When side mode is active the agent's attach surface lives in the

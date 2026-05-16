@@ -120,7 +120,37 @@ export class FileManager {
   private pendingMkdirResolve: (() => void) | null = null;
   onServerInfo: ((data: ServerInfoResponse) => void) | null = null;
   onFirstLoad: ((files: FileInfo[], path: string) => void) | null = null;
-  onPathChanged: ((path: string) => void) | null = null;
+  /**
+   * Path-changed observers. Multiple subscribers — breadcrumb updater,
+   * sidebar follower, etc. — coexist on the same FileManager. Previously
+   * this was a single `onPathChanged` slot, which led to subtle bugs:
+   * the sidebar replaced the breadcrumb's callback and used a brittle
+   * "prevCallback chain" that self-unsubscribed after one fire, so the
+   * JumpServer auto-cd (second loadDirectory in the same connect) never
+   * reached the tree root.
+   *
+   * Use `addPathListener(cb)` to subscribe; the returned function
+   * unsubscribes. Throwing inside a listener is logged and swallowed
+   * so one bad subscriber doesn't block the others.
+   */
+  private _pathListeners: Set<(path: string) => void> = new Set();
+  /** Set to true the first time a directory list response is processed.
+   *  Lets observers (sidebar) distinguish "FM has never loaded" from
+   *  "FM is currently at root because root really is the home dir". */
+  private _hasLoadedOnce = false;
+
+  hasLoaded(): boolean { return this._hasLoadedOnce; }
+
+  addPathListener(cb: (path: string) => void): () => void {
+    this._pathListeners.add(cb);
+    return () => { this._pathListeners.delete(cb); };
+  }
+
+  private _firePathChanged(path: string): void {
+    for (const cb of this._pathListeners) {
+      try { cb(path); } catch (e) { console.error('[fm] path listener threw:', e); }
+    }
+  }
   selectedFiles: Set<string> = new Set();
   lastClickedFile: string | null = null;
   suppressListErrors = false;
@@ -451,8 +481,32 @@ export class FileManager {
   /**
    * Load directory contents without affecting current path/UI state.
    * Used by the file tree component for lazy-loading children.
+   *
+   * Two perf knobs over the previous version:
+   *   1. Cache hit short-circuit. The drawer's loadDirectory already
+   *      populates the shared dirCache (30s TTL) on every response, so
+   *      a sidebar that opens right after the drawer rendered the same
+   *      path no longer pays a second SFTP round-trip. Equally helps
+   *      collapse → re-expand in the tree.
+   *   2. Carries the same `soft_limit` (5000 entries) the drawer's
+   *      loadDirectory uses. Without it, expanding into a huge directory
+   *      (or auto-following a JumpServer CWD change) drags every entry
+   *      over the SFTP channel. The renderer already paginates at
+   *      TREE_PAGE_SIZE (200), so 5000 is well past the visible window.
+   *
+   * Set `bypassCache: true` to force a wire fetch (e.g. after a
+   * mutation like rename/delete/upload).
    */
-  loadDirectoryRaw(path: string): Promise<{ files: FileInfo[]; path: string }> {
+  loadDirectoryRaw(
+    path: string,
+    opts?: { bypassCache?: boolean },
+  ): Promise<{ files: FileInfo[]; path: string }> {
+    if (!opts?.bypassCache) {
+      const cached = this._autocomplete?.dirCacheGet(path);
+      if (cached) {
+        return Promise.resolve({ files: cached, path });
+      }
+    }
     return new Promise((resolve, reject) => {
       if (!this._isConnected) {
         reject(new Error('FileManager not connected'));
@@ -469,10 +523,22 @@ export class FileManager {
         }
       }, 30000);
 
-      const request = JSON.stringify({ path, request_id: requestId, show_hidden: this._showHiddenFiles });
+      const request = JSON.stringify({
+        path,
+        request_id: requestId,
+        show_hidden: this._showHiddenFiles,
+        soft_limit: 5000,
+      });
       const message = this.encodeMessage(MsgFileList, new TextEncoder().encode(request));
       this._send(message);
     });
+  }
+
+  /** Invalidate one path in the dir cache. Call this whenever the
+   *  contents change out of band (rename, delete, upload finished,
+   *  mkdir, etc.) so the next sidebar expand reflects reality. */
+  invalidateDirCache(path: string): void {
+    this._autocomplete?.dirCacheInvalidate(path);
   }
 
   private handleFileListProgress(payload: Uint8Array): void {
@@ -561,7 +627,8 @@ export class FileManager {
       this.listTotalCount = response.total ?? response.files.length;
       this.currentPath = resolvedPath;
       this.pathInput.value = resolvedPath;
-      this.onPathChanged?.(resolvedPath);
+      this._hasLoadedOnce = true;
+      this._firePathChanged(resolvedPath);
       this.renderFileList();
       this.updateTruncationBanner();
     } catch (err) {
@@ -1101,6 +1168,16 @@ export class FileManager {
           if (this.pendingFileOp) this.hideFileOpLoading();
           alert(`操作失败: ${errorMsg}`);
           this.loadDirectory(this.currentPath);
+          // Notify sidebar so it can reconcile any optimistic UI (e.g.
+          // revert an instant-rename that the server then rejected).
+          window.dispatchEvent(new CustomEvent('meterm-file-op-done', {
+            detail: {
+              sessionId: this.sessionId,
+              operation: response.operation,
+              path: response.path,
+              success: false,
+            },
+          }));
         }
       }
     } catch (err) {
@@ -1130,7 +1207,16 @@ export class FileManager {
   }
 
   async renameFile(oldPath: string, newName: string): Promise<void> {
-    if (!validateFileName(newName)) { alert('Invalid filename'); return; }
+    // The second arg is named `newName` for historical reasons but now
+    // accepts either a basename ("foo.txt") OR an absolute path
+    // ("/dir/foo.txt"). `validateFileName` rejects anything containing
+    // "/", so we must validate the *basename* — not the raw input —
+    // otherwise every absolute path fails as "Invalid filename" and the
+    // rename silently aborts (this was the JumpServer-tree rename bug).
+    const basename = newName.startsWith('/')
+      ? (newName.split('/').pop() || '')
+      : newName;
+    if (!validateFileName(basename)) { alert('Invalid filename'); return; }
     const resolvedOld = oldPath.startsWith('/') ? oldPath : this.getFullPath(oldPath);
     const resolvedNew = newName.startsWith('/') ? newName : this.getFullPath(newName);
     this.sendFileOp({ operation: 'rename', path: resolvedOld, new_path: resolvedNew }, '重命名中...');

@@ -946,6 +946,8 @@ pub fn run() {
             // ssh
             commands::ssh::create_ssh_session,
             commands::ssh::test_ssh_connection,
+            commands::ssh::detect_default_ssh_key,
+            commands::ssh::check_ssh_agent,
             commands::transfer::start_session_file_download,
             commands::transfer::control_session_file_download,
             commands::transfer::start_session_file_upload,

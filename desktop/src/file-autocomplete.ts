@@ -40,10 +40,23 @@ export class PathAutocomplete {
     this.dirCache.set(path, { files, ts: Date.now() });
   }
 
-  /** Read cached directory contents. Returns undefined on cache miss. */
+  /** Read cached directory contents. Returns undefined on cache miss
+   *  OR when the entry has expired (TTL = DIR_CACHE_TTL). */
   dirCacheGet(path: string): FileInfo[] | undefined {
     const entry = this.dirCache.get(path);
-    return entry?.files;
+    if (!entry) return undefined;
+    if (Date.now() - entry.ts > PathAutocomplete.DIR_CACHE_TTL) {
+      this.dirCache.delete(path);
+      return undefined;
+    }
+    return entry.files;
+  }
+
+  /** Drop a single cached entry — used when the file system is mutated
+   *  out of band (rename/delete/upload) and the next sidebar expand
+   *  must hit the wire to reflect reality. */
+  dirCacheInvalidate(path: string): void {
+    this.dirCache.delete(path);
   }
 
   /** 静默查询目录内容（不影响 UI），供自动补全使用 */

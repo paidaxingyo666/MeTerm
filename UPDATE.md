@@ -1,5 +1,31 @@
 # MeTerm 更新记录
 
+## v0.2.8
+
+### 新功能
+
+- **AI 思考模式开关** — 设置面板新增「思考模式」总开关，AI Bar / 侧面板新增脑图标快速切换；启用时向请求体注入 `thinking.type` / `enable_thinking` / `chat_template_kwargs.enable_thinking` 三种字段，覆盖 DeepSeek V4 / Qwen3 / GLM / MiMo / vLLM 等思考模型；本轮对话中途切换无须重连，未知字段被 OpenAI / Anthropic / Gemini 忽略
+- **SSH 无凭据连接** — 选「密钥」认证、密钥路径留空时走 OpenSSH 风格梯子：先 `$SSH_AUTH_SOCK` (ssh-agent) 轮询所有 identities，再按 `id_ed25519 → id_ecdsa → id_rsa → id_dsa` 顺序试默认密钥。成功后底部 toast 提示实际走的路径
+- **SSH 私钥文件选择器** — 密钥输入框旁新增浏览按钮，原生文件对话框，默认起始 `~/.ssh/`
+- **SSH 动态提示** — 切到密钥模式时检测默认密钥与 ssh-agent 状态：placeholder 显示「留空将自动使用 ~/.ssh/id_ed25519」或「留空将通过 ssh-agent 认证」；agent 有身份时显示 `agent: N` 徽章
+- **JumpServer 连接反馈即时化** — 点击资产后 tab + 占位符**立即出现**（之前要等 token API 返回才出，资产慢时会等 1-3 秒）；占位符按阶段更新文案：正在认证 → 正在获取连接令牌 → 正在连接 user@host
+
+### 问题修复
+
+- **AI 调用 400「reasoning_content must be passed back」** — Qwen3 / DeepSeek V4 等思考模型要求带 tool_calls 的 assistant 必须回传 reasoning_content。前端在流式累积 reasoning、序列化时强制带回（空也带空串），符合官方文档要求
+- **SSH 私钥路径无法连接** — 前端发的是路径但 Rust 后端直接当 PEM 解析必败；补回 Go 后端迁移漏掉的 `~` 展开 + HOME 沙箱 + 文件读取逻辑，russh 终端 / ssh2 SFTP 两条路径都修
+- **JumpServer SFTP 无法初始化** — Koko 的连接 token 按 protocol 隔离且常为单次使用，第二条独立 SSH 连接被拒。改为在已认证的终端 session 上起 sftp 子通道（multiplex），普通 SSH 仍走独立连接保留传输性能；SFTP 初始化失败时把具体原因带回前端，不再只是「retry」
+- **JumpServer 侧边栏文件树加载慢** — 多个原因叠加：
+  - `loadDirectoryRaw` 没加 `soft_limit:5000` 软上限，大目录通过复用通道一次性拉数万条
+  - 没用上现有的目录缓存，drawer 刚拉过的目录 sidebar 又走网络
+  - `fm.currentPath==='/'` 被误判为「未加载」，导致根目录就是 home 的资产（如多数 JumpServer 资产）侧边栏一直等一个不会再来的事件
+- **JumpServer 侧边栏不跟随 auto-cd** — `FileManager.onPathChanged` 从单回调改成订阅者集合，sidebar 长期 follower 跟随 FM 的路径变化（auto-cd / 终端 cd），面包栏手动输入或锁定时停止跟随
+- **重命名报「Invalid filename」** — `renameFile(oldPath, newName)` API 改了支持绝对路径但校验没跟着改，必拒；改为只校验 basename
+- **侧边栏树重命名 1-2 秒空白** — sidebar 模式下 drawer 的「重命名中...」overlay 被隐藏，用户无反馈；新增乐观更新：按 Enter 立刻在树里改名 + 服务端响应回来 refreshAll 自然吻合；失败时也派发 file-op-done 自动回滚
+- **树移动文件后展开节点闭合** — `refreshAll` 把 expansion 快照捕获放在第一个 await 之后，并发 refresh 时读到的是被另一个调用清掉的空 nodeMap；快照挪到 await 之前 + 删除 `onMove` 里冗余的 setTimeout refreshAll
+
+---
+
 ## v0.2.7
 
 ### 新功能

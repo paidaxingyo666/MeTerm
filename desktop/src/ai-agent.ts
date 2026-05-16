@@ -436,6 +436,7 @@ export class ToolAgent {
       model: resolved.model,
       maxTokens: settings.aiMaxTokens,
       temperature: settings.aiTemperature,
+      enableThinking: settings.aiEnableThinking,
     };
 
     const configuredMax: number = settings.aiAgentMaxIterations ?? DEFAULT_MAX_ITERATIONS;
@@ -609,7 +610,11 @@ export class ToolAgent {
         // ── No tool calls → fix code blocks, then done ──
         if (!response.toolCalls || response.toolCalls.length === 0) {
           const fixed = fixCodeBlocks(response.text);
-          this.messages.push({ role: 'assistant', content: fixed });
+          this.messages.push({
+            role: 'assistant',
+            content: fixed,
+            ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
+          });
 
           // If user injected messages while we were streaming,
           // finalize this response and continue the loop so the LLM
@@ -630,10 +635,13 @@ export class ToolAgent {
         callbacks.onThinkingComplete?.(response.text);
 
         // ── Store assistant message with tool calls ──
+        // reasoning_content MUST be preserved for thinking-mode providers
+        // (Qwen3, DeepSeek-R1) — the next turn echoes it back to the API.
         this.messages.push({
           role: 'assistant',
           content: response.text || '',
           tool_calls: response.toolCalls,
+          ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
         });
 
         // ── Execute tool calls (orchestrated: concurrent-safe run in
@@ -1039,7 +1047,7 @@ export class ToolAgent {
     tools: ToolSpec[] | undefined,
     callbacks: AgentCallbacks,
     signal: AbortSignal,
-  ): Promise<{ text: string; toolCalls?: ToolCall[] }> {
+  ): Promise<{ text: string; toolCalls?: ToolCall[]; reasoning?: string }> {
     return new Promise((resolve, reject) => {
       let settled = false;
 
@@ -1053,10 +1061,10 @@ export class ToolAgent {
         onToolCall: () => {
           // Individual tool-call notifications are handled after onComplete
         },
-        onComplete: (fullText, toolCalls) => {
+        onComplete: (fullText, toolCalls, reasoning) => {
           if (settled) return;
           settled = true;
-          resolve({ text: fullText, toolCalls: toolCalls ?? undefined });
+          resolve({ text: fullText, toolCalls: toolCalls ?? undefined, reasoning });
         },
         onError: (error) => {
           if (settled) return;

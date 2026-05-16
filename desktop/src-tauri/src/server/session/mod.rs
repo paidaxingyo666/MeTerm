@@ -198,6 +198,12 @@ pub struct Session {
     /// SFTP client for SSH sessions (None for local sessions).
     pub sftp: Mutex<Option<std::sync::Arc<russh_sftp::client::SftpSession>>>,
 
+    /// Last failure encountered while initializing SFTP, if any. Surfaced
+    /// in the `SFTP_NOT_AVAILABLE` error so the frontend can show *why*
+    /// it never became ready (e.g. "subsystem rejected by Koko") rather
+    /// than the generic "not ready yet, please retry".
+    pub sftp_init_error: Mutex<Option<String>>,
+
     /// Original SSH connection config for transfer backends that may need a
     /// dedicated connection with different transport characteristics.
     pub ssh_config: Mutex<Option<crate::server::terminal::ssh::SshConfig>>,
@@ -244,6 +250,7 @@ impl Session {
             encoding_name: Mutex::new("utf-8".to_string()),
             executor_type: Mutex::new("local-shell".to_string()),
             sftp: Mutex::new(None),
+            sftp_init_error: Mutex::new(None),
             ssh_config: Mutex::new(None),
             ssh_exec_handle: tokio::sync::Mutex::new(None),
             active_uploads: tokio::sync::Mutex::new(HashMap::new()),

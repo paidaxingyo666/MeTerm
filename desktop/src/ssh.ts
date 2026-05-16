@@ -1,7 +1,48 @@
 import { invoke } from '@tauri-apps/api/core';
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
+import { homeDir, join as joinPath } from '@tauri-apps/api/path';
 import { t } from './i18n';
 import { escapeHtml } from './status-bar';
 import { loadGroupOrder, sshKey, setConnectionGroup, removeConnectionGroup, getConnectionGroup } from './connection-groups';
+
+interface SshAgentStatus { available: boolean; key_count: number; reason: string; }
+
+/**
+ * Probe ssh-agent and ~/.ssh for default identity. Updates the key input's
+ * placeholder ("leave empty to auto-use ~/.ssh/id_ed25519") and toggles the
+ * agent badge ("agent: 3"). Called lazily the first time the user enters
+ * key auth mode so the dialog open path stays snappy.
+ */
+async function refreshKeyHints(keyInput: HTMLInputElement, badge: HTMLElement): Promise<void> {
+  try {
+    const [agent, defaultKey] = await Promise.all([
+      invoke<SshAgentStatus>('check_ssh_agent').catch(() => null),
+      invoke<string | null>('detect_default_ssh_key').catch(() => null),
+    ]);
+
+    // Placeholder: "留空自动 (~/.ssh/id_ed25519)" / "Leave empty: auto (~/.ssh/id_ed25519)"
+    if (defaultKey) {
+      keyInput.placeholder = t('sshKeyPlaceholderAuto').replace('{path}', defaultKey);
+    } else if (agent?.available && agent.key_count > 0) {
+      keyInput.placeholder = t('sshKeyPlaceholderAgent');
+    } else {
+      keyInput.placeholder = t('sshKeyPlaceholderDefault');
+    }
+
+    // Badge: show only when agent is reachable with at least one key.
+    if (agent?.available && agent.key_count > 0) {
+      badge.textContent = t('sshAgentBadge').replace('{count}', String(agent.key_count));
+      badge.title = t('sshAgentBadgeHint');
+      badge.dataset.ready = '1';
+      badge.style.display = '';
+    } else {
+      badge.dataset.ready = '0';
+      badge.style.display = 'none';
+    }
+  } catch (e) {
+    console.warn('[ssh] refreshKeyHints failed:', e);
+  }
+}
 export interface SSHConnectionConfig {
   name: string;
   host: string;
@@ -12,6 +53,10 @@ export interface SSHConnectionConfig {
   privateKey?: string;
   passphrase?: string;
   skipShellHook?: boolean;
+  /** Run SFTP on a sub-channel of the existing terminal session instead
+   *  of opening a separate authenticated SSH connection. Required for
+   *  JumpServer Koko whose tokens are protocol-scoped & single-use. */
+  multiplexSftp?: boolean;
   proxyType?: string;      // 'socks5' | 'http' | '' (direct)
   proxyHost?: string;
   proxyPort?: number;
@@ -24,7 +69,19 @@ type SSHSessionCreateResponse = {
   created_at: string;
   state: string;
   executor_type: string;
+  /** Which auth path succeeded — see Rust `SshAuthUsed`. */
+  auth_method_used?: 'password' | 'key_explicit' | 'agent' | 'key_default';
 };
+
+/** Most recent auth method that succeeded — read by the home page after
+ *  createSSHSession resolves so it can flash a one-line toast like
+ *  "已通过 ssh-agent 连接". Reset by addRecentConnection. */
+let lastAuthMethodUsed: SSHSessionCreateResponse['auth_method_used'] = undefined;
+export function consumeLastAuthMethodUsed(): SSHSessionCreateResponse['auth_method_used'] {
+  const v = lastAuthMethodUsed;
+  lastAuthMethodUsed = undefined;
+  return v;
+}
 
 // Host key verification error from backend (409 Conflict)
 interface HostKeyError {
@@ -346,6 +403,7 @@ export async function createSSHSession(config: SSHConnectionConfig, trustedFinge
     passphrase: passphrase || null,
     trustedFingerprint: trustedFingerprint || null,
     skipShellHook: config.skipShellHook || null,
+    multiplexSftp: config.multiplexSftp || null,
     proxyType: config.proxyType || null,
     proxyHost: config.proxyHost || null,
     proxyPort: config.proxyPort || null,
@@ -373,7 +431,9 @@ export async function createSSHSession(config: SSHConnectionConfig, trustedFinge
     return createSSHSession(configWithSecrets, hkErr.fingerprint);
   }
 
-  return (parsed as SSHSessionCreateResponse).id;
+  const resp = parsed as SSHSessionCreateResponse;
+  lastAuthMethodUsed = resp.auth_method_used;
+  return resp.id;
 }
 
 // Host key confirmation dialog — TOFU (Trust On First Use) flow
@@ -732,8 +792,42 @@ function createConnectionForm(
   keyInput.setAttribute('autocorrect', 'off');
   keyInput.spellcheck = false;
   keyInput.value = prefill?.privateKey || '';
-  keyInput.placeholder = '~/.ssh/id_rsa';
+  keyInput.placeholder = t('sshKeyPlaceholderDefault');
   keyInput.style.display = 'none';
+
+  // Browse button — native file picker rooted at ~/.ssh/. Private keys
+  // have no standard extension, so we don't apply a filter; show all.
+  const keyBrowseBtn = document.createElement('button');
+  keyBrowseBtn.type = 'button';
+  keyBrowseBtn.className = 'ssh-key-browse';
+  keyBrowseBtn.title = t('sshKeyBrowse');
+  keyBrowseBtn.style.display = 'none';
+  keyBrowseBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4z"/></svg>`;
+  keyBrowseBtn.addEventListener('click', async () => {
+    try {
+      let defaultDir: string | undefined;
+      try {
+        const home = await homeDir();
+        defaultDir = await joinPath(home, '.ssh');
+      } catch {/* fall through — dialog opens at default location */}
+      const selected = await openFileDialog({
+        multiple: false,
+        directory: false,
+        defaultPath: defaultDir,
+        title: t('sshKeyBrowseTitle'),
+      });
+      if (typeof selected === 'string' && selected) {
+        keyInput.value = selected;
+      }
+    } catch (e) {
+      console.warn('[ssh] key browse failed:', e);
+    }
+  });
+
+  // Agent status badge — small chip showing whether ssh-agent is loaded.
+  const agentBadge = document.createElement('span');
+  agentBadge.className = 'ssh-agent-badge';
+  agentBadge.style.display = 'none';
 
   // Auth toggle button with SVG icons
   const authToggleBtn = document.createElement('button');
@@ -750,6 +844,8 @@ function createConnectionForm(
   credInputWrap.appendChild(pwdInput);
   credInputWrap.appendChild(pwdToggleBtn);
   credInputWrap.appendChild(keyInput);
+  credInputWrap.appendChild(keyBrowseBtn);
+  credInputWrap.appendChild(agentBadge);
   credInputWrap.appendChild(authToggleBtn);
   credInputWrap.appendChild(authSelect);
 
@@ -766,10 +862,17 @@ function createConnectionForm(
     pwdInput.style.display = isPassword ? '' : 'none';
     pwdToggleBtn.style.display = isPassword ? '' : 'none';
     keyInput.style.display = isPassword ? 'none' : '';
+    keyBrowseBtn.style.display = isPassword ? 'none' : '';
+    agentBadge.style.display = isPassword ? 'none' : (agentBadge.dataset.ready === '1' ? '' : 'none');
     credLabel.textContent = isPassword ? t('sshPassword') : t('sshPrivateKey');
     authToggleBtn.title = isPassword ? t('sshAuthKey') : t('sshAuthPassword');
     // Toggle icon: show lock for password mode, key for key mode
     authToggleBtn.classList.toggle('is-key', !isPassword);
+    // First time entering key mode → probe agent + default key for badge/placeholder.
+    if (!isPassword && agentBadge.dataset.probed !== '1') {
+      agentBadge.dataset.probed = '1';
+      void refreshKeyHints(keyInput, agentBadge);
+    }
   };
   toggleAuth();
 

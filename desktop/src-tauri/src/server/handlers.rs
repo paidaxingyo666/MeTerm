@@ -259,13 +259,26 @@ pub async fn create_ssh_session(
             // Start terminal I/O immediately (fast path — no SFTP blocking)
             super::session::Session::start_terminal(session.clone(), Box::new(terminal)).await;
 
-            // Initialize SFTP in background — does not block terminal usability
+            // Initialize SFTP in background — does not block terminal usability.
+            // Same dual-strategy as the Tauri create_ssh_session path: multiplex
+            // on the existing channel for JumpServer, dedicated session otherwise.
             let session_bg = session.clone();
+            let multiplex = sftp_config.multiplex_sftp;
+            let ssh_handle_for_sftp = ssh_handle.clone();
             tokio::spawn(async move {
-                if let Some(sftp_client) =
+                let result = if multiplex {
+                    super::terminal::ssh::SshTerminal::init_sftp(&ssh_handle_for_sftp).await
+                } else {
                     super::terminal::ssh::SshTerminal::connect_sftp(&sftp_config).await
-                {
-                    *session_bg.sftp.lock().unwrap() = Some(sftp_client);
+                };
+                match result {
+                    Ok(sftp_client) => {
+                        *session_bg.sftp.lock().unwrap() = Some(sftp_client);
+                    }
+                    Err(e) => {
+                        eprintln!("[ssh] SFTP setup failed: {}", e);
+                        *session_bg.sftp_init_error.lock().unwrap() = Some(e);
+                    }
                 }
             });
         }
@@ -334,7 +347,7 @@ pub async fn refresh_sftp_session(
 
     // Try to open a fresh SFTP connection with new creds.
     match super::terminal::ssh::SshTerminal::connect_sftp(&new_config).await {
-        Some(new_sftp) => {
+        Ok(new_sftp) => {
             // Atomic swap
             *session.sftp.lock().unwrap() = Some(new_sftp);
             (
@@ -342,9 +355,9 @@ pub async fn refresh_sftp_session(
                 Json(serde_json::json!({ "ok": true })),
             )
         }
-        None => (
+        Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "ok": false, "error": "failed to open new SFTP connection" })),
+            Json(serde_json::json!({ "ok": false, "error": e })),
         ),
     }
 }
@@ -356,7 +369,7 @@ pub async fn test_ssh_connection(Json(body): Json<serde_json::Value>) -> impl In
     };
 
     match super::terminal::ssh::test_connection(&config).await {
-        Ok(()) => Json(serde_json::json!({ "ok": true })),
+        Ok(_) => Json(serde_json::json!({ "ok": true })),
         Err(e) => {
             // Check for host key errors (JSON-encoded)
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&e) {
@@ -387,6 +400,9 @@ fn parse_ssh_config(body: &serde_json::Value) -> Result<super::terminal::ssh::Ss
         host,
         port: body.get("port").and_then(|v| v.as_u64()).unwrap_or(22) as u16,
         username,
+        auth_method: super::terminal::ssh::SshAuthMethod::from_str_lossy(
+            body.get("auth_method").and_then(|v| v.as_str()).unwrap_or(""),
+        ),
         password: body
             .get("password")
             .and_then(|v| v.as_str())
@@ -409,6 +425,10 @@ fn parse_ssh_config(body: &serde_json::Value) -> Result<super::terminal::ssh::Ss
             .to_string(),
         disable_hook: body
             .get("skip_shell_hook")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        multiplex_sftp: body
+            .get("multiplex_sftp")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         proxy_type: body

@@ -54,10 +54,10 @@ export function setupBreadcrumb(
   });
 
   if (instance.fileManager) {
-    instance.fileManager.onPathChanged = (path: string) => {
+    instance.fileManager.addPathListener((path: string) => {
       updateBreadcrumb(path);
       showBreadcrumb();
-    };
+    });
   }
   showBreadcrumb();
   updateBreadcrumb('/');

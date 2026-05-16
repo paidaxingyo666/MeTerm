@@ -43,6 +43,15 @@ interface SidebarInstance {
   rootLoading: boolean;
   /** Current root path for breadcrumb re-render on resize */
   currentRootPath: string;
+  /**
+   * Whether the tree root should auto-follow FileManager's currentPath.
+   * Starts true so JumpServer auto-cd (root → asset dir) is picked up
+   * even when the sidebar was opened mid-connection. Set to false once
+   * the user manually navigates the tree (breadcrumb edit, lock toggle).
+   */
+  followingFm: boolean;
+  /** Unsubscribe from FileManager's path-changed observers. */
+  fmPathUnsub: (() => void) | null;
 }
 
 // ── SidebarManagerClass ──
@@ -97,7 +106,8 @@ class SidebarManagerClass {
     const fileManager = drawerInst.fileManager;
 
     const tree = new FileTreeRenderer(treeContainer, {
-      onLoadChildren: (path) => fileManager.loadDirectoryRaw(path).then(r => r.files),
+      onLoadChildren: (path, forceRefresh) =>
+        fileManager.loadDirectoryRaw(path, { bypassCache: forceRefresh }).then(r => r.files),
       onSelect: (_node) => {
         // Sync full multi-selection from tree to FileManager
         fileManager.selectedFiles.clear();
@@ -171,7 +181,10 @@ class SidebarManagerClass {
             ? `${destDir}${fileName}` : `${destDir}/${fileName}`;
           await fileManager.moveFileByPath(srcPath, destPath);
         }
-        setTimeout(() => tree.refreshAll(), 500);
+        // No explicit refreshAll here — the rename response fires
+        // `meterm-file-op-done` which already triggers refreshAll on
+        // the sidebar. Calling refreshAll again here used to race the
+        // event-driven refresh and collapsed every expanded node.
         return true;
       },
     });
@@ -194,6 +207,8 @@ class SidebarManagerClass {
       rootLoaded: false,
       rootLoading: false,
       currentRootPath: '/',
+      followingFm: true,
+      fmPathUnsub: null,
     };
 
     this.sidebars.set(sessionId, instance);
@@ -332,6 +347,8 @@ class SidebarManagerClass {
     const instance = this.sidebars.get(sessionId);
     if (!instance) return;
     instance.cwdUnsubscribe?.();
+    instance.fmPathUnsub?.();
+    instance.fmPathUnsub = null;
     instance.tree.destroy();
     instance.resizeHandle.remove();
     instance.element.remove();
@@ -342,6 +359,16 @@ class SidebarManagerClass {
     const instance = this.sidebars.get(sessionId);
     if (!instance) return;
     await instance.tree.refreshAll();
+  }
+
+  /** Rename a tree node optimistically — see FileTreeRenderer.renameNodeInPlace.
+   *  The drawer-context-menu's rename dialog calls this *before* sending the
+   *  rename to the server so the user gets instant visual feedback. The
+   *  refreshAll that fires on the server response then reconciles. */
+  optimisticRename(sessionId: string, oldPath: string, newName: string): void {
+    const instance = this.sidebars.get(sessionId);
+    if (!instance || !instance.isOpen) return;
+    instance.tree.renameNodeInPlace(oldPath, newName);
   }
 
   // ── Private ──
@@ -483,12 +510,19 @@ class SidebarManagerClass {
           restore();
           return;
         }
+        // User explicitly chose a path — stop auto-following FileManager
+        // so subsequent drawer / terminal cd events don't yank the tree
+        // out from under them.
+        instance.followingFm = false;
         // Try navigating to the entered path
         const drawerInst = this.getDrawerInstance(instance.sessionId);
         if (!drawerInst?.fileManager) { restore(); return; }
 
-        drawerInst.fileManager.loadDirectoryRaw(newPath).then((result) => {
+        // User explicitly typed a path — bypass cache so they see what's
+        // actually there right now (cache could be up to 30s stale).
+        drawerInst.fileManager.loadDirectoryRaw(newPath, { bypassCache: true }).then((result) => {
           instance.tree.setRoot(result.path, result.files);
+          instance.currentRootPath = result.path;
           this.updateBreadcrumb(instance, result.path);
           this.updateStatusCount(instance, result.files.length);
         }).catch(() => {
@@ -524,18 +558,34 @@ class SidebarManagerClass {
         // Locked: don't follow CWD, stay on current root
         return;
       }
-      // Unlocked: follow terminal CWD, change tree root
-      this.changeTreeRoot(instance, cwd);
+      // Unlocked: follow terminal CWD, change tree root (fresh listing —
+      // user just `cd`'d so they probably modified state).
+      this.changeTreeRoot(instance, cwd, { bypassCache: true });
     });
     instance.cwdUnsubscribe = unsub;
   }
 
-  private async changeTreeRoot(instance: SidebarInstance, path: string): Promise<void> {
+  /**
+   * Re-root the tree at `path`. `bypassCache` controls whether the
+   * underlying SFTP listing is forced fresh:
+   *   - terminal CWD tracking / breadcrumb edit / drag-to-breadcrumb /
+   *     lock toggle → true (user did something, give fresh data)
+   *   - FileManager auto-follow (e.g. JumpServer auto-cd) → false
+   *     (drawer just populated the cache, hit it for a near-instant render)
+   */
+  private async changeTreeRoot(
+    instance: SidebarInstance,
+    path: string,
+    opts?: { bypassCache?: boolean },
+  ): Promise<void> {
     const drawerInst = this.getDrawerInstance(instance.sessionId);
     if (!drawerInst?.fileManager) return;
     try {
-      const result = await drawerInst.fileManager.loadDirectoryRaw(path);
+      const result = await drawerInst.fileManager.loadDirectoryRaw(path, {
+        bypassCache: opts?.bypassCache ?? false,
+      });
       instance.tree.setRoot(result.path, result.files);
+      instance.currentRootPath = result.path;
       this.updateBreadcrumb(instance, result.path);
       this.updateStatusCount(instance, result.files.length);
     } catch (err) {
@@ -765,9 +815,16 @@ class SidebarManagerClass {
       lockBtn.addEventListener('click', () => {
         instance.locked = !instance.locked;
         this.syncLockButton(instance);
-        if (!instance.locked && instance.lastCwd) {
-          // 解锁：恢复跟随终端 CWD
-          this.changeTreeRoot(instance, instance.lastCwd);
+        if (!instance.locked) {
+          // 解锁 = 重新跟随：恢复 FileManager 路径同步 + 立即同步一次
+          instance.followingFm = true;
+          const drawerInst = this.getDrawerInstance(instance.sessionId);
+          const fmPath = drawerInst?.fileManager?.getCurrentPath();
+          if (fmPath && fmPath !== instance.currentRootPath) {
+            this.changeTreeRoot(instance, fmPath);
+          } else if (instance.lastCwd && instance.lastCwd !== instance.currentRootPath) {
+            this.changeTreeRoot(instance, instance.lastCwd);
+          }
         }
       });
     }
@@ -925,9 +982,37 @@ class SidebarManagerClass {
       treeContainer.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:60px;gap:8px;color:var(--text-muted);font-size:12px;"><span class="tree-spinner-inline"></span>加载中...</div>';
     }
 
-    // If FileManager already loaded a directory, use that path directly
-    const currentPath = fm.getCurrentPath();
-    if (currentPath !== '/') {
+    // Long-term follower: re-mirror FileManager's currentPath whenever it
+    // changes, until the user explicitly navigates the sidebar tree
+    // (breadcrumb edit → followingFm=false) or locks it. This is what
+    // makes the JumpServer auto-cd (load `/`, then load `/asset-name`)
+    // reach the tree root.
+    if (!instance.fmPathUnsub) {
+      instance.fmPathUnsub = fm.addPathListener((path: string) => {
+        if (!instance.isOpen) return;
+        if (!instance.followingFm) return;
+        if (instance.locked) return;
+        if (instance.rootLoaded && path === instance.currentRootPath) return;
+        if (!instance.rootLoaded) {
+          fm.loadDirectoryRaw(path).then(result => {
+            this.doLoadTreeRoot(instance, fm, result.path, result.files);
+          }).catch(() => {
+            if (treeContainer) treeContainer.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:60px;color:var(--text-muted);font-size:12px;">加载失败，请右键刷新</div>';
+          });
+        } else {
+          this.changeTreeRoot(instance, path);
+        }
+      });
+    }
+
+    // Use the FM's last-loaded state if it ever loaded a directory.
+    // The earlier check `currentPath !== '/'` was wrong for JumpServer
+    // assets whose home IS the root (no auto-cd into a single subdir):
+    // we'd treat "FM idle at /" as "FM hasn't loaded yet" and wait
+    // forever for a path event that never came. `hasLoaded()` makes the
+    // distinction explicit.
+    if (fm.hasLoaded()) {
+      const currentPath = fm.getCurrentPath();
       try {
         const result = await fm.loadDirectoryRaw(currentPath);
         await this.doLoadTreeRoot(instance, fm, result.path, result.files);
@@ -936,26 +1021,8 @@ class SidebarManagerClass {
       }
       return;
     }
-
-    // FileManager not connected or SFTP not ready yet.
-    // Listen for the first successful directory load via onPathChanged.
-    // This is triggered by both bottom drawer's loadDirectory retry mechanism
-    // and by _afterConnect → loadDirectory flow.
-    const prevCallback = fm.onPathChanged;
-    fm.onPathChanged = (path: string) => {
-      fm.onPathChanged = prevCallback ?? null;
-      prevCallback?.(path);
-      if (!instance.rootLoaded && instance.isOpen) {
-        fm.loadDirectoryRaw(path).then(result => {
-          this.doLoadTreeRoot(instance, fm, result.path, result.files);
-        }).catch(() => {
-          if (treeContainer) treeContainer.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:60px;color:var(--text-muted);font-size:12px;">加载失败，请右键刷新</div>';
-        });
-      }
-    };
-
-    // _afterConnect in drawer.ts always calls fm.loadDirectory() now (even
-    // when bottom drawer is closed), so onPathChanged will fire once SFTP is ready.
+    // Otherwise the path-listener installed above will fire once
+    // _afterConnect → loadDirectory completes (and again on auto-cd).
   }
 
   private async doLoadTreeRoot(

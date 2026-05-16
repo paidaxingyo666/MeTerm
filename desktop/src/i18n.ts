@@ -152,6 +152,17 @@ export interface Translations {
   sshAuthFailedMsg: string;
   sshAuthFailedRetry: string;
   sshPasswordUpdated: string;
+  sshKeyBrowse: string;
+  sshKeyBrowseTitle: string;
+  sshKeyPlaceholderDefault: string;
+  sshKeyPlaceholderAuto: string;
+  sshKeyPlaceholderAgent: string;
+  sshAgentBadge: string;
+  sshAgentBadgeHint: string;
+  sshAuthUsedAgentTitle: string;
+  sshAuthUsedAgentBody: string;
+  sshAuthUsedDefaultTitle: string;
+  sshAuthUsedDefaultBody: string;
   drawerTabFiles: string;
   drawerTabProcesses: string;
   // File sidebar
@@ -264,6 +275,10 @@ export interface Translations {
   aiTemperature: string;
   aiMaxTokens: string;
   aiContextLines: string;
+  aiEnableThinking: string;
+  aiEnableThinkingHint: string;
+  aiThinkingOn: string;
+  aiThinkingOff: string;
   aiAgentTrustLevel: string;
   aiAgentTrustManual: string;
   aiAgentTrustSemiAuto: string;
@@ -620,6 +635,9 @@ export interface Translations {
   jsAssetProtocols: string;
   jsAssetActions: string;
   jsConnect: string;
+  jsConnectingAuth: string;
+  jsConnectingToken: string;
+  jsConnectingAsset: string;
   jsLoadingAccounts: string;
   jsNoAccounts: string;
   jsSelectAccount: string;
@@ -829,6 +847,17 @@ const translations: Record<Language, Translations> = {
     sshAuthFailedMsg: 'The saved password may have changed. Please enter the new password for {username}@{host}:',
     sshAuthFailedRetry: 'Reconnect',
     sshPasswordUpdated: 'Password updated and saved.',
+    sshKeyBrowse: 'Browse for private key file',
+    sshKeyBrowseTitle: 'Select private key',
+    sshKeyPlaceholderDefault: '~/.ssh/id_rsa  (leave empty to auto-detect)',
+    sshKeyPlaceholderAuto: 'Leave empty to auto-use {path}',
+    sshKeyPlaceholderAgent: 'Leave empty to use ssh-agent',
+    sshAgentBadge: 'agent: {count}',
+    sshAgentBadgeHint: 'ssh-agent is running and exposing this many identities. Leave the key path empty to use them.',
+    sshAuthUsedAgentTitle: 'Connected via ssh-agent',
+    sshAuthUsedAgentBody: 'Authentication succeeded using a key from your running ssh-agent.',
+    sshAuthUsedDefaultTitle: 'Connected via default key',
+    sshAuthUsedDefaultBody: 'Authentication succeeded using a key in ~/.ssh/.',
     drawerTabFiles: 'Files',
     drawerTabProcesses: 'Processes',
     sidebarRefresh: 'Refresh',
@@ -940,6 +969,10 @@ const translations: Record<Language, Translations> = {
     aiTemperature: 'Temperature',
     aiMaxTokens: 'Max Tokens',
     aiContextLines: 'Context Lines',
+    aiEnableThinking: 'Thinking Mode',
+    aiEnableThinkingHint: 'Ask thinking-mode models (DeepSeek V4, Qwen3, GLM, MiMo, etc.) to reason before answering. Ignored by plain OpenAI / Anthropic / Gemini.',
+    aiThinkingOn: 'Thinking on',
+    aiThinkingOff: 'Thinking off',
     aiPermissionMode: 'Permission Mode',
     aiPermissionModeAsk: 'Ask every time',
     aiPermissionModeAcceptSafe: 'Accept safe',
@@ -1263,6 +1296,9 @@ const translations: Record<Language, Translations> = {
     jsAssetProtocols: 'Protocols',
     jsAssetActions: 'Actions',
     jsConnect: 'Connect',
+    jsConnectingAuth: 'Authenticating with JumpServer...',
+    jsConnectingToken: 'Requesting connection token...',
+    jsConnectingAsset: 'Connecting to {name}...',
     jsLoadingAccounts: 'Loading accounts…',
     jsNoAccounts: 'No accounts available',
     jsSelectAccount: 'Select Account',
@@ -1501,6 +1537,17 @@ const translations: Record<Language, Translations> = {
     sshAuthFailedMsg: '保存的密码可能已变更，请输入 {username}@{host} 的新密码：',
     sshAuthFailedRetry: '重新连接',
     sshPasswordUpdated: '密码已更新并保存。',
+    sshKeyBrowse: '浏览私钥文件',
+    sshKeyBrowseTitle: '选择私钥',
+    sshKeyPlaceholderDefault: '~/.ssh/id_rsa  (留空可自动检测)',
+    sshKeyPlaceholderAuto: '留空将自动使用 {path}',
+    sshKeyPlaceholderAgent: '留空将通过 ssh-agent 认证',
+    sshAgentBadge: 'agent: {count}',
+    sshAgentBadgeHint: 'ssh-agent 已就绪，里面有这些已加载的身份。留空密钥路径即可使用。',
+    sshAuthUsedAgentTitle: '已通过 ssh-agent 连接',
+    sshAuthUsedAgentBody: '使用 ssh-agent 中的密钥完成了认证。',
+    sshAuthUsedDefaultTitle: '已通过默认密钥连接',
+    sshAuthUsedDefaultBody: '使用 ~/.ssh/ 下的默认密钥完成了认证。',
     drawerTabFiles: '文件',
     drawerTabProcesses: '进程',
     sidebarRefresh: '刷新',
@@ -1612,6 +1659,10 @@ const translations: Record<Language, Translations> = {
     aiTemperature: '温度',
     aiMaxTokens: '最大 Token',
     aiContextLines: '上下文行数',
+    aiEnableThinking: '思考模式',
+    aiEnableThinkingHint: '启用后会让支持思考模式的模型（DeepSeek V4、Qwen3、GLM、MiMo 等）先推理再回答。OpenAI / Anthropic / Gemini 等不支持此参数的厂商会忽略。',
+    aiThinkingOn: '思考已开启',
+    aiThinkingOff: '思考已关闭',
     aiPermissionMode: '权限模式',
     aiPermissionModeAsk: '每次询问',
     aiPermissionModeAcceptSafe: '接受安全操作',
@@ -1935,6 +1986,9 @@ const translations: Record<Language, Translations> = {
     jsAssetProtocols: '协议',
     jsAssetActions: '操作',
     jsConnect: '连接',
+    jsConnectingAuth: '正在向 JumpServer 认证...',
+    jsConnectingToken: '正在获取连接令牌...',
+    jsConnectingAsset: '正在连接到 {name}...',
     jsLoadingAccounts: '加载账户中…',
     jsNoAccounts: '没有可用账户',
     jsSelectAccount: '选择账户',

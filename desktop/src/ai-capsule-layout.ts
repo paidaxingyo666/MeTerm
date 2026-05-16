@@ -123,6 +123,7 @@ export interface SideInputCallbacks {
   buildModelDropdown: (dropdown: HTMLDivElement, label: HTMLSpanElement) => void;
   updateModelLabel: (label: HTMLSpanElement) => void;
   createTrustSwitcher: () => HTMLDivElement;
+  createThinkingToggle: () => HTMLDivElement;
   toggleSideChatHistory: (instance: AICapsuleInstance) => void;
   toggleLayout: (instance: AICapsuleInstance) => void;
   /**
@@ -191,6 +192,9 @@ export function createSideInputArea(
 
   // Trust switcher
   const trustSwitcher = callbacks.createTrustSwitcher();
+
+  // Thinking-mode toggle — per-request flag, safe to flip mid-conversation.
+  const thinkingToggle = callbacks.createThinkingToggle();
 
   // Chat history button
   const chatHistBtn = document.createElement('button');
@@ -337,6 +341,7 @@ export function createSideInputArea(
   // Bottom bar: tools on left, send on right
   toolbar.appendChild(modelSelect);
   toolbar.appendChild(trustSwitcher);
+  toolbar.appendChild(thinkingToggle);
   toolbar.appendChild(chatHistBtn);
   toolbar.appendChild(layoutBtn);
   toolbar.appendChild(attachBtn);

@@ -299,6 +299,17 @@ export interface AppSettings {
   aiMaxTokens: number;
   aiTemperature: number;
   aiContextLines: number;
+  /**
+   * Whether to ask the model to "think" / produce reasoning_content
+   * before its final answer. Applies to thinking-mode providers
+   * (DeepSeek V4, Qwen3, GLM, MiMo, etc.). Plain OpenAI / Anthropic /
+   * Gemini ignore this — the flags are top-level extras that
+   * non-thinking providers silently drop.
+   *
+   * Default: true (matches each provider's own default-on behavior
+   * and the prior working state of the app before we wired the flag).
+   */
+  aiEnableThinking: boolean;
   // AI Agent configuration
   aiAgentTrustLevel: number;       // 0 = manual, 1 = semi-auto, 2 = full-auto
   aiAgentMaxIterations: number;    // max agentic loop steps (default 15)
@@ -390,6 +401,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   aiMaxTokens: 4096,
   aiTemperature: 0.3,
   aiContextLines: 50,
+  aiEnableThinking: true,
   aiAgentTrustLevel: 0,
   aiAgentMaxIterations: 15,
   searxngUrl: '',

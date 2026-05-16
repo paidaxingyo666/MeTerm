@@ -209,6 +209,39 @@
 .ssh-pwd-toggle.is-visible .ssh-pwd-icon-show { display: none; }
 .ssh-pwd-toggle.is-visible .ssh-pwd-icon-hide { display: block; }
 
+/* Browse-for-private-key button (folder icon, key mode only) */
+.ssh-key-browse {
+  flex: none;
+  width: 28px;
+  height: 34px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: color 0.15s;
+}
+.ssh-key-browse:hover { color: var(--text-primary); }
+
+/* ssh-agent status chip — only visible in key mode when agent is loaded. */
+.ssh-agent-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.14);
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1.5;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  cursor: help;
+}
+
 /* ============================================================================
    Group selector row — inline with form, subtle visual separation
    ============================================================================ */

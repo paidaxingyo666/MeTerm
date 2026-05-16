@@ -18,7 +18,8 @@ import {
 import { activateTab, showHomeView, setViewMode, hideHomeView, hideGalleryView } from './view-manager';
 import { ensureMeTermReady } from './session-actions';
 import { renderTabs } from './tab-renderer';
-import { createSSHSession, addConnection, addRecentConnection, showAuthFailedDialog, updateSavedPassword, type SSHConnectionConfig } from './ssh';
+import { createSSHSession, consumeLastAuthMethodUsed, addConnection, addRecentConnection, showAuthFailedDialog, updateSavedPassword, type SSHConnectionConfig } from './ssh';
+import { showToast } from './notify';
 import { loadSettings } from './themes';
 import { message } from '@tauri-apps/plugin-dialog';
 import {
@@ -71,6 +72,15 @@ export async function handleSSHConnect(config: SSHConnectionConfig): Promise<voi
     // SSH connection happens in the background while tab is already visible
     const sessionId = await createSSHSession(config);
     sshConfigMap.set(sessionId, config);
+
+    // Surface auto-detected auth path (ssh-agent / default identity)
+    // so the user knows leaving the path empty actually worked.
+    const usedAuth = consumeLastAuthMethodUsed();
+    if (usedAuth === 'agent') {
+      showToast({ title: t('sshAuthUsedAgentTitle'), body: t('sshAuthUsedAgentBody'), duration: 4000 });
+    } else if (usedAuth === 'key_default') {
+      showToast({ title: t('sshAuthUsedDefaultTitle'), body: t('sshAuthUsedDefaultBody'), duration: 4000 });
+    }
 
     // Save connection for future use
     addConnection(config);

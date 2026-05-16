@@ -14,12 +14,56 @@ use tokio_util::sync::CancellationToken;
 
 use super::Terminal;
 
+/// Auth method explicitly selected by the user in the connection dialog.
+/// Mirrors the frontend dropdown ("password" / "key"). Stored on the
+/// `SshConfig` because we no longer infer the method from `private_key`
+/// being empty — empty + `Key` now means "use ssh-agent / default keys"
+/// (the OpenSSH ladder) rather than silently falling back to password.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SshAuthMethod {
+    Password,
+    Key,
+}
+
+impl Default for SshAuthMethod {
+    fn default() -> Self {
+        SshAuthMethod::Password
+    }
+}
+
+impl SshAuthMethod {
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "key" | "Key" => SshAuthMethod::Key,
+            _ => SshAuthMethod::Password,
+        }
+    }
+}
+
+/// Which authentication path actually succeeded. Returned from `connect`
+/// so the frontend can surface a one-line toast like "已通过 ssh-agent 连接"
+/// when the user left the path empty and we auto-detected something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SshAuthUsed {
+    Password,
+    /// User-supplied key path / PEM.
+    KeyExplicit,
+    /// ssh-agent identity matched.
+    Agent,
+    /// Fell back to one of the OpenSSH default identity files.
+    KeyDefault,
+}
+
 /// SSH connection configuration.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct SshConfig {
     pub host: String,
     pub port: u16,
     pub username: String,
+    #[serde(default)]
+    pub auth_method: SshAuthMethod,
     #[serde(default)]
     pub password: String,
     #[serde(default)]
@@ -30,6 +74,17 @@ pub struct SshConfig {
     pub trusted_fingerprint: String,
     #[serde(default)]
     pub disable_hook: bool,
+    /// When true, run SFTP on a sub-channel of the **existing** terminal
+    /// SSH session instead of opening a separate authenticated session.
+    /// Required for JumpServer Koko, whose connection tokens are
+    /// protocol-scoped (and often single-use): a second SSH connection
+    /// authenticated with the same `JMS-{token}` credential either
+    /// re-auth fails or the `sftp` subsystem is refused on a token that
+    /// was minted with `protocol=ssh`. Plain OpenSSH servers don't need
+    /// this — leaving it false keeps the bulk-transfer perf optimization
+    /// (dedicated connection with a 64MB window).
+    #[serde(default)]
+    pub multiplex_sftp: bool,
     /// Proxy type: "socks5", "http", or empty for direct connection.
     #[serde(default)]
     pub proxy_type: String,
@@ -128,6 +183,10 @@ pub struct SshTerminal {
     done_token: CancellationToken,
     /// SFTP client for file operations (if available).
     pub sftp: Option<Arc<russh_sftp::client::SftpSession>>,
+    /// Which auth path actually succeeded. Surfaces "auto" outcomes
+    /// (agent / default key) so the UI can confirm what happened when
+    /// the user left the key path empty.
+    pub auth_used: SshAuthUsed,
 }
 
 /// Execute a command on the SSH server via a new exec channel.
@@ -197,10 +256,224 @@ fn sftp_client_config() -> client::Config {
     }
 }
 
+/// Turn the frontend's `private_key` field into a PEM blob suitable for
+/// `russh_keys::decode_secret_key`.
+///
+/// The UI surfaces a single-line text input with placeholder
+/// `~/.ssh/id_rsa`, so the value is virtually always a path. We also
+/// accept a literal PEM (detected via the `-----BEGIN ` header) so a
+/// future textarea / file-loader path keeps working without another
+/// backend change.
+///
+/// Security model carried over from the old Go executor:
+///   - `~` and `~/foo` expand to the user's home directory.
+///   - The resolved path must be absolute and contain no `..` segments.
+///   - The resolved path must live under the user's home directory.
+///     This prevents an attacker who controls the frontend payload from
+///     coaxing the backend into reading `/etc/passwd`, AWS creds, etc.
+///
+/// Sync rather than async because the read is a single small file and
+/// both call sites (russh terminal auth + ssh2 SFTP auth in
+/// `commands/transfer.rs`) live on the same one-shot connect path.
+pub fn resolve_private_key_pem(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+
+    // Already a PEM blob — pass through.
+    if trimmed.starts_with("-----BEGIN ") {
+        return Ok(trimmed.to_string());
+    }
+
+    let raw_path = if trimmed.is_empty() {
+        "~/.ssh/id_rsa"
+    } else {
+        trimmed
+    };
+
+    let home = dirs::home_dir().ok_or_else(|| "cannot determine home directory".to_string())?;
+    let expanded: std::path::PathBuf = if raw_path == "~" {
+        home.clone()
+    } else if let Some(rest) = raw_path.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        std::path::PathBuf::from(raw_path)
+    };
+
+    for comp in expanded.components() {
+        if comp == std::path::Component::ParentDir {
+            return Err(format!(
+                "private key path must not contain '..': {}",
+                expanded.display()
+            ));
+        }
+    }
+
+    if !expanded.is_absolute() {
+        return Err(format!(
+            "private key path must be absolute: {}",
+            expanded.display()
+        ));
+    }
+
+    if !expanded.starts_with(&home) {
+        return Err(format!(
+            "private key path must be within home directory: {}",
+            expanded.display()
+        ));
+    }
+
+    std::fs::read_to_string(&expanded)
+        .map_err(|e| format!("read private key {}: {}", expanded.display(), e))
+}
+
+/// OpenSSH client default identity filenames, in the order the upstream
+/// client tries them. Same list is hard-coded in `ssh-keygen` and OpenSSH
+/// internals — keep them aligned so "leave key path empty" behaves like
+/// the user running plain `ssh user@host` from a terminal.
+pub const DEFAULT_KEY_FILES: &[&str] = &["id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"];
+
+/// Return the first existing default SSH identity under `~/.ssh/`, or
+/// `None` if no conventional key is present. Used by the frontend to
+/// populate a dynamic placeholder ("leave empty to use ~/.ssh/id_ed25519")
+/// and by the auth ladder as the file fallback after ssh-agent.
+pub fn default_ssh_key_path() -> Option<std::path::PathBuf> {
+    let ssh_dir = dirs::home_dir()?.join(".ssh");
+    for name in DEFAULT_KEY_FILES {
+        let p = ssh_dir.join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Snapshot of the local ssh-agent — used by the frontend to decide
+/// whether to surface an "agent: N keys" badge next to the auth method
+/// toggle. `available=false` means we couldn't open `$SSH_AUTH_SOCK`
+/// (or pageant on Windows); a frontend should fall back to the static
+/// "no agent" hint without erroring out.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SshAgentStatus {
+    pub available: bool,
+    pub key_count: usize,
+    /// Short reason when unavailable (e.g. "SSH_AUTH_SOCK not set"). Empty on success.
+    pub reason: String,
+}
+
+pub async fn probe_ssh_agent() -> SshAgentStatus {
+    match russh_keys::agent::client::AgentClient::connect_env().await {
+        Ok(mut agent) => match agent.request_identities().await {
+            Ok(ids) => SshAgentStatus {
+                available: true,
+                key_count: ids.len(),
+                reason: String::new(),
+            },
+            Err(e) => SshAgentStatus {
+                available: false,
+                key_count: 0,
+                reason: format!("agent reachable but request_identities failed: {}", e),
+            },
+        },
+        Err(e) => SshAgentStatus {
+            available: false,
+            key_count: 0,
+            reason: format!("{}", e),
+        },
+    }
+}
+
+/// Walk the OpenSSH-style identity ladder when the user opted for key
+/// auth but left the path empty:
+///   1. ssh-agent (if `$SSH_AUTH_SOCK` is set and lists identities)
+///   2. `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, `id_dsa` in that order
+///
+/// Returns the auth method that succeeded, or an `Err` aggregating what
+/// was tried so the user can debug their key setup. **Does not** fall
+/// back to password — the user explicitly chose key auth.
+async fn try_default_key_ladder(
+    session: &mut client::Handle<SshHandler>,
+    username: &str,
+) -> Result<SshAuthUsed, String> {
+    let mut diagnostics: Vec<String> = Vec::new();
+
+    // 1) ssh-agent
+    match russh_keys::agent::client::AgentClient::connect_env().await {
+        Ok(mut agent) => match agent.request_identities().await {
+            Ok(identities) if !identities.is_empty() => {
+                let id_count = identities.len();
+                let mut signer = agent;
+                for identity in identities {
+                    let (returned, result) = session
+                        .authenticate_future(username, identity, signer)
+                        .await;
+                    signer = returned;
+                    match result {
+                        Ok(true) => return Ok(SshAuthUsed::Agent),
+                        Ok(false) => {} // try next identity
+                        Err(e) => diagnostics.push(format!("agent signer: {}", e)),
+                    }
+                }
+                diagnostics.push(format!(
+                    "ssh-agent: server rejected all {} identities",
+                    id_count
+                ));
+            }
+            Ok(_) => diagnostics.push("ssh-agent: no identities loaded".to_string()),
+            Err(e) => diagnostics.push(format!("ssh-agent identities: {}", e)),
+        },
+        Err(e) => diagnostics.push(format!("ssh-agent: {}", e)),
+    }
+
+    // 2) Default identity files. Skip non-existent without complaining;
+    //    only report parse / auth errors so the diagnostic stays focused
+    //    on real problems.
+    if let Some(ssh_dir) = dirs::home_dir().map(|h| h.join(".ssh")) {
+        for name in DEFAULT_KEY_FILES {
+            let path = ssh_dir.join(name);
+            if !path.is_file() {
+                continue;
+            }
+            let pem = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    diagnostics.push(format!("{}: read failed: {}", name, e));
+                    continue;
+                }
+            };
+            // Encrypted default keys without a passphrase can't be unlocked
+            // here — surface a hint and move on so other defaults still
+            // get a chance.
+            let key_pair = match russh_keys::decode_secret_key(&pem, None) {
+                Ok(k) => k,
+                Err(e) => {
+                    diagnostics.push(format!("{}: decode failed: {}", name, e));
+                    continue;
+                }
+            };
+            match session
+                .authenticate_publickey(username, Arc::new(key_pair))
+                .await
+            {
+                Ok(true) => return Ok(SshAuthUsed::KeyDefault),
+                Ok(false) => diagnostics.push(format!("{}: server rejected", name)),
+                Err(e) => diagnostics.push(format!("{}: auth error: {}", name, e)),
+            }
+        }
+    }
+
+    Err(format!(
+        "no usable SSH identity found (tried: {})",
+        if diagnostics.is_empty() {
+            "ssh-agent + ~/.ssh defaults".to_string()
+        } else {
+            diagnostics.join("; ")
+        }
+    ))
+}
+
 async fn connect_authenticated_session(
     config: &SshConfig,
     client_config: client::Config,
-) -> Result<client::Handle<SshHandler>, String> {
+) -> Result<(client::Handle<SshHandler>, SshAuthUsed), String> {
     let server_fingerprint = Arc::new(Mutex::new(None));
     let server_key_type = Arc::new(Mutex::new(None));
     let handler = SshHandler {
@@ -235,35 +508,53 @@ async fn connect_authenticated_session(
         }
     };
 
-    let auth_ok = if !config.private_key.is_empty() {
-        let passphrase = if config.passphrase.is_empty() {
-            None
-        } else {
-            Some(config.passphrase.as_str())
-        };
-        let key_pair = russh_keys::decode_secret_key(&config.private_key, passphrase)
-            .map_err(|e| format!("invalid key: {}", e))?;
-        session
-            .authenticate_publickey(&config.username, Arc::new(key_pair))
-            .await
-            .map_err(|e| format!("key auth: {}", e))?
-    } else {
-        session
-            .authenticate_password(&config.username, &config.password)
-            .await
-            .map_err(|e| format!("password auth: {}", e))?
+    let (auth_ok, auth_used) = match config.auth_method {
+        SshAuthMethod::Password => {
+            let ok = session
+                .authenticate_password(&config.username, &config.password)
+                .await
+                .map_err(|e| format!("password auth: {}", e))?;
+            (ok, SshAuthUsed::Password)
+        }
+        SshAuthMethod::Key if config.private_key.trim().is_empty() => {
+            // Empty path + key mode = OpenSSH-style "auto": ssh-agent then
+            // default identity files. We do NOT fall back to password —
+            // the user explicitly picked key auth.
+            let used = try_default_key_ladder(&mut session, &config.username).await?;
+            (true, used)
+        }
+        SshAuthMethod::Key => {
+            let passphrase = if config.passphrase.is_empty() {
+                None
+            } else {
+                Some(config.passphrase.as_str())
+            };
+            // Frontend sends a path (placeholder hints `~/.ssh/id_rsa`); the
+            // single-line <input> can't hold a real PEM. resolve_private_key_pem
+            // accepts either a path (preferred) or an inline PEM string for
+            // forward-compat, and mirrors the old Go backend's home-dir sandbox.
+            let pem = resolve_private_key_pem(&config.private_key)?;
+            let key_pair = russh_keys::decode_secret_key(&pem, passphrase)
+                .map_err(|e| format!("invalid key: {}", e))?;
+            let ok = session
+                .authenticate_publickey(&config.username, Arc::new(key_pair))
+                .await
+                .map_err(|e| format!("key auth: {}", e))?;
+            (ok, SshAuthUsed::KeyExplicit)
+        }
     };
 
     if !auth_ok {
         return Err("authentication failed".to_string());
     }
 
-    Ok(session)
+    Ok((session, auth_used))
 }
 
 impl SshTerminal {
     pub async fn connect(config: &SshConfig, cols: u16, rows: u16) -> Result<Self, String> {
-        let session = connect_authenticated_session(config, terminal_client_config()).await?;
+        let (session, auth_used) =
+            connect_authenticated_session(config, terminal_client_config()).await?;
 
         // Open channel
         let mut channel = session
@@ -391,77 +682,64 @@ impl SshTerminal {
             session_handle: Arc::new(Mutex::new(Some(session))),
             done_token,
             sftp: None,
+            auth_used,
         })
     }
 
-    /// Initialize SFTP on a separate channel. Call after `connect()`.
-    /// Safe to call in background — does not block terminal I/O.
-    #[allow(dead_code)]
+    /// Initialize SFTP on a sub-channel of the **existing** authenticated
+    /// SSH session. Returns either the SFTP client or a human-readable
+    /// failure reason that the dispatch layer can surface to the UI.
     pub async fn init_sftp(
         session_handle: &Arc<Mutex<Option<client::Handle<SshHandler>>>>,
-    ) -> Option<Arc<russh_sftp::client::SftpSession>> {
+    ) -> Result<Arc<russh_sftp::client::SftpSession>, String> {
         let mut guard = session_handle.lock().await;
-        let session = guard.as_mut()?;
+        let session = guard.as_mut().ok_or_else(|| {
+            "SFTP init: terminal session is no longer available".to_string()
+        })?;
 
-        let sftp_channel = match session.channel_open_session().await {
-            Ok(ch) => ch,
-            Err(e) => {
-                eprintln!("[ssh] SFTP channel open failed: {}", e);
-                return None;
-            }
-        };
+        let sftp_channel = session
+            .channel_open_session()
+            .await
+            .map_err(|e| format!("SFTP channel open: {}", e))?;
 
-        if let Err(e) = sftp_channel.request_subsystem(true, "sftp").await {
-            eprintln!("[ssh] SFTP subsystem request failed: {}", e);
-            return None;
-        }
+        sftp_channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| format!("SFTP subsystem request: {}", e))?;
 
-        match russh_sftp::client::SftpSession::new(sftp_channel.into_stream()).await {
-            Ok(s) => {
-                eprintln!("[ssh] SFTP subsystem initialized");
-                Some(Arc::new(s))
-            }
-            Err(e) => {
-                eprintln!("[ssh] SFTP session failed: {}", e);
-                None
-            }
-        }
+        let sftp = russh_sftp::client::SftpSession::new(sftp_channel.into_stream())
+            .await
+            .map_err(|e| format!("SFTP session init: {}", e))?;
+        eprintln!("[ssh] SFTP subsystem initialized (multiplexed on terminal session)");
+        Ok(Arc::new(sftp))
     }
 
-    /// Initialize SFTP on a dedicated SSH connection so bulk file transfers do
-    /// not compete with the interactive terminal channel.
-    pub async fn connect_sftp(config: &SshConfig) -> Option<Arc<russh_sftp::client::SftpSession>> {
-        let session = match connect_authenticated_session(config, sftp_client_config()).await {
-            Ok(session) => session,
-            Err(e) => {
-                eprintln!("[ssh] dedicated SFTP connect failed: {}", e);
-                return None;
-            }
-        };
+    /// Initialize SFTP on a **dedicated** SSH connection so bulk file
+    /// transfers do not compete with the interactive terminal channel.
+    /// Returns either the SFTP client or a human-readable failure reason.
+    pub async fn connect_sftp(
+        config: &SshConfig,
+    ) -> Result<Arc<russh_sftp::client::SftpSession>, String> {
+        let (session, _auth_used) =
+            connect_authenticated_session(config, sftp_client_config())
+                .await
+                .map_err(|e| format!("dedicated SFTP connect: {}", e))?;
 
-        let sftp_channel = match session.channel_open_session().await {
-            Ok(ch) => ch,
-            Err(e) => {
-                eprintln!("[ssh] dedicated SFTP channel open failed: {}", e);
-                return None;
-            }
-        };
+        let sftp_channel = session
+            .channel_open_session()
+            .await
+            .map_err(|e| format!("dedicated SFTP channel open: {}", e))?;
 
-        if let Err(e) = sftp_channel.request_subsystem(true, "sftp").await {
-            eprintln!("[ssh] dedicated SFTP subsystem request failed: {}", e);
-            return None;
-        }
+        sftp_channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| format!("dedicated SFTP subsystem request: {}", e))?;
 
-        match russh_sftp::client::SftpSession::new(sftp_channel.into_stream()).await {
-            Ok(s) => {
-                eprintln!("[ssh] dedicated SFTP subsystem initialized");
-                Some(Arc::new(s))
-            }
-            Err(e) => {
-                eprintln!("[ssh] dedicated SFTP session failed: {}", e);
-                None
-            }
-        }
+        let sftp = russh_sftp::client::SftpSession::new(sftp_channel.into_stream())
+            .await
+            .map_err(|e| format!("dedicated SFTP session init: {}", e))?;
+        eprintln!("[ssh] dedicated SFTP subsystem initialized");
+        Ok(Arc::new(sftp))
     }
 }
 
@@ -531,10 +809,11 @@ impl Terminal for SshTerminal {
 }
 
 /// Test SSH connection.
-pub async fn test_connection(config: &SshConfig) -> Result<(), String> {
+pub async fn test_connection(config: &SshConfig) -> Result<SshAuthUsed, String> {
     let term = SshTerminal::connect(config, 80, 24).await?;
+    let auth_used = term.auth_used;
     term.close().await.map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(auth_used)
 }
 
 // ---------------------------------------------------------------------------

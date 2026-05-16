@@ -15,10 +15,11 @@ import { AICapsuleManager } from './ai-capsule';
 import { SplitPaneManager } from './split-pane';
 import { StatusBar } from './status-bar';
 import {
-  showSSHConnectingPlaceholder, removeSSHConnectingPlaceholder,
+  showConnectingPlaceholder, updateConnectingPlaceholder, removeSSHConnectingPlaceholder,
   showReconnectOverlay, reclaimSessionIds, hideReclaimButton,
 } from './overlays';
-import { activateTab, setViewMode, hideHomeView, hideGalleryView } from './view-manager';
+import { activateTab, setViewMode, hideHomeView, hideGalleryView, showHomeView } from './view-manager';
+import { t } from './i18n';
 import { ensureMeTermReady } from './session-actions';
 import { renderTabs } from './tab-renderer';
 import { renderToolbarActions } from './toolbar';
@@ -174,49 +175,38 @@ export async function connectToAsset(
 ): Promise<void> {
   const terminalPanelEl = document.getElementById('terminal-panel') as HTMLDivElement;
 
-  // Step 0: Ensure authenticated (handles login + MFA if needed after restart)
-  const authed = await ensureJSAuthenticated(config);
-  if (!authed) return;
+  let jsTabId = '';
+  let jsPaneId = '';
 
-  // Step 1: Create connection token via JumpServer API
-  const tokenResult = await createConnectionToken(
-    config.baseUrl, asset.id, account.name, account.username, account.alias || '', account.id, 'ssh',
-  );
-  if (!tokenResult.ok || !tokenResult.token) {
-    throw new Error(tokenResult.error || 'Failed to create connection token');
-  }
-
-  // Step 2: Set proxy mode based on JumpServer config
-  const proxyMode = config.bypassProxy !== false ? 'direct' : 'system';
-  void invoke('set_proxy_mode', { mode: proxyMode });
-
-  // Step 3: Create SSH config using connection token
-  // Koko accepts JMS-{token} as username:
-  //   v2/v3: JMS-{short_token}
-  //   v4:    JMS-{token_id} (UUID)
-  // Use the token ID (UUID) when available — Koko v4 looks up tokens by ID.
-  // For v2 where id IS the token value, this is equivalent.
-  const jmsToken = tokenResult.id || tokenResult.token;
-  const sshConfig: SSHConnectionConfig = {
-    name: `${config.name} → ${asset.name}`,
-    host: config.sshHost,
-    port: config.sshPort || 2222,
-    username: `JMS-${jmsToken}`,
-    authMethod: 'password',
-    password: tokenResult.secret || tokenResult.token || '',
-    skipShellHook: true,
-    proxyType: config.proxyType,
-    proxyHost: config.proxyHost,
-    proxyPort: config.proxyPort,
-    proxyUsername: config.proxyUsername,
-    proxyPassword: config.proxyPassword,
+  // Clean up the placeholder tab on early exit (MFA cancel) or failure.
+  // Centralized here because we now create the tab BEFORE any slow API
+  // call, so several code paths may need to back it out.
+  const cleanupTab = async (): Promise<void> => {
+    removeSSHConnectingPlaceholder();
+    if (!jsTabId) return;
+    const failedTab = TabManager.tabs.find((tab) => tab.id === jsTabId);
+    if (!failedTab) return;
+    const idx = TabManager.tabs.indexOf(failedTab);
+    if (idx >= 0) TabManager.tabs.splice(idx, 1);
+    if (TabManager.tabs.length > 0) {
+      TabManager.activeTabId = TabManager.tabs[TabManager.tabs.length - 1].id;
+      await activateTab(TabManager.activeTabId);
+    } else {
+      TabManager.activeTabId = null;
+      showHomeView();
+    }
+    TabManager.notify();
+    renderTabs();
   };
 
-  let jsTabId = '';
   try {
-    // Create tab with placeholder
+    // Step 1: Create the tab + placeholder IMMEDIATELY, before any slow
+    // JumpServer API call. Previously the auth + token-create round-trips
+    // happened first, so the user saw nothing for a few seconds after
+    // clicking "connect". The placeholder now appears instantly and
+    // narrates the stages as we go.
     const { generatePaneId: genPaneId } = await import('./split-pane');
-    const jsPaneId = genPaneId();
+    jsPaneId = genPaneId();
     jsTabId = `tab-js-${Date.now().toString(36)}`;
     const placeholderSessionId = `pending-${jsTabId}`;
     const tab: Tab = {
@@ -231,10 +221,9 @@ export async function connectToAsset(
     TabManager.tabs.push(tab);
     TabManager.activeTabId = jsTabId;
     TabManager.notify();
-    StatusBar.setConnection('connecting', `${account.username}@${asset.address}`);
+    StatusBar.setConnection('connecting', `${asset.name || asset.address}`);
     renderTabs();
 
-    // Show placeholder
     setViewMode('terminal');
     hideHomeView();
     hideGalleryView();
@@ -242,7 +231,63 @@ export async function connectToAsset(
     TerminalRegistry.hideAll(terminalPanelEl);
     DrawerManager.hideAll();
     AICapsuleManager.hideAll();
-    showSSHConnectingPlaceholder(sshConfig);
+    showConnectingPlaceholder(
+      t('jsConnectingAsset').replace('{name}', asset.name || asset.address),
+    );
+
+    // Step 2: Ensure JumpServer auth (cached → instant; expired → network
+    // round-trip; password expired → MFA dialog). User can cancel MFA,
+    // which returns false — that's a "no-op cancel", not an error.
+    updateConnectingPlaceholder(t('jsConnectingAuth'));
+    const authed = await ensureJSAuthenticated(config);
+    if (!authed) {
+      await cleanupTab();
+      return;
+    }
+
+    // Step 3: Request the per-connection token from JumpServer API.
+    updateConnectingPlaceholder(t('jsConnectingToken'));
+    const tokenResult = await createConnectionToken(
+      config.baseUrl, asset.id, account.name, account.username, account.alias || '', account.id, 'ssh',
+    );
+    if (!tokenResult.ok || !tokenResult.token) {
+      throw new Error(tokenResult.error || 'Failed to create connection token');
+    }
+
+    // Step 4: Set proxy mode based on JumpServer config
+    const proxyMode = config.bypassProxy !== false ? 'direct' : 'system';
+    void invoke('set_proxy_mode', { mode: proxyMode });
+
+    // Step 5: Build SSH config and connect to Koko.
+    // Koko accepts JMS-{token} as username:
+    //   v2/v3: JMS-{short_token}
+    //   v4:    JMS-{token_id} (UUID)
+    // Use the token ID (UUID) when available — Koko v4 looks up tokens by ID.
+    // For v2 where id IS the token value, this is equivalent.
+    const jmsToken = tokenResult.id || tokenResult.token;
+    const sshConfig: SSHConnectionConfig = {
+      name: `${config.name} → ${asset.name}`,
+      host: config.sshHost,
+      port: config.sshPort || 2222,
+      username: `JMS-${jmsToken}`,
+      authMethod: 'password',
+      password: tokenResult.secret || tokenResult.token || '',
+      skipShellHook: true,
+      // Koko 的连接 token 按 protocol 隔离且常为单次用：第二条 SSH 连接
+      // 用同一份 token 不被接受，所以这里强制把 SFTP 复用在终端那条已
+      // 认证的 session 上（init_sftp 而非 connect_sftp）。
+      multiplexSftp: true,
+      proxyType: config.proxyType,
+      proxyHost: config.proxyHost,
+      proxyPort: config.proxyPort,
+      proxyUsername: config.proxyUsername,
+      proxyPassword: config.proxyPassword,
+    };
+
+    updateConnectingPlaceholder(
+      `${t('connecting')} ${account.username}@${asset.address}:${sshConfig.port}...`,
+    );
+    StatusBar.setConnection('connecting', `${account.username}@${asset.address}`);
 
     // Create SSH session to JumpServer Koko
     const sessionId = await createSSHSession(sshConfig);
@@ -299,24 +344,7 @@ export async function connectToAsset(
     recordJSAssetConnection(config.name, asset.id, asset.name, asset.address, account.username, account.id);
 
   } catch (err) {
-    removeSSHConnectingPlaceholder();
-    if (jsTabId) {
-      const failedTab = TabManager.tabs.find((t) => t.id === jsTabId);
-      if (failedTab) {
-        const idx = TabManager.tabs.indexOf(failedTab);
-        if (idx >= 0) TabManager.tabs.splice(idx, 1);
-        if (TabManager.tabs.length > 0) {
-          TabManager.activeTabId = TabManager.tabs[TabManager.tabs.length - 1].id;
-          await activateTab(TabManager.activeTabId);
-        } else {
-          TabManager.activeTabId = null;
-          const { showHomeView } = await import('./view-manager');
-          showHomeView();
-        }
-        TabManager.notify();
-      }
-    }
-    renderTabs();
+    await cleanupTab();
     StatusBar.setError(`JumpServer: ${extractErrorMsg(String(err))}`);
     throw err; // Re-throw so asset browser can show error and keep dialog open
   }

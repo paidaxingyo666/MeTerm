@@ -51,6 +51,7 @@ export interface ChatOpsHost {
   buildAgentCallbacks(instance: AICapsuleInstance): import('./ai-agent').AgentCallbacks;
   showNoConfigHint(instance: AICapsuleInstance): void;
   createTrustSwitcher(): HTMLDivElement;
+  createThinkingToggle(): HTMLDivElement;
   toggleChatHistory(instance: AICapsuleInstance, fromSidePanel?: boolean): void;
   /** Inject a user message into an active agent run (without starting
    *  a new run). Used when the user sends text while agent is streaming. */
@@ -372,6 +373,7 @@ export function getSideInputCallbacks(host: ChatOpsHost): SideInputCallbacks {
     buildModelDropdown: (dropdown, label) => buildModelDropdown(dropdown, label),
     updateModelLabel: (label) => updateModelLabel(label),
     createTrustSwitcher: () => host.createTrustSwitcher(),
+    createThinkingToggle: () => host.createThinkingToggle(),
     toggleSideChatHistory: (instance) => host.toggleChatHistory(instance, true),
     toggleLayout: (instance) => {
       const layoutBtn = instance.chatPanel?.querySelector('.ai-chat-layout-toggle') as HTMLButtonElement;

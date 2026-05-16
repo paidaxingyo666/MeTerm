@@ -47,6 +47,14 @@ export interface ChatMessage {
   tool_call_id?: string;
   /** Tool name on tool-result messages (used by Gemini's functionResponse). */
   name?: string;
+  /**
+   * Reasoning/thinking text emitted by the model on an assistant turn
+   * (Qwen3, DeepSeek-R1, GLM, etc.). Some thinking-mode providers REQUIRE
+   * this field to be echoed back on subsequent requests — otherwise the
+   * API rejects with 400 "reasoning_content must be passed back". We keep
+   * it on the message object so the provider's serializer can attach it.
+   */
+  reasoning_content?: string;
 }
 
 /** Convenience: turn a ChatMessage's content into a plain-text view. */
@@ -63,8 +71,14 @@ export interface StreamCallbacks {
   onReasoning?: (token: string) => void;
   /** Fired each time a complete tool call is parsed from the stream. */
   onToolCall?: (toolCall: ToolCall) => void;
-  /** Called when streaming finishes. toolCalls is defined when the LLM requested tool invocations. */
-  onComplete: (fullText: string, toolCalls?: ToolCall[]) => void;
+  /**
+   * Called when streaming finishes.
+   * - toolCalls is defined when the LLM requested tool invocations.
+   * - reasoning is the accumulated thinking-mode text (Qwen3 / DeepSeek /
+   *   GLM); the agent must echo it back on the assistant message in
+   *   subsequent requests for those providers.
+   */
+  onComplete: (fullText: string, toolCalls?: ToolCall[], reasoning?: string) => void;
   onError: (error: Error) => void;
 }
 
@@ -77,6 +91,13 @@ export interface AIProviderConfig {
   model: string;
   maxTokens: number;
   temperature: number;
+  /**
+   * Whether to enable thinking / reasoning_content output on
+   * thinking-mode providers (DeepSeek V4, Qwen3, GLM, MiMo). Plain
+   * OpenAI / Anthropic / Gemini ignore the flag. Defaults to true on
+   * the call site (settings.aiEnableThinking).
+   */
+  enableThinking?: boolean;
 }
 
 export interface AIProvider {
@@ -361,14 +382,37 @@ class OpenAIProvider implements AIProvider {
         const c = typeof m.content === 'string'
           ? (m.content || null)
           : (contentToText(m.content) || null);
-        return { role: 'assistant' as const, content: c, tool_calls: m.tool_calls };
+        const out: Record<string, unknown> = {
+          role: 'assistant' as const,
+          content: c,
+          tool_calls: m.tool_calls,
+        };
+        // Echo back reasoning_content for thinking-mode providers.
+        // DeepSeek V4 (and similar Qwen3/GLM/MiMo) MUST receive this
+        // field on every assistant turn that carries tool_calls — even
+        // as an empty string. Otherwise the API rejects with HTTP 400:
+        // "The reasoning_content in the thinking mode must be passed
+        // back to the API." Plain OpenAI silently ignores the extra.
+        out.reasoning_content = m.reasoning_content ?? '';
+        return out;
       }
       // Regular user / assistant / system messages: pass arrays through
       // as OpenAI content-parts so images reach the model.
       if (typeof m.content !== 'string') {
-        return { role: m.role, content: toOpenAIParts(m.content) };
+        const out: Record<string, unknown> = {
+          role: m.role,
+          content: toOpenAIParts(m.content),
+        };
+        if (m.role === 'assistant' && m.reasoning_content) {
+          out.reasoning_content = m.reasoning_content;
+        }
+        return out;
       }
-      return { role: m.role, content: m.content };
+      const out: Record<string, unknown> = { role: m.role, content: m.content };
+      if (m.role === 'assistant' && m.reasoning_content) {
+        out.reasoning_content = m.reasoning_content;
+      }
+      return out;
     });
 
     const body: Record<string, unknown> = {
@@ -378,6 +422,20 @@ class OpenAIProvider implements AIProvider {
       temperature: this.config.temperature,
       stream: true,
     };
+
+    // Thinking-mode toggle. Different providers use different field
+    // names; we send all of them and let each provider read the one
+    // it knows. Unknown extras are ignored by OpenAI, Anthropic,
+    // Gemini and Z.AI (verified per their docs).
+    //   - DeepSeek V4 / Z.AI GLM: `thinking: { type: enabled|disabled }`
+    //   - Qwen3 / DashScope:      `enable_thinking: true|false`
+    //   - vLLM-served Qwen3:      `chat_template_kwargs.enable_thinking`
+    if (typeof this.config.enableThinking === 'boolean') {
+      const on = this.config.enableThinking;
+      body.thinking = { type: on ? 'enabled' : 'disabled' };
+      body.enable_thinking = on;
+      body.chat_template_kwargs = { enable_thinking: on };
+    }
 
     if (tools && tools.length > 0) {
       body.tools = tools.map((t) => ({
@@ -438,6 +496,7 @@ class OpenAIProvider implements AIProvider {
     signal?: AbortSignal,
   ): Promise<void> {
     let fullText = '';
+    let fullReasoning = '';
     // Accumulate streamed tool_calls keyed by their array index
     const tcMap = new Map<number, { id: string; name: string; arguments: string }>();
 
@@ -448,9 +507,12 @@ class OpenAIProvider implements AIProvider {
           const choice = parsed.choices?.[0];
           if (!choice) return;
 
-          // ── Reasoning / thinking content (GLM, DeepSeek, etc.) ──
+          // ── Reasoning / thinking content (GLM, DeepSeek, Qwen3, etc.) ──
+          // Accumulate so the agent can echo it back on the assistant
+          // message — some providers (Qwen3) require this on every turn.
           const reasoningDelta = choice.delta?.reasoning_content;
           if (reasoningDelta) {
+            fullReasoning += reasoningDelta;
             if (callbacks.onReasoning) {
               callbacks.onReasoning(reasoningDelta);
             } else {
@@ -495,7 +557,11 @@ class OpenAIProvider implements AIProvider {
         callbacks.onToolCall?.(toolCall);
       }
 
-      callbacks.onComplete(fullText, toolCalls.length > 0 ? toolCalls : undefined);
+      callbacks.onComplete(
+        fullText,
+        toolCalls.length > 0 ? toolCalls : undefined,
+        fullReasoning || undefined,
+      );
     } catch (e) {
       if ((e as Error).name === 'AbortError') return;
       callbacks.onError(e as Error);

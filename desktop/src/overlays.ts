@@ -43,14 +43,40 @@ export function setOverlayCallbacks(opts: {
 // ── SSH Connecting Placeholder ──
 
 export function showSSHConnectingPlaceholder(config: SSHConnectionConfig): void {
-  removeSSHConnectingPlaceholder();
+  showConnectingPlaceholder(
+    `${t('connecting')} ${config.username}@${config.host}:${config.port}...`,
+  );
+}
+
+/**
+ * Show a connecting placeholder with an arbitrary label. Used by the
+ * JumpServer flow to surface multi-stage progress (auth → token → SSH)
+ * *before* we have a real SSH config to format. Safe to call repeatedly
+ * — the existing placeholder is reused and its label updated in place,
+ * which avoids re-mounting the spinner element and the resulting flash.
+ */
+export function showConnectingPlaceholder(label: string): void {
+  const existing = document.getElementById('ssh-connecting-placeholder');
+  if (existing) {
+    updateConnectingPlaceholder(label);
+    return;
+  }
   const placeholder = document.createElement('div');
   placeholder.id = 'ssh-connecting-placeholder';
   placeholder.className = 'ssh-connecting-placeholder';
   placeholder.innerHTML =
     `<div class="ssh-connecting-spinner"></div>` +
-    `<div class="ssh-connecting-label">${escapeHtml(t('connecting'))} ${escapeHtml(config.username)}@${escapeHtml(config.host)}:${config.port}...</div>`;
+    `<div class="ssh-connecting-label">${escapeHtml(label)}</div>`;
   _terminalPanelEl.appendChild(placeholder);
+}
+
+/** Update the placeholder label without disturbing the spinner. No-op
+ *  when the placeholder has been dismissed. */
+export function updateConnectingPlaceholder(label: string): void {
+  const labelEl = document.querySelector(
+    '#ssh-connecting-placeholder .ssh-connecting-label',
+  ) as HTMLElement | null;
+  if (labelEl) labelEl.textContent = label;
 }
 
 export function removeSSHConnectingPlaceholder(): void {

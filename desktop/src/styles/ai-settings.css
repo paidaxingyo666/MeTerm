@@ -892,6 +892,28 @@
   padding: 2px 4px;
 }
 
+/* ─── Thinking-mode quick toggle ───────────────────────────────── */
+.ai-bar-thinking-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.ai-bar-btn-thinking {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  opacity: 0.55;
+  transition: opacity 0.12s, color 0.12s;
+}
+.ai-bar-btn-thinking:hover {
+  opacity: 0.9;
+}
+.ai-bar-btn-thinking.active {
+  opacity: 1;
+  color: var(--accent);
+}
+
 .ai-trust-dropdown {
   position: absolute;
   bottom: calc(100% + 8px);

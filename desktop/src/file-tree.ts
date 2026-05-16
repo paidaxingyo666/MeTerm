@@ -35,7 +35,13 @@ export interface FileTreeNode {
 }
 
 export interface FileTreeCallbacks {
-  onLoadChildren: (path: string) => Promise<FileInfo[]>;
+  /**
+   * Fetch children of a directory.
+   * `forceRefresh` is set on explicit refresh paths (right-click refresh,
+   * post-mutation rerender, manual breadcrumb navigation) so the
+   * implementation can bypass any directory cache it maintains.
+   */
+  onLoadChildren: (path: string, forceRefresh?: boolean) => Promise<FileInfo[]>;
   onSelect: (node: FileTreeNode) => void;
   onOpen: (node: FileTreeNode) => void;
   onContextMenu: (node: FileTreeNode, event: MouseEvent) => void;
@@ -113,12 +119,74 @@ export class FileTreeRenderer {
     this.render();
   }
 
+  /**
+   * Rename a node in place without re-fetching from the server.
+   * Used by the rename dialog so the user gets an instant visual update
+   * — otherwise the tree stays at the old name for ~500ms-1s while the
+   * post-rename refresh round-trip completes, which feels like nothing
+   * happened. The follow-up `refreshAll()` reconciles whatever we did
+   * here with the server's truth.
+   *
+   * Returns false if `oldPath` isn't in this tree (e.g. user renamed a
+   * file via drawer in a directory the tree doesn't cover).
+   */
+  renameNodeInPlace(oldPath: string, newName: string): boolean {
+    const node = this.nodeMap.get(oldPath);
+    if (!node) return false;
+    const parentDir = oldPath.substring(0, oldPath.lastIndexOf('/')) || '/';
+    const newPath = parentDir === '/' ? `/${newName}` : `${parentDir}/${newName}`;
+    if (this.nodeMap.has(newPath) && newPath !== oldPath) {
+      // Name collision — let the server be the source of truth.
+      return false;
+    }
+
+    // Rewrite this node + every descendant's path. nodeMap is keyed by
+    // path, so each old key must be removed and a new one added.
+    const rewrite = (n: FileTreeNode, oldAncestor: string, newAncestor: string) => {
+      this.nodeMap.delete(n.path);
+      if (n.path === oldAncestor) {
+        n.name = newName;
+        n.path = newAncestor;
+      } else {
+        // descendant: replace path prefix
+        n.path = newAncestor + n.path.substring(oldAncestor.length);
+      }
+      this.nodeMap.set(n.path, n);
+      if (n.children) {
+        for (const c of n.children) rewrite(c, oldAncestor, newAncestor);
+      }
+    };
+    rewrite(node, oldPath, newPath);
+
+    // Move the selection marker so the renamed node stays selected.
+    if (this.selectedPaths.has(oldPath)) {
+      this.selectedPaths.delete(oldPath);
+      this.selectedPaths.add(newPath);
+    }
+
+    // Re-sort the sibling list — alphabetical order may shift.
+    const siblingList = parentDir === this.rootPath
+      ? this.rootNodes
+      : this.nodeMap.get(parentDir)?.children;
+    if (siblingList) {
+      siblingList.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    }
+
+    this.render();
+    return true;
+  }
+
   async refreshNode(path: string): Promise<void> {
     const node = this.nodeMap.get(path);
     if (!node || !node.isDir) return;
     node.loading = true;
     try {
-      const files = await this.callbacks.onLoadChildren(path);
+      // Force-refresh bypasses any directory cache — the user explicitly
+      // asked for fresh content (right-click refresh).
+      const files = await this.callbacks.onLoadChildren(path, true);
       node.children = this.filesToNodes(files, path, node.depth + 1);
       node.expanded = true;
       node.loading = false;
@@ -129,11 +197,20 @@ export class FileTreeRenderer {
   }
 
   async refreshAll(): Promise<void> {
-    try {
-      const files = await this.callbacks.onLoadChildren(this.rootPath);
-      const expandedPaths = new Set<string>();
-      this.nodeMap.forEach((node, p) => { if (node.expanded) expandedPaths.add(p); });
+    // Snapshot expansion state BEFORE any await. If we read it after the
+    // first await (root listdir round-trip), a concurrent refreshAll
+    // racing this one will have already nodeMap.clear()'d the structure
+    // and our `forEach` reads an empty / half-rebuilt map — every
+    // expanded node silently collapses on the next render. This is
+    // exactly what happened after sidebar drag-drop move: meterm-file-op-done
+    // fires one refresh, the move handler's setTimeout(500) fires
+    // another, the two await on root concurrently, and whichever
+    // captures expandedPaths second sees an empty set.
+    const expandedPaths = new Set<string>();
+    this.nodeMap.forEach((node, p) => { if (node.expanded) expandedPaths.add(p); });
 
+    try {
+      const files = await this.callbacks.onLoadChildren(this.rootPath, true);
       this.nodeMap.clear();
       this.rootNodes = this.filesToNodes(files, this.rootPath, 0);
 
@@ -141,7 +218,7 @@ export class FileTreeRenderer {
         const node = this.nodeMap.get(p);
         if (node && node.isDir) {
           try {
-            const childFiles = await this.callbacks.onLoadChildren(p);
+            const childFiles = await this.callbacks.onLoadChildren(p, true);
             node.children = this.filesToNodes(childFiles, p, node.depth + 1);
             node.expanded = true;
           } catch { /* skip */ }

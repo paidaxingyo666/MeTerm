@@ -274,6 +274,22 @@ export function createAITab(
   aiSettingsWrap.appendChild(mkSliderRow(t('aiContextLines'), 'ai-context-slider', 10, 200, 10, current.aiContextLines,
     (v) => `${v}`, (v) => update({ aiContextLines: v })));
 
+  // Thinking-mode toggle — applies to thinking-mode providers
+  // (DeepSeek V4, Qwen3, GLM, MiMo). Plain OpenAI / Anthropic /
+  // Gemini ignore the flag.
+  const thinkRow = document.createElement('div');
+  thinkRow.className = 'ai-slider-row';
+  thinkRow.innerHTML = `<label title="${t('aiEnableThinkingHint')}">${t('aiEnableThinking')}</label>`;
+  const thinkToggle = document.createElement('label');
+  thinkToggle.className = 'ai-unlimited-label';
+  thinkToggle.style.marginLeft = 'auto';
+  thinkToggle.title = t('aiEnableThinkingHint');
+  thinkToggle.innerHTML = `<input type="checkbox" id="ai-enable-thinking" ${current.aiEnableThinking ? 'checked' : ''}>`;
+  const thinkCb = thinkToggle.querySelector('#ai-enable-thinking') as HTMLInputElement;
+  thinkCb.onchange = () => update({ aiEnableThinking: thinkCb.checked });
+  thinkRow.appendChild(thinkToggle);
+  aiSettingsWrap.appendChild(thinkRow);
+
   // Agent divider
   const agentDivider = document.createElement('hr');
   agentDivider.className = 'settings-divider';

@@ -672,6 +672,14 @@ export async function showRenameDialog(instance: DrawerInstance, oldName: string
   });
   if (newName && newName !== oldName && instance.fileManager) {
     const fullNewPath = `${parentDir}/${newName}`;
+    // Optimistic UI: in sidebar mode the drawer's "重命名中..." overlay is
+    // hidden, so without this the tree shows the old name for ~500ms-1s
+    // (until the post-rename refreshAll completes) — looks like nothing
+    // happened. Apply the rename to the visible tree right now; the
+    // refresh that fires on the server response reconciles automatically.
+    void import('./file-sidebar').then(({ SidebarManager }) => {
+      SidebarManager.optimisticRename(instance.sessionId, fullOldPath, newName);
+    });
     await instance.fileManager.renameFile(fullOldPath, fullNewPath);
   }
 }

@@ -89,8 +89,20 @@ pub async fn dispatch_message(
             } else {
                 let is_ssh = *session.executor_type.lock().unwrap() == "ssh";
                 if is_ssh {
-                    // SSH 会话 SFTP 未就绪，返回错误而非回退到本地文件系统
-                    let err = serde_json::json!({"code": "SFTP_NOT_AVAILABLE", "message": "SFTP subsystem not ready yet, please retry"});
+                    // SSH 会话 SFTP 未就绪，返回错误而非回退到本地文件系统。
+                    // 如果初始化阶段失败过，把具体原因带回前端而不是只说 "retry"。
+                    let detail = session
+                        .sftp_init_error
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_else(|| {
+                            "SFTP subsystem not ready yet, please retry".to_string()
+                        });
+                    let err = serde_json::json!({
+                        "code": "SFTP_NOT_AVAILABLE",
+                        "message": detail,
+                    });
                     session.send_to_client(
                         client_id,
                         super::protocol::encode_message(
