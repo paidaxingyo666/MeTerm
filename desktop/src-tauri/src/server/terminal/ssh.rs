@@ -360,24 +360,40 @@ pub struct SshAgentStatus {
 }
 
 pub async fn probe_ssh_agent() -> SshAgentStatus {
-    match russh_keys::agent::client::AgentClient::connect_env().await {
-        Ok(mut agent) => match agent.request_identities().await {
-            Ok(ids) => SshAgentStatus {
-                available: true,
-                key_count: ids.len(),
-                reason: String::new(),
+    // russh-keys' AgentClient::connect_env only exists on Unix — it
+    // reads $SSH_AUTH_SOCK. Windows has no equivalent in this crate
+    // (pageant would need its own implementation), so we report "not
+    // available" and the auth ladder falls through to default key
+    // files. Same approach used in try_default_key_ladder below.
+    #[cfg(unix)]
+    {
+        match russh_keys::agent::client::AgentClient::connect_env().await {
+            Ok(mut agent) => match agent.request_identities().await {
+                Ok(ids) => SshAgentStatus {
+                    available: true,
+                    key_count: ids.len(),
+                    reason: String::new(),
+                },
+                Err(e) => SshAgentStatus {
+                    available: false,
+                    key_count: 0,
+                    reason: format!("agent reachable but request_identities failed: {}", e),
+                },
             },
             Err(e) => SshAgentStatus {
                 available: false,
                 key_count: 0,
-                reason: format!("agent reachable but request_identities failed: {}", e),
+                reason: format!("{}", e),
             },
-        },
-        Err(e) => SshAgentStatus {
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        SshAgentStatus {
             available: false,
             key_count: 0,
-            reason: format!("{}", e),
-        },
+            reason: "ssh-agent not supported on this platform".to_string(),
+        }
     }
 }
 
@@ -395,32 +411,40 @@ async fn try_default_key_ladder(
 ) -> Result<SshAuthUsed, String> {
     let mut diagnostics: Vec<String> = Vec::new();
 
-    // 1) ssh-agent
-    match russh_keys::agent::client::AgentClient::connect_env().await {
-        Ok(mut agent) => match agent.request_identities().await {
-            Ok(identities) if !identities.is_empty() => {
-                let id_count = identities.len();
-                let mut signer = agent;
-                for identity in identities {
-                    let (returned, result) = session
-                        .authenticate_future(username, identity, signer)
-                        .await;
-                    signer = returned;
-                    match result {
-                        Ok(true) => return Ok(SshAuthUsed::Agent),
-                        Ok(false) => {} // try next identity
-                        Err(e) => diagnostics.push(format!("agent signer: {}", e)),
+    // 1) ssh-agent (Unix only — see probe_ssh_agent for the rationale)
+    #[cfg(unix)]
+    {
+        match russh_keys::agent::client::AgentClient::connect_env().await {
+            Ok(mut agent) => match agent.request_identities().await {
+                Ok(identities) if !identities.is_empty() => {
+                    let id_count = identities.len();
+                    let mut signer = agent;
+                    for identity in identities {
+                        let (returned, result) = session
+                            .authenticate_future(username, identity, signer)
+                            .await;
+                        signer = returned;
+                        match result {
+                            Ok(true) => return Ok(SshAuthUsed::Agent),
+                            Ok(false) => {} // try next identity
+                            Err(e) => diagnostics.push(format!("agent signer: {}", e)),
+                        }
                     }
+                    diagnostics.push(format!(
+                        "ssh-agent: server rejected all {} identities",
+                        id_count
+                    ));
                 }
-                diagnostics.push(format!(
-                    "ssh-agent: server rejected all {} identities",
-                    id_count
-                ));
-            }
-            Ok(_) => diagnostics.push("ssh-agent: no identities loaded".to_string()),
-            Err(e) => diagnostics.push(format!("ssh-agent identities: {}", e)),
-        },
-        Err(e) => diagnostics.push(format!("ssh-agent: {}", e)),
+                Ok(_) => diagnostics.push("ssh-agent: no identities loaded".to_string()),
+                Err(e) => diagnostics.push(format!("ssh-agent identities: {}", e)),
+            },
+            Err(e) => diagnostics.push(format!("ssh-agent: {}", e)),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = session;
+        diagnostics.push("ssh-agent: not supported on this platform".to_string());
     }
 
     // 2) Default identity files. Skip non-existent without complaining;
