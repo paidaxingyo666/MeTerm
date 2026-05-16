@@ -11,25 +11,102 @@
  * Light/dark theming follows the surrounding chat surface variables.
  */
 
+/* Plan board lives as a sibling of .ai-chat-messages at the BOTTOM
+ * of .ai-chat-panel — visually pinned just above the input bar, NOT
+ * inline in the scrolling message stream. This means:
+ *   • The board is always visible while a task runs, regardless of
+ *     how the user scrolls the chat history.
+ *   • Status changes (item complete / progress bar / running shimmer)
+ *     animate in place rather than scrolling past out of view.
+ *   • Once all items are completed we celebrate for ~3s then
+ *     slide-down + fade out (see .ai-todo-board.exiting), leaving the
+ *     chat dialog clean for the next task.
+ *
+ * Visual language: match `.ai-chat-panel`'s liquid-glass look so the
+ * board reads as a small card EMERGING from the dialog itself, not a
+ * separate slab. Width inset from the panel edges, rounded on all 4
+ * corners, glassy background + the same border colour family. */
 .ai-todo-board {
-  /* Width / margin match .ai-tool-card so the plan slots into the chat
-   * stream without standing out as oversized. */
-  width: 95%;
-  max-width: 95%;
-  box-sizing: border-box;
-  align-self: flex-start;
-  /* The chat panel is a flex column with limited height; without
-   * flex-shrink:0 the todo board collapses to 0 when later messages
-   * grow and the user sees nothing where the plan should be. */
   flex-shrink: 0;
-  margin: 3px 0;
-  border-radius: 6px;
-  background: rgba(14, 165, 233, 0.05);
-  border: 1px solid rgba(14, 165, 233, 0.22);
+  /* Inset from the chat-panel's interior edges so the board looks
+   * like a child of the dialog, not a footer that consumes the full
+   * width. Slight bottom gap lifts it just above the panel's lower
+   * inner edge. */
+  width: calc(100% - 16px);
+  box-sizing: border-box;
+  margin: 0 auto 6px;
+  border-radius: 10px;
+  /* Liquid-glass blend matching .ai-chat-panel — a hair more opaque
+   * so the board reads as on top of the panel surface. */
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   overflow: hidden;
   position: relative;
   font-size: 12px;
   color: var(--text-primary, #1f2937);
+  /* Soft lift to suggest the board is hovering above the messages
+   * stream behind it. */
+  box-shadow: 0 -3px 10px rgba(0, 0, 0, 0.06);
+  /* Entry transition: slide-up + fade. The board starts at
+   * translateY(100%) (off-screen below) and animates to translateY(0).
+   * The `.entered` class triggers the transition on next-frame after
+   * the element is in the DOM. */
+  transform: translateY(100%);
+  opacity: 0;
+  transition:
+    transform 0.42s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.28s ease-out,
+    border-color 0.35s ease,
+    background 0.35s ease,
+    box-shadow 0.35s ease,
+    max-height 0.42s cubic-bezier(0.16, 1, 0.3, 1),
+    margin 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+  max-height: 60vh;
+}
+
+[data-theme="light"] .ai-todo-board {
+  background: rgba(255, 255, 255, 0.42);
+  border-color: rgba(0, 0, 0, 0.10);
+  box-shadow: 0 -3px 10px rgba(0, 0, 0, 0.04);
+}
+
+.ai-todo-board.entered {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+/* Completion celebration — 3s green highlight before exit animation
+ * kicks in. The exiting class then triggers slide-down + fade. */
+.ai-todo-board.completed {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.42);
+  box-shadow: 0 -3px 14px rgba(16, 185, 129, 0.20);
+}
+[data-theme="light"] .ai-todo-board.completed {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+.ai-todo-board.completed::before {
+  background: linear-gradient(
+    90deg,
+    rgba(16, 185, 129, 0) 0%,
+    rgba(16, 185, 129, 0.7) 50%,
+    rgba(16, 185, 129, 0) 100%
+  );
+}
+.ai-todo-board.completed .ai-todo-board-bar {
+  background: #10b981;
+}
+
+.ai-todo-board.exiting {
+  transform: translateY(100%);
+  opacity: 0;
+  max-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  border-width: 0;
 }
 
 [data-theme="dark"] .ai-todo-board {
@@ -39,12 +116,23 @@
 }
 
 .ai-todo-board::before {
-  /* Accent vertical bar matching .ai-tool-card's 2px border-left. */
+  /* Soft accent bar at the top edge of the card — acts as the visual
+   * "handle" hinting the board pulled out from the dialog above it.
+   * Subtle by default; turns green during the completion celebration
+   * (overridden by .ai-todo-board.completed::before). */
   content: '';
   position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 2px;
-  background: #0EA5E9;
+  left: 12px; right: 12px;
+  top: 0;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: linear-gradient(
+    90deg,
+    rgba(14, 165, 233, 0) 0%,
+    rgba(14, 165, 233, 0.55) 50%,
+    rgba(14, 165, 233, 0) 100%
+  );
+  transition: background 0.35s ease;
 }
 
 /* ── Header ────────────────────────────────────────────────── */
@@ -170,9 +258,16 @@
   grid-template-columns: 14px 1fr auto;
   gap: 7px;
   align-items: center;
-  padding: 3px 4px;
+  padding: 3px 6px;
   border-radius: 4px;
-  transition: background 0.12s;
+  /* Match Apple-easing for the icon / text / background hand-off when
+   * an item moves pending → in_progress → completed. */
+  transition:
+    background 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    color 0.35s ease,
+    opacity 0.35s ease;
+  position: relative;
+  overflow: hidden;
 }
 
 .ai-todo-row:hover {
@@ -189,8 +284,69 @@
   opacity: 0.75;
 }
 
+/* Currently-running row: subtle shimmer sweeping across the row to
+ * convey "something is happening". Pure CSS keyframes; pauses when the
+ * row leaves in_progress state. */
 .ai-todo-row.in_progress {
   background: rgba(14, 165, 233, 0.08);
+}
+.ai-todo-row.in_progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 35%,
+    rgba(14, 165, 233, 0.18) 50%,
+    transparent 65%
+  );
+  background-size: 220% 100%;
+  animation: ai-todo-shimmer 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+[data-theme="dark"] .ai-todo-row.in_progress::after {
+  background: linear-gradient(
+    100deg,
+    transparent 35%,
+    rgba(56, 189, 248, 0.22) 50%,
+    transparent 65%
+  );
+  background-size: 220% 100%;
+}
+@keyframes ai-todo-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* Item status box: animated icon swap. The .ai-todo-box element is
+ * re-rendered on each renderTodoBoard call (so the icon SVG changes),
+ * but the CSS class flips drive a soft transform pulse so the eye
+ * picks up the transition pending → active → checked. */
+.ai-todo-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  transition:
+    transform 0.32s cubic-bezier(0.16, 1, 0.3, 1),
+    background 0.28s ease;
+}
+.ai-todo-box.active {
+  animation: ai-todo-box-activate 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ai-todo-box.checked {
+  animation: ai-todo-box-check 0.38s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes ai-todo-box-activate {
+  0%   { transform: scale(0.7); }
+  60%  { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}
+@keyframes ai-todo-box-check {
+  0%   { transform: scale(0.5) rotate(-12deg); opacity: 0; }
+  50%  { transform: scale(1.22) rotate(6deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0); }
 }
 
 [data-theme="dark"] .ai-todo-row.in_progress {

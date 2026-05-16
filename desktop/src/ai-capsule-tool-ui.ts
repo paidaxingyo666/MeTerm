@@ -772,20 +772,53 @@ export function showConfirmCard(
 // `tool_call` entries from todo_write keep the audit trail. The board
 // is purely a derived view of the agent's current TodoState.
 
-function findOrCreateTodoBoard(container: Element): HTMLDivElement {
-  let board = container.querySelector<HTMLDivElement>(':scope > .ai-todo-board');
+/**
+ * Find or create the persistent plan board. Mounted as a direct child
+ * of `.ai-chat-panel` AFTER `.ai-chat-messages`, so it floats above
+ * the input bar instead of getting buried in the scrolling message
+ * stream. Trigger the slide-up animation by toggling `.entered` on
+ * the next animation frame (so the initial translateY(100%) is
+ * actually rendered first).
+ *
+ * `panel` here is the chat panel element (parent of .ai-chat-messages).
+ */
+function findOrCreateTodoBoard(panel: Element): HTMLDivElement {
+  let board = panel.querySelector<HTMLDivElement>(':scope > .ai-todo-board');
   if (!board) {
     board = document.createElement('div');
     board.className = 'ai-todo-board';
     board.setAttribute('role', 'group');
     board.setAttribute('aria-label', planTitle());
-  }
-  // Always (re-)anchor to the end of the container so the board sits
-  // below the most recent tool/assistant message.
-  if (board.parentElement !== container || container.lastElementChild !== board) {
-    container.appendChild(board);
+    panel.appendChild(board);
+    // Next frame: toggle `.entered` to play the slide-in animation.
+    // Double-rAF to ensure layout has the start state painted.
+    const el = board;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => el.classList.add('entered'));
+    });
+  } else if (!board.classList.contains('entered')) {
+    board.classList.add('entered');
   }
   return board;
+}
+
+/**
+ * Slide the board out, then remove from DOM. Used by the
+ * all-completed celebration path and by the empty-list teardown.
+ * Safe to call repeatedly — only the first call schedules removal.
+ */
+function dismissTodoBoard(board: HTMLDivElement): void {
+  if (board.dataset.dismissing === '1') return;
+  board.dataset.dismissing = '1';
+  board.classList.remove('entered');
+  board.classList.add('exiting');
+  const remove = () => board.parentElement?.removeChild(board);
+  // Match the longest transition (transform 0.42s). Fall back to a
+  // timeout in case `transitionend` doesn't fire (e.g. element hidden).
+  let fired = false;
+  const onEnd = () => { if (fired) return; fired = true; remove(); };
+  board.addEventListener('transitionend', onEnd, { once: true });
+  setTimeout(onEnd, 600);
 }
 
 /**
@@ -799,21 +832,37 @@ export function renderTodoBoard(
   todos: TodoItem[],
 ): void {
   if (!instance.chatPanel) return;
-  const container = instance.chatPanel.querySelector('.ai-chat-messages');
-  if (!container) return;
+  // Anchor the board to the chat panel itself (not to .ai-chat-messages)
+  // so it floats above the input bar — see findOrCreateTodoBoard for
+  // the rationale. The empty-list teardown still finds the existing
+  // element through the same panel selector.
+  const panel = instance.chatPanel;
 
-  // Empty list → tear the board down (clean slate when agent.clear()).
+  const existing = panel.querySelector<HTMLDivElement>(':scope > .ai-todo-board');
+
+  // Empty list → tear the board down with the exit animation
+  // (clean slate when agent.clear()).
   if (todos.length === 0) {
-    const existing = container.querySelector(':scope > .ai-todo-board');
-    if (existing) existing.remove();
+    if (existing) dismissTodoBoard(existing);
     return;
   }
 
-  const board = findOrCreateTodoBoard(container);
+  const board = findOrCreateTodoBoard(panel);
   const total = todos.length;
   const done = todos.filter((t) => t.status === 'completed').length;
   const active = todos.find((t) => t.status === 'in_progress') ?? null;
   const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+  const allDone = total > 0 && done === total;
+
+  // Cancel any previous celebration timer — a fresh update means the
+  // plan changed before we got to dismiss it (e.g. agent added more
+  // todos to a "completed" list, or user injected a follow-up).
+  const prevTimer = Number(board.dataset.celebrateTimer || '0');
+  if (prevTimer) {
+    window.clearTimeout(prevTimer);
+    board.dataset.celebrateTimer = '';
+  }
+  if (!allDone) board.classList.remove('completed');
 
   const color = TOOL_COLORS.todo_write ?? '#0EA5E9';
 
@@ -868,7 +917,28 @@ export function renderTodoBoard(
     });
   }
 
-  container.scrollTop = container.scrollHeight;
+  // Celebrate only on the TRANSITION into "all completed" — i.e. the
+  // previously-rendered state had at least one incomplete item.
+  // Otherwise, restoring a conversation that already ended in success
+  // would briefly flash the board and then auto-dismiss, hiding the
+  // final state the user wanted to review.
+  const prevDoneRaw = board.dataset.prevDone;
+  const prevTotalRaw = board.dataset.prevTotal;
+  const isFreshRender = prevDoneRaw === undefined || prevDoneRaw === '';
+  const wasIncomplete =
+    !isFreshRender &&
+    (Number(prevDoneRaw) < Number(prevTotalRaw || '0') || Number(prevTotalRaw) === 0);
+  board.dataset.prevDone = String(done);
+  board.dataset.prevTotal = String(total);
+
+  if (allDone && wasIncomplete) {
+    board.classList.add('completed');
+    const timer = window.setTimeout(() => {
+      board.dataset.celebrateTimer = '';
+      dismissTodoBoard(board);
+    }, 3000);
+    board.dataset.celebrateTimer = String(timer);
+  }
 }
 
 /**

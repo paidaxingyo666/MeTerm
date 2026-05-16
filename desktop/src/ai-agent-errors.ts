@@ -72,13 +72,28 @@ export function classifyError(err: Error): { category: ErrorCategory; statusCode
     return { category: 'server_error', statusCode };
   }
 
-  // Tool unsupported
-  if (
-    lowerMsg.includes('tools') ||
-    lowerMsg.includes('function') ||
-    lowerMsg.includes('tool_use') ||
+  // Tool unsupported — must mention tool/function/tool_use AND a
+  // "not supported / unsupported / unrecognized" verb. Just matching
+  // "not supported" alone was overreaching: a 400 like
+  //   "Not supported model claude-sonnet-4-5-20250929"
+  // (model identity, nothing to do with tools) would flip
+  // toolsSupported=false for the rest of the session, and after the
+  // user switched to a working model the agent kept sending
+  // tools=undefined, forcing Qwen-family models (MiMo / Qwen / GLM)
+  // to emit inline `<tool_call>` text instead of native tool calls.
+  const mentionsTooling =
+    lowerMsg.includes('tool') ||
+    lowerMsg.includes('function');
+  const looksUnsupported =
     lowerMsg.includes('not supported') ||
-    lowerMsg.includes('unrecognized request argument')
+    lowerMsg.includes('unsupported') ||
+    lowerMsg.includes("doesn't support") ||
+    lowerMsg.includes('does not support') ||
+    lowerMsg.includes('not available') ||
+    lowerMsg.includes('unrecognized request argument');
+  if (
+    (mentionsTooling && looksUnsupported) ||
+    lowerMsg.includes('tool_use')
   ) {
     return { category: 'tool_unsupported', statusCode };
   }

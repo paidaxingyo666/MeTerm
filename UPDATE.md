@@ -1,5 +1,19 @@
 # MeTerm 更新记录
 
+## v0.2.9
+
+### 新功能
+
+- **Plan 面板浮在对话框输入栏上方** — 任务计划从聊天消息流里拿出来作为独立悬浮卡片，贴在 AI 对话面板底部、紧靠输入框。Apple 风丝滑动画：入场从底部滑起 + 淡入；进度条 cubic-bezier 平滑填充；项目状态 icon 跳变（pending→in_progress→completed）；运行中项有横向 shimmer；全部完成后高亮 3 秒再滑回。视觉与对话面板 liquid-glass 风格一致，两侧 inset、四角圆角
+
+### 问题修复
+
+- **错误分类器误将「模型不存在」当作「工具不支持」永久降级** — 之前只要错误消息含「not supported」就把 agent 标记为 `toolsSupported=false`，结果一次「Not supported model X」之后所有模型都被切到 chat-only。改为必须同时出现「tool/function」+「not supported/unsupported/unrecognized」才归类为工具不支持
+- **切换模型后仍卡在「无工具」模式** — `ToolAgent` 新增 `lastResolvedModel`，runLoop 检测到模型变了就重置 `toolsSupported`。让换模型能恢复
+- **Plan UI 任务执行中看不到、做完才突然出现** — 老逻辑里 board 跟 tool card 都 append 到 chat-messages 末尾，每个 tool card 都把 board 顶上去；最后一次 todo_write 才重新拉回底部，所以「任务完成才看到」。新设计把 board 移出 messages 流，作为 chat panel 直接子元素位于消息区与输入框之间
+
+---
+
 ## v0.2.8
 
 ### 新功能

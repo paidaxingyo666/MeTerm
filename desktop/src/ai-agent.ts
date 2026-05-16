@@ -136,8 +136,14 @@ export class ToolAgent {
   private aborted = false;
   private toolRegistry: ToolRegistry;
   /** Once set to false (e.g. after a 400 from a non-tool model),
-   *  all subsequent turns use chat-only mode. */
+   *  subsequent turns of the SAME model use chat-only mode. The flag
+   *  resets when the user switches to a different model (see runLoop's
+   *  lastResolvedModel check) so a misdetected 400 on one model doesn't
+   *  permanently degrade other models in the same conversation. */
   private toolsSupported = true;
+  /** Model identifier resolved on the previous runLoop iteration. Used
+   *  to detect a model switch and reset `toolsSupported`. */
+  private lastResolvedModel = '';
   /** Messages injected by the user while the agent is working.
    *  Flushed into this.messages at the next iteration checkpoint. */
   private pendingUserMessages: string[] = [];
@@ -366,6 +372,7 @@ export class ToolAgent {
     this.messages = [];
     this.pendingUserMessages = [];
     this.toolsSupported = true;
+    this.lastResolvedModel = '';
     this.recentToolHashes = [];
     // Reset the persistent task plan — a fresh conversation should
     // never inherit todos from the previous one.
@@ -427,6 +434,17 @@ export class ToolAgent {
     if (!resolved) {
       callbacks.onError(new Error('No AI provider configured'));
       return;
+    }
+
+    // Model switch → give the new model a fresh chance at tool use.
+    // Without this, a 400 from a previous (broken) model that got
+    // classified as "tool_unsupported" would silently disable tools
+    // on every subsequent model in the same conversation, forcing
+    // Qwen-family models to emit inline <tool_call> text instead of
+    // native tool calls.
+    if (this.lastResolvedModel !== resolved.model) {
+      if (this.lastResolvedModel) this.toolsSupported = true;
+      this.lastResolvedModel = resolved.model;
     }
 
     const providerConfig: AIProviderConfig = {
