@@ -19,8 +19,9 @@ import {
   sessionProgressMap, jumpServerConfigMap,
   activeJumpServers,
 } from './app-state';
-import { isSessionExpired } from './jumpserver-auth-state';
+import { isSessionExpired, markSessionExpired } from './jumpserver-auth-state';
 import { ensureJSAuthenticated } from './jumpserver-handler';
+import { isJumpServerSessionExpired } from './jumpserver-errors';
 
 // ── Callback injection (set from main.ts init) ──
 let _activateTab: (tabId: string) => Promise<void> = async () => {};
@@ -271,8 +272,31 @@ export function showReconnectOverlay(sessionId: string, tabId: string): void {
       _renderTabs();
     } catch (err) {
       btn.classList.remove('is-reconnecting');
-      btn.querySelector('span')!.textContent = t('reconnect') || 'Reconnect';
       overlay.classList.remove('reconnecting');
+
+      // JumpServer 会话过期（Rust 端 SESSION_EXPIRED 前缀，由 createConnectionToken
+      // 在所有候选 body 均返回 401/403 时抛出）→ 自动重认证 + 重试一次。
+      const jsConfig = jumpServerConfigMap.get(sessionId);
+      if (jsConfig && isJumpServerSessionExpired(err)) {
+        markSessionExpired(jsConfig.config.name);
+        errorEl.textContent = '';
+        btn.querySelector('span')!.textContent = t('jsReconnectAction');
+        StatusBar.setConnection('connecting', `JumpServer: ${jsConfig.config.name}`);
+
+        const ok = await ensureJSAuthenticated(jsConfig.config, true);
+        if (!ok) {
+          btn.querySelector('span')!.textContent = t('reconnect') || 'Reconnect';
+          errorEl.textContent = t('jsLoginRequired');
+          StatusBar.setConnection('disconnected', '');
+          return;
+        }
+        // 认证成功 → 再次触发 reconnect 完整流程（此时 isSessionExpired 已清除）
+        btn.querySelector('span')!.textContent = t('reconnect') || 'Reconnect';
+        btn.click();
+        return;
+      }
+
+      btn.querySelector('span')!.textContent = t('reconnect') || 'Reconnect';
       errorEl.textContent = String(err);
       StatusBar.setError(`${t('sshFailed')}: ${String(err)}`);
     }

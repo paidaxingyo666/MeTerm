@@ -930,7 +930,13 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       `;
       tr.querySelector('.js-connect-btn')!.addEventListener('click', (e) => {
         e.stopPropagation();
-        handleAssetConnect(asset);
+        const btn = e.currentTarget as HTMLButtonElement;
+        if (btn.disabled) return;
+        btn.disabled = true;
+        Promise.resolve(handleAssetConnect(asset)).finally(() => {
+          // 短延迟后恢复，给主窗口足够时间走完认证+建会话；避免按钮永久禁用
+          setTimeout(() => { btn.disabled = false; }, 1500);
+        });
       });
       tbody.appendChild(tr);
     });
@@ -969,7 +975,14 @@ function renderAssetBrowser(config: JumpServerConfig): void {
           ${comment ? `<div class="js-narrow-card-comment" title="${escapeHtml(comment)}">${escapeHtml(comment)}</div>` : ''}
         </div>
       `;
-      card.addEventListener('dblclick', () => handleAssetConnect(asset));
+      // 用 dataset 标记防重入；dblclick 本身没法 disabled 一个 div
+      card.addEventListener('dblclick', () => {
+        if (card.dataset.connecting === '1') return;
+        card.dataset.connecting = '1';
+        Promise.resolve(handleAssetConnect(asset)).finally(() => {
+          setTimeout(() => { delete card.dataset.connecting; }, 1500);
+        });
+      });
       cardList.appendChild(card);
     });
     main.appendChild(cardList);

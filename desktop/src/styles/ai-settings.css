@@ -649,6 +649,26 @@
   justify-content: flex-end;
 }
 
+/* User has typed in the terminal — flip the card colour from amber
+ * (waiting) to teal/green (received), kill the attention-grabbing
+ * pulse, and let the body relax. The card still waits for shell-idle
+ * before resolving fully (see onEnd in ai-capsule-tool-ui.ts). */
+.ai-tool-card.ai-wait-card.ai-wait-card-received {
+  background: rgba(20, 184, 166, 0.10);
+  border-color: rgba(20, 184, 166, 0.45);
+  border-left-color: #14B8A6;
+  animation: none;
+  box-shadow: 0 0 0 0 rgba(20, 184, 166, 0);
+  transition: background 0.35s ease, border-color 0.35s ease;
+}
+.ai-wait-card-received .ai-wait-card-header {
+  color: #14B8A6;
+}
+.ai-wait-card-received .ai-wait-card-hint {
+  color: var(--text-primary);
+  opacity: 0.85;
+}
+
 /* When a wait card is resolved we strip the .ai-wait-card class
  * entirely (see ai-capsule-tool-ui.ts onEnd handler), so the card
  * inherits the standard .ai-tool-card styling — no pulse, no thick

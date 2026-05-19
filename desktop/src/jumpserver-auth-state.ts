@@ -8,7 +8,6 @@
 
 import { emit } from '@tauri-apps/api/event';
 import { activeJumpServers } from './app-state';
-import { deleteJSSecrets } from './jumpserver-api';
 
 const expiredConfigs = new Set<string>();
 
@@ -39,27 +38,29 @@ export function isSessionExpired(configName: string): boolean {
 /**
  * Logout a JumpServer connection.
  *
- * Clears Keychain credentials, activeJumpServers map, localStorage state, and
- * closes the asset browser panel if open. Does NOT close already-running
- * SSH terminal tabs — their pty sessions are independent of the JumpServer
- * API session (connection tokens are single-use and already consumed).
+ * Clears the in-memory session state (activeJumpServers map, localStorage
+ * mirror, expired flag) and closes the asset browser panel if open.
  *
- * After logout, if those tabs later disconnect, `overlays.ts` will block the
- * reconnect button because activeJumpServers no longer has the config.
+ * Keychain credentials are intentionally PRESERVED — they are config-level
+ * artifacts ("which password to use for this saved connection"), not
+ * session-level. Wiping them on every logout would block the natural
+ * re-login flow (password + MFA) and produce HTTP 422 missing-field
+ * errors the next time the user clicks the saved connection card. To
+ * fully purge credentials, remove the JumpServer from settings — that
+ * path calls `removeJumpServerConfig` → `deleteJSSecrets`.
+ *
+ * Does NOT close already-running SSH terminal tabs — their pty sessions
+ * are independent of the JumpServer API session (connection tokens are
+ * single-use and already consumed). If those tabs later disconnect,
+ * `overlays.ts` will route reconnect through `ensureJSAuthenticated(force)`
+ * which re-uses the preserved Keychain credentials and re-issues MFA.
  */
 export async function logoutJumpServer(configName: string): Promise<void> {
   // 1. Source-of-truth mutations (synchronous)
   activeJumpServers.delete(configName);
   expiredConfigs.delete(configName);
 
-  // 2. Keychain (async, may fail but should not block the rest)
-  try {
-    await deleteJSSecrets(configName);
-  } catch (e) {
-    console.warn('[jumpserver] deleteJSSecrets failed during logout:', e);
-  }
-
-  // 3. Persist to localStorage before UI work so cross-window re-hydration is correct
+  // 2. Persist to localStorage before UI work so cross-window re-hydration is correct
   try {
     const { syncActiveJumpServersToStorage } = await import('./jumpserver-handler');
     syncActiveJumpServersToStorage();

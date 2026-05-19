@@ -36,16 +36,19 @@ import {
   type JumpServerConfig,
   type JumpServerAsset,
   type JumpServerAccount,
+  type AuthResult,
   authenticate,
   authenticateWithToken,
   submitMFA,
   loadJSSecrets,
+  storeJSSecrets,
   createConnectionToken,
 } from './jumpserver-api';
-import { showMFADialog } from './jumpserver-ui';
+import { showMFADialog, showJsCredentialPrompt } from './jumpserver-ui';
 import { openJumpServerBrowserWindow } from './jumpserver-browser';
 import { recordJSAssetConnection } from './connection-groups';
-import { isSessionExpired, clearExpiredFlag } from './jumpserver-auth-state';
+import { isSessionExpired, clearExpiredFlag, markSessionExpired } from './jumpserver-auth-state';
+import { isJumpServerSessionExpired } from './jumpserver-errors';
 
 /**
  * Extract a human-readable error message from JumpServer API error strings.
@@ -87,18 +90,63 @@ export async function ensureJSAuthenticated(config: JumpServerConfig, force = fa
 
   StatusBar.setConnection('connecting', `JumpServer: ${config.name}`);
 
-  try {
-    let authResult;
-    if (config.authMethod === 'token' && config.apiToken) {
-      authResult = await authenticateWithToken(config);
-    } else {
-      authResult = await authenticate(config);
+  // 凭据 + 认证循环：
+  // (1) 缺凭据 → 先从 Keychain 拿；Keychain 也空 → 弹补输对话框
+  // (2) 用当前凭据尝试认证
+  // (3) 失败 → 带错误信息再弹对话框重试（不污染 Keychain）
+  // (4) 成功 → 跳出循环，认证成功后再把凭据写回 Keychain
+  // 触发场景：旧版本登出删过 Keychain / bundle id 迁移残留 / dropdown 重新登录
+  // / 用户首次输错密码后能立即重试。
+  let workConfig = config;
+  const useToken = config.authMethod === 'token';
+  let credentialWasPrompted = false;
+  let authResult: AuthResult | undefined;
+  let promptError: string | undefined;
+
+  // 首次尝试：能从 Keychain 拿就用 Keychain（不打扰）
+  const initiallyMissing = useToken ? !workConfig.apiToken : !workConfig.password;
+  if (initiallyMissing) {
+    const fromKeychain = await loadJSSecrets(config.name);
+    const filled = useToken ? fromKeychain.apiToken : fromKeychain.password;
+    if (filled) {
+      workConfig = useToken
+        ? { ...config, apiToken: filled }
+        : { ...config, password: filled };
+    }
+  }
+
+  while (true) {
+    const stillMissing = useToken ? !workConfig.apiToken : !workConfig.password;
+    if (stillMissing || promptError) {
+      const entered = await showJsCredentialPrompt(config, promptError);
+      if (!entered) {
+        StatusBar.setConnection('disconnected', '');
+        return false;
+      }
+      workConfig = useToken
+        ? { ...config, apiToken: entered.apiToken }
+        : { ...config, password: entered.password };
+      credentialWasPrompted = true;
+      promptError = undefined;
     }
 
-    if (!authResult.ok) {
-      StatusBar.setError(`JumpServer: ${extractErrorMsg(authResult.error)}`);
+    try {
+      authResult = useToken && workConfig.apiToken
+        ? await authenticateWithToken(workConfig)
+        : await authenticate(workConfig);
+    } catch (e) {
+      // 客户端层异常（如序列化失败、解析失败）— 不视为凭据错，直接退出避免死循环
+      StatusBar.setError(`JumpServer: ${extractErrorMsg(String(e))}`);
       return false;
     }
+
+    if (authResult.ok) break;
+
+    // 认证失败：带错误信息回到循环顶部重新弹对话框
+    promptError = extractErrorMsg(authResult.error);
+  }
+
+  try {
 
     // Handle MFA if required (loop to allow retries)
     if (authResult.mfa_required) {
@@ -112,7 +160,7 @@ export async function ensureJSAuthenticated(config: JumpServerConfig, force = fa
           return false;
         }
 
-        const mfaResult = await submitMFA(config.baseUrl, mfaInput.type, mfaInput.code);
+        const mfaResult = await submitMFA(workConfig.baseUrl, mfaInput.type, mfaInput.code);
         if (mfaResult.ok) {
           mfaOk = true;
         } else {
@@ -121,12 +169,27 @@ export async function ensureJSAuthenticated(config: JumpServerConfig, force = fa
       }
     }
 
-    // Register as active JumpServer
-    activeJumpServers.set(config.name, config);
-    clearExpiredFlag(config.name);
+    // 认证 + MFA 全部成功 → 把补输的凭据写回 Keychain（下次免输）。
+    // 推迟到这里写：避免用户首次输错密码时把错凭据污染 Keychain，第二次重试时
+    // loadJSSecrets 会拿到错密码绕过补输对话框直接发请求失败。
+    if (credentialWasPrompted) {
+      try {
+        await storeJSSecrets(workConfig.name, workConfig.password, workConfig.apiToken);
+      } catch (e) {
+        console.warn('[jumpserver] storeJSSecrets after successful auth failed:', e);
+      }
+    }
+
+    // Register as active JumpServer — 用 workConfig 让后续路径（dropdown 重新登录等）拿到完整凭据
+    activeJumpServers.set(workConfig.name, workConfig);
+    clearExpiredFlag(workConfig.name);
     syncActiveJumpServersToStorage();
     void emit('jumpserver-state-changed');
     renderToolbarActions();
+    // 清掉函数入口设的 'connecting' 呼吸动画。调用方（如 handleJumpServerConnect /
+    // connectToAsset）若紧接着会发起 SSH 等阶段，会再次覆盖此状态；如果调用方就
+    // 是单纯重新登录（dropdown / overlays.ts reconnect 前置认证），则停在 connected。
+    StatusBar.setConnection('connected', `JumpServer: ${workConfig.name}`);
     return true;
   } catch (err) {
     StatusBar.setError(`JumpServer: ${extractErrorMsg(String(err))}`);
@@ -163,6 +226,11 @@ export async function handleJumpServerConnect(config: JumpServerConfig): Promise
   StatusBar.setConnection('connected', `JumpServer: ${fullConfig.name}`);
 }
 
+// 正在进行的资产连接请求集合 — 同一 config+asset+account 的并发请求只跑一次。
+// 防止 popup 双击 / Tauri emit 重放 / panel dblclick 导致并发 connectToAsset，
+// 后者会同时弹多个 MFA 对话框并发多个 connection-token POST。
+const inFlightConnects = new Set<string>();
+
 /**
  * Connect to a specific JumpServer asset via connection token.
  * 1. Create a connection token via JumpServer API
@@ -173,6 +241,16 @@ export async function connectToAsset(
   asset: JumpServerAsset,
   account: JumpServerAccount,
 ): Promise<void> {
+  // 全局防重入：同一 config+asset+account 的并发连接请求只跑一次。
+  // 覆盖三条入口：(1) popup window emit → setupJumpServerEventListener，
+  // (2) jumpserver-panel.ts 的 handleAssetConnect 直接调用，(3) 任何未来新增的路径。
+  const reentryKey = `${config.name}::${asset.id}::${account.id}`;
+  if (inFlightConnects.has(reentryKey)) {
+    console.warn('[jumpserver] connectToAsset re-entry blocked:', reentryKey);
+    return;
+  }
+  inFlightConnects.add(reentryKey);
+
   const terminalPanelEl = document.getElementById('terminal-panel') as HTMLDivElement;
 
   let jsTabId = '';
@@ -246,10 +324,29 @@ export async function connectToAsset(
     }
 
     // Step 3: Request the per-connection token from JumpServer API.
+    // 若 Cookie 已过期（Rust 端返回 SESSION_EXPIRED:），自动重认证一次 → 再试 token。
     updateConnectingPlaceholder(t('jsConnectingToken'));
-    const tokenResult = await createConnectionToken(
+    const requestToken = () => createConnectionToken(
       config.baseUrl, asset.id, account.name, account.username, account.alias || '', account.id, 'ssh',
     );
+    let tokenResult;
+    try {
+      tokenResult = await requestToken();
+    } catch (err) {
+      if (isJumpServerSessionExpired(err)) {
+        markSessionExpired(config.name);
+        updateConnectingPlaceholder(t('jsConnectingAuth'));
+        const ok = await ensureJSAuthenticated(config, true);
+        if (!ok) {
+          await cleanupTab();
+          return;
+        }
+        updateConnectingPlaceholder(t('jsConnectingToken'));
+        tokenResult = await requestToken();
+      } else {
+        throw err;
+      }
+    }
     if (!tokenResult.ok || !tokenResult.token) {
       throw new Error(tokenResult.error || 'Failed to create connection token');
     }
@@ -347,6 +444,8 @@ export async function connectToAsset(
     await cleanupTab();
     StatusBar.setError(`JumpServer: ${extractErrorMsg(String(err))}`);
     throw err; // Re-throw so asset browser can show error and keep dialog open
+  } finally {
+    inFlightConnects.delete(reentryKey);
   }
 }
 
@@ -416,9 +515,15 @@ export function setupJumpServerEventListener(): void {
       return;
     }
 
-    // Focus this main window before creating the session
+    // Focus this main window before creating the session.
+    // 防重入由 connectToAsset 内部 inFlightConnects 处理，这里仅做 await 保证
+    // 串行：listener 在前一个 await 完成前不会处理下一个事件。
     await getCurrentWindow().setFocus();
-    void connectToAsset(config, asset, account);
+    try {
+      await connectToAsset(config, asset, account);
+    } catch (e) {
+      console.error('[jumpserver] connectToAsset failed:', e);
+    }
   });
 
   // Listen for dock-to-panel event — close popup, open side panel in main window

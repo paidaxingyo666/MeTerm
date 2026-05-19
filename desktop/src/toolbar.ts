@@ -350,14 +350,9 @@ export function renderToolbarActions(): void {
     jsBtn.type = 'button';
     jsBtn.title = 'JumpServer';
     jsBtn.innerHTML = `<span class="tab-icon">${icon('jumpserver')}</span>`;
-    jsBtn.onclick = () => {
-      if (activeJumpServers.size === 1) {
-        const config = activeJumpServers.values().next().value;
-        if (config) toggleJumpServerPanel(config);
-      } else {
-        showJumpServerDropdown(jsBtn);
-      }
-    };
+    // 统一交互：左键永远弹 dropdown（即使只有一个连接），让"退出登录"
+    // 入口在每项末尾的 ⋯ 按钮稳定可见。
+    jsBtn.onclick = () => showJumpServerDropdown(jsBtn);
     toolbarRightEl.appendChild(jsBtn);
   }
 
@@ -473,20 +468,42 @@ function showJumpServerDropdown(anchor: HTMLElement): void {
   menu.className = 'custom-context-menu';
 
   for (const [name, config] of activeJumpServers) {
-    const item = document.createElement('button');
-    item.className = 'custom-context-menu-item';
-    item.type = 'button';
-    item.textContent = name;
-    item.onclick = () => {
+    const row = document.createElement('div');
+    row.className = 'js-dropdown-item';
+
+    const mainBtn = document.createElement('button');
+    mainBtn.className = 'js-dropdown-item-main';
+    mainBtn.type = 'button';
+    mainBtn.textContent = name;
+    mainBtn.onclick = () => {
       cleanup();
       toggleJumpServerPanel(config);
     };
-    item.addEventListener('contextmenu', (e) => {
+
+    const actionsBtn = document.createElement('button');
+    actionsBtn.className = 'js-dropdown-item-actions';
+    actionsBtn.type = 'button';
+    actionsBtn.title = t('jsItemActionsTitle');
+    actionsBtn.setAttribute('aria-label', t('jsItemActionsTitle'));
+    actionsBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="13" cy="8" r="1.4"/></svg>';
+    actionsBtn.onclick = (e) => {
+      e.stopPropagation();
+      const r = actionsBtn.getBoundingClientRect();
+      // 不 cleanup dropdown：子菜单作为浮层叠在 dropdown 上方，
+      // 保留服务列表作为操作上下文（标准父-子菜单交互）。
+      showJsConnectionContextMenu(r.left, r.bottom + 4, config);
+    };
+
+    row.appendChild(mainBtn);
+    row.appendChild(actionsBtn);
+
+    // 右键作为高级快捷方式保留：行任意位置右键都能唤起菜单
+    row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      cleanup();
       showJsConnectionContextMenu(e.clientX, e.clientY, config);
     });
-    menu.appendChild(item);
+
+    menu.appendChild(row);
   }
 
   document.body.appendChild(menu);
@@ -507,16 +524,27 @@ function showJumpServerDropdown(anchor: HTMLElement): void {
     const target = event.target as Node | null;
     if (!target) return;
     if (menu.contains(target) || anchor.contains(target)) return;
+    // 子菜单（点 ⋯ 弹出）的点击不算 dropdown 外部 — 否则 dropdown 会
+    // 在用户操作子菜单的瞬间消失，破坏父-子菜单层级。
+    const subMenu = document.getElementById('js-connection-context-menu');
+    if (subMenu && subMenu.contains(target)) return;
     cleanup();
   };
 
   const cleanup = (): void => {
     menu.remove();
+    // dropdown 关闭时同步关闭可能残留的子菜单，避免悬空
+    document.getElementById('js-connection-context-menu')?.remove();
     document.removeEventListener('mousedown', onPointerDown, true);
+    document.removeEventListener('jumpserver-auth-changed', onAuthChanged);
     window.removeEventListener('blur', cleanup);
   };
 
+  // 登出/认证状态变化 → dropdown 显示的列表已过期，关闭它（避免点击残留项）
+  const onAuthChanged = (): void => cleanup();
+
   window.addEventListener('blur', cleanup);
+  document.addEventListener('jumpserver-auth-changed', onAuthChanged);
   requestAnimationFrame(() => {
     document.addEventListener('mousedown', onPointerDown, true);
   });

@@ -303,6 +303,52 @@
   margin: 3px 4px;
 }
 
+/* JumpServer dropdown item: 主点击区 + 末尾 ⋯ 操作按钮 */
+.js-dropdown-item {
+  display: flex;
+  align-items: stretch;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.js-dropdown-item-main {
+  flex: 1 1 auto;
+  height: 24px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-button);
+  text-align: left;
+  padding: 0 8px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.js-dropdown-item-main:hover:not(:disabled) {
+  background: var(--accent-bg);
+}
+.js-dropdown-item-actions {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-button);
+  cursor: pointer;
+  opacity: 0.55;
+}
+.js-dropdown-item-actions:hover {
+  opacity: 1;
+  background: var(--accent-bg);
+}
+[data-theme="light"] .js-dropdown-item-actions {
+  border-left-color: rgba(0, 0, 0, 0.08);
+}
+
 .shell-default-badge {
   margin-left: 8px;
   font-size: 10px;

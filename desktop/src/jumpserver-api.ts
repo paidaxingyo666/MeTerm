@@ -158,7 +158,7 @@ export async function removeJumpServerConfig(name: string): Promise<void> {
   document.dispatchEvent(new CustomEvent('ssh-connections-changed'));
 }
 
-async function storeJSSecrets(name: string, password?: string, apiToken?: string): Promise<void> {
+export async function storeJSSecrets(name: string, password?: string, apiToken?: string): Promise<void> {
   const data = JSON.stringify({ password: password || '', apiToken: apiToken || '' });
   try {
     await invoke('store_credential', { service: JS_KEYCHAIN_SERVICE, account: name, secret: data });

@@ -782,6 +782,11 @@ impl JumpServerClient {
 
         let url = format!("{}/api/v1/authentication/connection-token/", self.base_url);
         let mut last_err = String::from("no account identifiers");
+        // 区分认证类失败（401/403）与其它失败：仅在「所有候选响应都是 401/403
+        // 且没有任何其它失败」时才发出 SESSION_EXPIRED 信号，避免误把 5xx/网络
+        // 错误/空 token 当成会话过期。
+        let mut had_auth_failure = false;
+        let mut had_other_failure = false;
 
         for body in &bodies {
             eprintln!("[jumpserver] creating connection token: {}", body);
@@ -804,22 +809,41 @@ impl JumpServerClient {
                             if !token.is_empty() {
                                 return Ok(ConnectionToken { id, token, secret });
                             }
+                            had_other_failure = true;
                             last_err = "empty connection token".to_string();
                         }
-                        Err(e) => { last_err = e.to_string(); }
+                        Err(e) => {
+                            had_other_failure = true;
+                            last_err = e.to_string();
+                        }
                     }
                 }
                 Ok(resp) => {
                     let status = resp.status();
+                    if status == reqwest::StatusCode::UNAUTHORIZED
+                        || status == reqwest::StatusCode::FORBIDDEN
+                    {
+                        had_auth_failure = true;
+                    } else {
+                        had_other_failure = true;
+                    }
                     let text = resp.text().await.unwrap_or_default();
                     eprintln!("[jumpserver] connection token {} {}: {}", status, url, &text[..text.len().min(200)]);
                     last_err = format!("HTTP {}: {}", status, &text[..text.len().min(100)]);
                 }
-                Err(e) => { last_err = e.to_string(); }
+                Err(e) => {
+                    had_other_failure = true;
+                    last_err = e.to_string();
+                }
             }
         }
 
-        Err(format!("Failed to create connection token: {}", last_err))
+        if had_auth_failure && !had_other_failure {
+            // 所有候选 body 都是 401/403 — 会话过期，前端按此识别走 ensureJSAuthenticated。
+            Err(format!("SESSION_EXPIRED: {}", self.base_url))
+        } else {
+            Err(format!("Failed to create connection token: {}", last_err))
+        }
     }
 
     /// Health check.

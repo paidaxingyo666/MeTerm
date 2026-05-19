@@ -480,6 +480,8 @@ export function buildAgentCallbacks(
 
       const reasonText = reason === 'rate_limit'
         ? t('aiRateLimitRetry')
+        : reason === 'network'
+        ? t('aiNetworkRetry')
         : t('aiServerErrorRetry');
       appendSystemNotice(instance, `${reasonText} (${attempt}/${maxAttempts})`);
     },

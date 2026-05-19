@@ -603,6 +603,120 @@ export function showMFADialog(
   });
 }
 
+// ── Credential Prompt Dialog ──
+
+/**
+ * Prompt the user to supply the JumpServer credential (password or API token)
+ * when Keychain has nothing on file. Used as a graceful recovery when an
+ * earlier "Sign out" purged secrets or when migrating from an older bundle.
+ *
+ * Returns the entered secret, or null if cancelled.
+ */
+export function showJsCredentialPrompt(
+  config: JumpServerConfig,
+  errorMsg?: string,
+): Promise<{ password?: string; apiToken?: string } | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'ssh-modal-overlay';
+    overlay.style.zIndex = '10002';
+
+    const dialog = document.createElement('div');
+    dialog.className = 'ssh-modal';
+    dialog.style.width = '420px';
+
+    const header = document.createElement('div');
+    header.className = 'ssh-modal-header';
+    const title = document.createElement('h3');
+    title.textContent = t('jsCredentialPromptTitle');
+    header.appendChild(title);
+    dialog.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'ssh-modal-body';
+
+    const desc = document.createElement('p');
+    desc.style.cssText = 'font-size:13px;color:var(--text-secondary);margin:0 0 16px;';
+    desc.textContent = t('jsCredentialPromptDesc').replace('{name}', config.name);
+    body.appendChild(desc);
+
+    if (errorMsg) {
+      const errEl = document.createElement('div');
+      errEl.className = 'ssh-form-status ssh-status-error';
+      errEl.style.marginBottom = '12px';
+      errEl.textContent = errorMsg;
+      body.appendChild(errEl);
+    }
+
+    const useToken = config.authMethod === 'token';
+
+    if (!useToken) {
+      const userGroup = document.createElement('div');
+      userGroup.className = 'ssh-form-group';
+      userGroup.style.marginBottom = '12px';
+      const userLabel = document.createElement('label');
+      userLabel.textContent = t('jsCredentialPromptUsername');
+      userLabel.style.cssText = 'display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;';
+      userGroup.appendChild(userLabel);
+      const userInput = document.createElement('input');
+      userInput.type = 'text';
+      userInput.className = 'ssh-input';
+      userInput.value = config.username;
+      userInput.readOnly = true;
+      userInput.style.opacity = '0.7';
+      userGroup.appendChild(userInput);
+      body.appendChild(userGroup);
+    }
+
+    const secretGroup = document.createElement('div');
+    secretGroup.className = 'ssh-form-group';
+    secretGroup.style.marginBottom = '16px';
+    const secretLabel = document.createElement('label');
+    secretLabel.textContent = useToken ? t('jsCredentialPromptApiToken') : t('jsCredentialPromptPassword');
+    secretLabel.style.cssText = 'display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;';
+    secretGroup.appendChild(secretLabel);
+    const secretInput = document.createElement('input');
+    secretInput.type = 'password';
+    secretInput.className = 'ssh-input';
+    secretInput.autocomplete = 'current-password';
+    secretGroup.appendChild(secretInput);
+    body.appendChild(secretGroup);
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'ssh-form-actions';
+    btnRow.style.justifyContent = 'flex-end';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'ssh-btn ssh-btn-secondary';
+    cancelBtn.textContent = t('sshUnsavedCancel');
+    cancelBtn.onclick = () => { overlay.remove(); resolve(null); };
+
+    const submitBtn = document.createElement('button');
+    submitBtn.className = 'ssh-btn ssh-btn-primary';
+    submitBtn.textContent = t('jsCredentialPromptSubmit');
+    submitBtn.onclick = () => {
+      const value = secretInput.value;
+      if (!value) return;
+      overlay.remove();
+      resolve(useToken ? { apiToken: value } : { password: value });
+    };
+
+    secretInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitBtn.click();
+      if (e.key === 'Escape') cancelBtn.click();
+    });
+
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(submitBtn);
+    body.appendChild(btnRow);
+    dialog.appendChild(body);
+
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    setTimeout(() => secretInput.focus(), 50);
+  });
+}
+
 // ── Asset Browser Panel ──
 
 /**

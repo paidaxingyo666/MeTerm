@@ -14,6 +14,10 @@ import {
   planExpandLabel,
   planMoreItemsLabel,
   waitPausedLabel,
+  waitReceivedLabel,
+  waitHintLabel,
+  waitCancelBtnLabel,
+  waitCancellingBtnLabel,
   waitResolvedLabel,
 } from './ai-tool-i18n';
 
@@ -227,6 +231,37 @@ export function appendToolCallCard(
   // button, because it is blocking the whole agent loop waiting
   // for the USER, not a background tool invocation.
   if (toolName === 'wait_for_user_input') {
+    // Adoption path: if run_command already mounted a pre-emptive card
+    // for this session (data-pre-wait="1"), don't render a duplicate.
+    // Re-use it as the tool's card: drop the marker, refresh reason,
+    // record the tool_call in history, and bail out.
+    const existingPreWait = container.querySelector<HTMLDivElement>(
+      ':scope > .ai-tool-card[data-tool="wait_for_user_input"][data-pre-wait="1"]',
+    );
+    if (existingPreWait) {
+      existingPreWait.removeAttribute('data-pre-wait');
+      // The reason in `args` is the LLM-supplied one, richer than the
+      // auto-detected placeholder. Fire reason-updated so the existing
+      // card swaps the text in place.
+      if (existingPreWait.dataset.waitCardId) {
+        document.dispatchEvent(new CustomEvent('ai-wait-for-user-input-reason-updated', {
+          detail: {
+            cardId: existingPreWait.dataset.waitCardId,
+            reason: typeof args.reason === 'string' ? args.reason : undefined,
+            timeoutSec: typeof args.timeout === 'number' ? args.timeout : undefined,
+          },
+        }));
+      }
+      // Skip notifyAgentWaiting — already fired when the pre-wait was
+      // mounted; firing again would spam the user.
+      sinkAgentPulse(instance);
+      instance.messages.push({
+        type: 'tool_call', toolName, args, result: null, isError: false,
+        timestamp: Date.now(),
+        paneNumber: paneNumber ?? undefined,
+      });
+      return;
+    }
     renderWaitForUserInputCard(card, args);
     // Fire a waiting notification (throttled + focus-aware inside).
     notifyAgentWaiting('Agent paused — your input needed', String(args.reason ?? ''));
@@ -335,6 +370,78 @@ export function appendToolCallCard(
 }
 
 /**
+ * Mount a wait-for-user-input card RIGHT NOW, before the LLM has
+ * called the tool. Used by run_command's pre-emptive password
+ * detection (see startPreWait in ai-tools-command.ts).
+ *
+ * Differences vs. the appendToolCallCard path:
+ *   • Triggered by a DOM CustomEvent (`ai-pre-wait-mount`) instead of
+ *     the agent's onToolCall callback, so it can fire before LLM
+ *     round-trip completes.
+ *   • cardId is bound to `card.dataset.waitCardId` IMMEDIATELY — the
+ *     normal flow relies on an `ai-wait-for-user-input-start` event
+ *     firing AFTER the card is mounted, which is the wrong order here
+ *     (the start event would have already fired before the listener
+ *     existed).
+ *   • Tagged with `data-pre-wait="1"` so when the LLM later calls
+ *     wait_for_user_input, appendToolCallCard detects the existing
+ *     pre-emptive card and adopts it instead of rendering a duplicate.
+ *
+ * Idempotent per session via the data-pre-wait="1" check: a second
+ * pre-wait dispatch for the same session is a no-op (the original
+ * card stays).
+ */
+function mountPreWaitCard(
+  sessionId: string,
+  cardId: string,
+  reason: string,
+  timeoutSec: number,
+): void {
+  // Find the chat panel via DOM query — avoids a circular import on
+  // ai-capsule (which already imports this module). The session id
+  // tag was set in createChatPanel.
+  const panel = document.querySelector<HTMLElement>(
+    `.ai-chat-panel[data-session-id="${CSS.escape(sessionId)}"]`,
+  );
+  if (!panel) return;
+  const container = panel.querySelector('.ai-chat-messages');
+  if (!container) return;
+  // Idempotent: if a pre-wait already exists, leave it alone.
+  if (container.querySelector(':scope > .ai-tool-card[data-pre-wait="1"]')) {
+    return;
+  }
+
+  const card = document.createElement('div');
+  card.className = 'ai-tool-card';
+  card.dataset.tool = 'wait_for_user_input';
+  card.dataset.toolId = `tc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  card.dataset.preWait = '1';
+  // Bind cardId directly — bypasses the onStart event the normal path uses.
+  card.dataset.waitCardId = cardId;
+
+  renderWaitForUserInputCard(card, { reason, timeout: timeoutSec });
+  container.appendChild(card);
+  container.scrollTop = container.scrollHeight;
+
+  notifyAgentWaiting('Agent paused — your input needed', reason);
+}
+
+// Module-load listener for pre-wait mount requests. ai-tools-command's
+// startPreWait dispatches this event the moment run_command sees a
+// password prompt, so the card appears before the LLM round-trip
+// returns.
+document.addEventListener('ai-pre-wait-mount', (e: Event) => {
+  const ev = e as CustomEvent<{
+    sessionId: string;
+    cardId: string;
+    reason: string;
+    timeoutSec: number;
+  }>;
+  if (!ev.detail) return;
+  mountPreWaitCard(ev.detail.sessionId, ev.detail.cardId, ev.detail.reason, ev.detail.timeoutSec);
+});
+
+/**
  * Render the highlighted "agent paused — waiting for user" card.
  * The card includes:
  *   - A prominent title + the agent-supplied reason
@@ -373,9 +480,7 @@ function renderWaitForUserInputCard(
 
   const hint = document.createElement('div');
   hint.className = 'ai-wait-card-hint';
-  hint.textContent = `Type the input directly in the terminal below and press Enter. `
-    + `The agent will automatically resume when the command finishes. `
-    + `Timeout: ${timeoutSec}s.`;
+  hint.textContent = waitHintLabel(timeoutSec);
   body.appendChild(hint);
 
   const btnRow = document.createElement('div');
@@ -383,7 +488,7 @@ function renderWaitForUserInputCard(
 
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'ai-confirm-btn ai-confirm-reject';
-  cancelBtn.innerHTML = `${rejectIcon(12)} <span>Cancel wait</span>`;
+  cancelBtn.innerHTML = `${rejectIcon(12)} <span>${escapeHtml(waitCancelBtnLabel())}</span>`;
   cancelBtn.addEventListener('click', () => {
     // We don't know the cardId from this closure — broadcast a
     // generic cancel and the execute() listener will match by
@@ -395,7 +500,7 @@ function renderWaitForUserInputCard(
       }));
     }
     cancelBtn.disabled = true;
-    cancelBtn.innerHTML = '<span>Cancelling…</span>';
+    cancelBtn.innerHTML = `<span>${escapeHtml(waitCancellingBtnLabel())}</span>`;
   });
   btnRow.appendChild(cancelBtn);
   body.appendChild(btnRow);
@@ -413,6 +518,44 @@ function renderWaitForUserInputCard(
     }
   };
   document.addEventListener('ai-wait-for-user-input-start', onStart);
+
+  // Intermediate signal: user has typed in the terminal. Flip the
+  // card from "waiting for you" to "received, command still running"
+  // so the user gets instant confirmation that the agent saw the
+  // input. The card still doesn't resolve here — it waits for the
+  // shell-idle signal before the agent continues.
+  const onReceived = (e: Event) => {
+    const ev = e as CustomEvent<{ cardId: string }>;
+    if (ev.detail?.cardId !== card.dataset.waitCardId) return;
+    if (card.dataset.waitReceived === '1') return;
+    card.dataset.waitReceived = '1';
+    card.classList.add('ai-wait-card-received');
+    hint.textContent = waitReceivedLabel();
+  };
+  document.addEventListener('ai-wait-for-user-input-received', onReceived);
+
+  // Upgrade signal: dispatched when the LLM's wait_for_user_input
+  // tool adopts a pre-emptive card. Replaces the placeholder reason
+  // (e.g. "Auto-detected password prompt") with the LLM's richer
+  // description (e.g. "sudo password for apt install foo") and
+  // refreshes the timeout-bearing hint if the LLM picked a different
+  // timeout. Skip the hint refresh once we're already in the
+  // "received" state — that text is the priority and shouldn't be
+  // clobbered back to "type the input".
+  const onReasonUpdated = (e: Event) => {
+    const ev = e as CustomEvent<{ cardId: string; reason?: string; timeoutSec?: number }>;
+    if (ev.detail?.cardId !== card.dataset.waitCardId) return;
+    if (typeof ev.detail.reason === 'string' && ev.detail.reason.trim()) {
+      reasonEl.textContent = ev.detail.reason;
+    }
+    if (
+      typeof ev.detail.timeoutSec === 'number'
+      && card.dataset.waitReceived !== '1'
+    ) {
+      hint.textContent = waitHintLabel(ev.detail.timeoutSec);
+    }
+  };
+  document.addEventListener('ai-wait-for-user-input-reason-updated', onReasonUpdated);
 
   const onEnd = (e: Event) => {
     const ev = e as CustomEvent<{ cardId: string; status: string }>;
@@ -444,6 +587,8 @@ function renderWaitForUserInputCard(
     `;
     document.removeEventListener('ai-wait-for-user-input-end', onEnd);
     document.removeEventListener('ai-wait-for-user-input-start', onStart);
+    document.removeEventListener('ai-wait-for-user-input-received', onReceived);
+    document.removeEventListener('ai-wait-for-user-input-reason-updated', onReasonUpdated);
   };
   document.addEventListener('ai-wait-for-user-input-end', onEnd);
 }

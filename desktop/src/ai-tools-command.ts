@@ -17,6 +17,181 @@ import {
 import { executeAgentCommand, withSessionPtyLock } from './ai-tools-shell';
 import { detectInteractiveState } from './ai-tools-prompt-detect';
 import { resolveSingleKey } from './ai-tools-keys';
+import { waitAutoDetectedReason } from './ai-tool-i18n';
+
+// ─── Pre-emptive wait card lifecycle ────────────────────────────
+//
+// Decouples "show waiting UI" from "LLM decides to call
+// wait_for_user_input". For password prompts (high-confidence) the
+// frontend dispatches the wait card the moment run_command returns,
+// runs its own input/shell-idle listeners, and the LLM's
+// wait_for_user_input call later ADOPTS this card.
+//
+// Design notes (after iterating away from a marker-based approach):
+//   • There is exactly ONE source of truth for "is the wait done":
+//     `mt.shellState.phase === 'ready'`. The previous design layered
+//     a `recentlyCompletedWaits` Map on top with a 30s expiry, but
+//     that introduced cross-command bleed (a marker from an unrelated
+//     earlier pre-wait could be consumed by a later, unrelated
+//     wait_for_user_input call). Reading phase directly is exact.
+//   • `wait_for_user_input` checks phase up-front: if shell is already
+//     ready it returns completed immediately (the busy→idle transition
+//     that powers shell-idle has already happened — registering a fresh
+//     listener now would never fire and the tool would hang to timeout).
+//   • `startPreWait` is idempotent per session and tears down any
+//     stale pre-wait first, so a model that runs run_command twice in
+//     a row never gets a doubled card.
+//   • A 10-minute hard cap protects against the orphan case where the
+//     agent run was aborted mid-flight (Stop button) and no further
+//     tool will ever come along to clean up the card.
+
+interface PreWaitState {
+  cardId: string;
+  startedAt: number;
+  unsubInput: () => void;
+  unsubIdle: () => void;
+  unsubCancel: () => void;
+  hardTimeout: ReturnType<typeof setTimeout>;
+}
+const activePreWaits = new Map<string, PreWaitState>();
+
+/** Pre-wait card auto-dismisses after this long if neither shell-idle
+ *  nor LLM adoption nor user cancel happens — guards against orphans
+ *  from an aborted agent run. */
+const PRE_WAIT_HARD_TIMEOUT_MS = 10 * 60 * 1000;
+
+function teardownPreWait(state: PreWaitState): void {
+  state.unsubInput();
+  state.unsubIdle();
+  state.unsubCancel();
+  clearTimeout(state.hardTimeout);
+}
+
+/**
+ * Show a wait card NOW, without waiting for an LLM round-trip.
+ * Idempotent per session — if a pre-wait is already active for this
+ * session it is torn down first (defensive: any stale state from a
+ * previous prompt is irrelevant once a fresh one arrives).
+ */
+function startPreWait(sessionId: string, reason: string): string {
+  // Defensive: a model that fires two run_commands back-to-back
+  // shouldn't end up with two cards. Tear down whatever's there.
+  const stale = activePreWaits.get(sessionId);
+  if (stale) {
+    activePreWaits.delete(sessionId);
+    teardownPreWait(stale);
+    try {
+      document.dispatchEvent(
+        new CustomEvent('ai-wait-for-user-input-end', {
+          detail: { cardId: stale.cardId, status: 'aborted' },
+        }),
+      );
+    } catch { /* ignore */ }
+  }
+
+  const cardId = `prewait-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 6)}`;
+
+  // Mount the card NOW — this is a synchronous DOM creation via the
+  // ai-pre-wait-mount listener in ai-capsule-tool-ui.ts. Critically,
+  // this does NOT go through the agent's tool_call_start path (which
+  // only fires once the LLM has called the tool), so the user sees
+  // the card before the LLM round-trip completes.
+  document.dispatchEvent(
+    new CustomEvent('ai-pre-wait-mount', {
+      detail: { sessionId, cardId, reason, timeoutSec: 600 },
+    }),
+  );
+
+  let receivedFired = false;
+  const dispatchReceived = () => {
+    if (receivedFired) return;
+    receivedFired = true;
+    try {
+      document.dispatchEvent(
+        new CustomEvent('ai-wait-for-user-input-received', { detail: { cardId } }),
+      );
+    } catch { /* ignore */ }
+  };
+
+  const unsubInput = TerminalRegistry.onInput(sessionId, () => dispatchReceived());
+
+  const unsubIdle = TerminalRegistry.onShellIdle(sessionId, () => {
+    const cur = activePreWaits.get(sessionId);
+    if (!cur || cur.cardId !== cardId) return;
+    activePreWaits.delete(sessionId);
+    teardownPreWait(cur);
+    try {
+      document.dispatchEvent(
+        new CustomEvent('ai-wait-for-user-input-end', {
+          detail: { cardId, status: 'completed' },
+        }),
+      );
+    } catch { /* ignore */ }
+  });
+
+  // If the user clicks "Cancel" on the pre-emptive card before the
+  // LLM has caught up, just dismiss the card.
+  const onCancel = (e: Event) => {
+    const ev = e as CustomEvent<{ cardId: string }>;
+    if (ev.detail?.cardId !== cardId) return;
+    const cur = activePreWaits.get(sessionId);
+    if (!cur || cur.cardId !== cardId) return;
+    activePreWaits.delete(sessionId);
+    teardownPreWait(cur);
+    try {
+      document.dispatchEvent(
+        new CustomEvent('ai-wait-for-user-input-end', {
+          detail: { cardId, status: 'aborted' },
+        }),
+      );
+    } catch { /* ignore */ }
+  };
+  document.addEventListener('ai-wait-for-user-input-cancel', onCancel);
+  const unsubCancel = () =>
+    document.removeEventListener('ai-wait-for-user-input-cancel', onCancel);
+
+  // Orphan guard. If neither shell-idle nor cancel nor adoption ever
+  // happens (e.g. the agent run was aborted right after run_command
+  // returned), dismiss the card so it doesn't linger forever.
+  const hardTimeout = setTimeout(() => {
+    const cur = activePreWaits.get(sessionId);
+    if (!cur || cur.cardId !== cardId) return;
+    activePreWaits.delete(sessionId);
+    teardownPreWait(cur);
+    try {
+      document.dispatchEvent(
+        new CustomEvent('ai-wait-for-user-input-end', {
+          detail: { cardId, status: 'timeout' },
+        }),
+      );
+    } catch { /* ignore */ }
+  }, PRE_WAIT_HARD_TIMEOUT_MS);
+
+  activePreWaits.set(sessionId, {
+    cardId,
+    startedAt: Date.now(),
+    unsubInput,
+    unsubIdle,
+    unsubCancel,
+    hardTimeout,
+  });
+  return cardId;
+}
+
+/** Called by wait_for_user_input. Hands over the live pre-wait card
+ *  (if any) to the caller and detaches the pre-wait's listeners.
+ *  Returns null when there's no live pre-wait (either none was ever
+ *  started, or it was already resolved by shell-idle / cancel /
+ *  hard-timeout). */
+function consumeActivePreWait(sessionId: string): { cardId: string } | null {
+  const state = activePreWaits.get(sessionId);
+  if (!state) return null;
+  activePreWaits.delete(sessionId);
+  teardownPreWait(state);
+  return { cardId: state.cardId };
+}
 
 /**
  * Shared pane-parameter schema fragment. Every terminal tool exposes
@@ -196,13 +371,26 @@ export function createRunCommandTool(): ToolHandler {
       const body = output || '(no output captured)';
       const panePrefix = paneHeaderFor(ctx, pane);
 
+      // For high-confidence password prompts, light up the wait card
+      // RIGHT NOW (before the LLM has a chance to respond). The LLM's
+      // wait_for_user_input call will adopt this card via consumeActivePreWait.
+      // We only do this for `waiting_password` — y/n confirms and generic
+      // input may legitimately be answered by type_text/press_keys, so we
+      // don't want to flash a misleading "agent paused" UI for them.
+      let preWaitNote = '';
+      if (status === 'waiting_password') {
+        startPreWait(pane.sessionId, waitAutoDetectedReason(detectorLine));
+        preWaitNote =
+          '\n[note: the agent UI is ALREADY showing a wait-for-user-input card for this prompt — the user can type now. You still MUST call wait_for_user_input to formally pause the agent loop; the tool will adopt the existing card rather than open a second one.]';
+      }
+
       if (status === 'completed' && exitCode > 0) {
-        return `${panePrefix}${header}${promptInfoLine}\n${body}`;
+        return `${panePrefix}${header}${promptInfoLine}\n${body}${preWaitNote}`;
       }
       if (hint) {
-        return `${panePrefix}${header}${promptInfoLine}\n${body}\n${hint}`;
+        return `${panePrefix}${header}${promptInfoLine}\n${body}\n${hint}${preWaitNote}`;
       }
-      return `${panePrefix}${header}${promptInfoLine}\n${body}`;
+      return `${panePrefix}${header}${promptInfoLine}\n${body}${preWaitNote}`;
     },
   };
 }
@@ -753,19 +941,63 @@ export function createWaitForUserInputTool(): ToolHandler {
         return 'Error: terminal connection lost';
       }
 
-      // Tell the UI to open a "paused for user input" card. This goes
-      // through a DOM CustomEvent so we don't need to thread another
-      // dep into ToolContext — ai-capsule-tool-ui subscribes to it.
-      const cardId = `wait-${Date.now().toString(36)}`;
-      document.dispatchEvent(new CustomEvent('ai-wait-for-user-input-start', {
-        detail: { sessionId: ctx.sessionId, cardId, reason, timeoutSec },
-      }));
+      // Adopt the still-active pre-emptive wait card if run_command
+      // already started one. Adoption skips the start dispatch so the
+      // user doesn't see a duplicate card flash.
+      const adopted = consumeActivePreWait(ctx.sessionId);
+
+      // Race fast-path: by the time we got here the shell may already
+      // be back at its prompt — the user typed fast, the command
+      // finished, and the busy→idle transition that powers shell-idle
+      // already fired before we could register a listener. Phase is
+      // the source of truth for this; checking it avoids the trap of
+      // attaching a listener that will never fire (and hanging until
+      // the configured timeout).
+      //
+      // We do NOT short-circuit when we just adopted a pre-wait —
+      // those cases are funneled through the pre-wait's own
+      // dispatchEnd, which has already happened before consumeActivePreWait
+      // could find it. So if adopted is non-null, the wait is still
+      // in flight by definition.
+      if (!adopted && mt.shellState.phase === 'ready') {
+        return (
+          `[status: completed, elapsed: 0s, exit: ${mt.shellState.lastExitCode}]\n`
+          + `The shell is already at its prompt — the underlying command finished `
+          + `before this tool call arrived (likely because the user typed the input `
+          + `before the agent caught up). Inspect the terminal (read_terminal) if `
+          + `you need the command's output.`
+        );
+      }
+
+      const cardId = adopted?.cardId ?? `wait-${Date.now().toString(36)}`;
+      if (!adopted) {
+        document.dispatchEvent(new CustomEvent('ai-wait-for-user-input-start', {
+          detail: { sessionId: ctx.sessionId, cardId, reason, timeoutSec },
+        }));
+      } else {
+        // Upgrade the pre-emptive card's text to the LLM's richer
+        // reason — "sudo password for apt install foo" reads way
+        // better than the generic "Auto-detected password prompt".
+        // Also refresh the timeout-bearing hint if it differs.
+        document.dispatchEvent(new CustomEvent('ai-wait-for-user-input-reason-updated', {
+          detail: { cardId, reason, timeoutSec },
+        }));
+      }
 
       const startedAt = Date.now();
 
+      // Snapshot the last-user-input timestamp BEFORE we start. If the
+      // user typed in the terminal just before the agent realised it
+      // needed to wait (LLM round-trip delay between detecting a
+      // password prompt and calling this tool), we'd otherwise show a
+      // misleading "waiting for you" card after they already typed.
+      const inputBaseline = mt.shellState.lastUserInputAt || 0;
+
       return new Promise<string>((resolve) => {
         let resolved = false;
+        let receivedFired = false;
         let unsubIdle: (() => void) | null = null;
+        let unsubInput: (() => void) | null = null;
         let unsubCancel: (() => void) | null = null;
         let onAbort: (() => void) | null = null;
         let deadline: ReturnType<typeof setTimeout> | null = null;
@@ -778,16 +1010,46 @@ export function createWaitForUserInputTool(): ToolHandler {
           } catch { /* ignore */ }
         };
 
+        const dispatchReceived = () => {
+          if (receivedFired) return;
+          receivedFired = true;
+          try {
+            document.dispatchEvent(new CustomEvent('ai-wait-for-user-input-received', {
+              detail: { cardId },
+            }));
+          } catch { /* ignore */ }
+        };
+
         const cleanup = () => {
           if (resolved) return;
           resolved = true;
           if (unsubIdle) unsubIdle();
+          if (unsubInput) unsubInput();
           if (unsubCancel) unsubCancel();
           if (deadline) clearTimeout(deadline);
           if (onAbort && ctx.abortSignal) {
             ctx.abortSignal.removeEventListener('abort', onAbort);
           }
         };
+
+        // Real-time signal: the user has typed SOMETHING in the
+        // terminal. Flips the card from "waiting" to "received, command
+        // still running" so the user gets immediate feedback that the
+        // agent saw their input. We don't resolve here — the agent
+        // still waits for shell-idle so it doesn't continue mid-command.
+        unsubInput = TerminalRegistry.onInput(ctx.sessionId, () => {
+          if (resolved || receivedFired) return;
+          dispatchReceived();
+        });
+
+        // Handle the "user typed just before the tool got called" race:
+        // the agent's LLM round-trip can add 1-2s of latency between
+        // detecting a password prompt and reaching this point, during
+        // which a fast user may have already typed. The lastUserInputAt
+        // timestamp covers that gap.
+        if (mt.shellState.lastUserInputAt > inputBaseline) {
+          dispatchReceived();
+        }
 
         // User clicks "Cancel" in the waiting card — this is the
         // intended escape hatch if they decide to stop the task.

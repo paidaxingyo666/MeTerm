@@ -898,6 +898,14 @@ class AICapsuleManagerClass {
     return this.capsules.has(sessionId);
   }
 
+  /** Look up the AICapsuleInstance for a session, or null if no capsule
+   *  exists for it. Used by the tools layer (e.g. run_command's
+   *  pre-emptive wait-card mount) to find the chat panel to render
+   *  into without dispatching a DOM CustomEvent. */
+  getInstance(sessionId: string): import('./ai-capsule-types').AICapsuleInstance | null {
+    return this.capsules.get(sessionId) ?? null;
+  }
+
   destroy(sessionId: string): void {
     const inst = this.capsules.get(sessionId);
     if (!inst) return;

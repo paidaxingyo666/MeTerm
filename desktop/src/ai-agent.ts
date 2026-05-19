@@ -989,6 +989,30 @@ export class ToolAgent {
           return;
         }
 
+        // ── Network blip (DNS / TCP reset / TLS / timeout, no HTTP status)
+        //    → short backoff retry. These are the "error sending request
+        //    for url …" / "connection reset" / "DNS lookup failed" class
+        //    of errors that previously bubbled straight to the user.
+        if (errorInfo.category === 'network') {
+          const config = RETRY_CONFIGS.network;
+          if (llmRetryCount < config.maxAttempts) {
+            const delay = calculateRetryDelay(config, llmRetryCount);
+            callbacks.onRetrying?.(llmRetryCount + 1, config.maxAttempts, delay, 'network');
+            const ok = await this.sleepWithAbortCheck(delay);
+            if (!ok) {
+              this.abortController = null;
+              callbacks.onAborted?.(iteration);
+              return;
+            }
+            llmRetryCount++;
+            iteration--;
+            continue;
+          }
+          this.abortController = null;
+          callbacks.onError(err);
+          return;
+        }
+
         // ── Non-retryable errors (auth, unknown) ──
         // Keep user message in history for potential resume
         this.abortController = null;

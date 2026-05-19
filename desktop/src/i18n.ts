@@ -329,6 +329,7 @@ export interface Translations {
   aiStreamError: string;
   aiRateLimitRetry: string;
   aiServerErrorRetry: string;
+  aiNetworkRetry: string;
   aiContextCompressed: string;
   aiThinking: string;
   aiWorking: string;
@@ -649,6 +650,13 @@ export interface Translations {
   jsLogoutConfirm: string;
   jsLoginRequired: string;
   jsReloginFailed: string;
+  jsItemActionsTitle: string;
+  jsCredentialPromptTitle: string;
+  jsCredentialPromptDesc: string;
+  jsCredentialPromptUsername: string;
+  jsCredentialPromptPassword: string;
+  jsCredentialPromptApiToken: string;
+  jsCredentialPromptSubmit: string;
   jsReturnToMainWindow: string;
   homeNewJumpServer: string;
   jsSaveAndConnect: string;
@@ -1023,6 +1031,7 @@ const translations: Record<Language, Translations> = {
     aiStreamError: 'Request failed',
     aiRateLimitRetry: 'Rate limited, retrying',
     aiServerErrorRetry: 'Server error, retrying',
+    aiNetworkRetry: 'Network blip, retrying',
     aiContextCompressed: 'Context compressed to fit model limits',
     aiThinking: 'Thinking',
     aiWorking: 'Working',
@@ -1309,6 +1318,13 @@ const translations: Record<Language, Translations> = {
     jsLogoutConfirm: 'Sign out of {name}? Existing terminal sessions will be preserved.',
     jsLoginRequired: 'Please sign in to JumpServer first',
     jsReloginFailed: 'Sign-in failed. Check your credentials and try again.',
+    jsItemActionsTitle: 'Actions',
+    jsCredentialPromptTitle: 'Sign in to JumpServer',
+    jsCredentialPromptDesc: 'Credentials required for {name}. None found in Keychain — please enter them again.',
+    jsCredentialPromptUsername: 'Username',
+    jsCredentialPromptPassword: 'Password',
+    jsCredentialPromptApiToken: 'API Token',
+    jsCredentialPromptSubmit: 'Sign in',
     jsReturnToMainWindow: 'Return to main window',
     homeNewJumpServer: 'JumpServer',
     jsSaveAndConnect: 'Save & Connect',
@@ -1713,6 +1729,7 @@ const translations: Record<Language, Translations> = {
     aiStreamError: '请求失败',
     aiRateLimitRetry: '请求频率受限，正在重试',
     aiServerErrorRetry: '服务暂时不可用，正在重试',
+    aiNetworkRetry: '网络异常，正在重试',
     aiContextCompressed: '上下文已压缩以适应模型限制',
     aiThinking: '思考中',
     aiWorking: '工作中',
@@ -1999,6 +2016,13 @@ const translations: Record<Language, Translations> = {
     jsLogoutConfirm: '退出登录 {name}？已打开的终端会话会保留。',
     jsLoginRequired: '请先重新登录 JumpServer',
     jsReloginFailed: '登录失败，请检查凭据后重试。',
+    jsItemActionsTitle: '操作',
+    jsCredentialPromptTitle: '登录 JumpServer',
+    jsCredentialPromptDesc: '需要凭据以连接 {name}。Keychain 中暂无该连接凭据，请重新输入。',
+    jsCredentialPromptUsername: '用户名',
+    jsCredentialPromptPassword: '密码',
+    jsCredentialPromptApiToken: 'API Token',
+    jsCredentialPromptSubmit: '登录',
     jsReturnToMainWindow: '返回主窗口',
     homeNewJumpServer: 'JumpServer',
     jsSaveAndConnect: '保存并连接',

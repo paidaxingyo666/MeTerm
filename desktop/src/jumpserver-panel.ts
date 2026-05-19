@@ -575,7 +575,13 @@ function renderPanelContent(container: HTMLElement, config: JumpServerConfig): v
           ${comment ? `<div class="js-narrow-card-comment" title="${escapeHtml(comment)}">${escapeHtml(comment)}</div>` : ''}
         </div>
       `;
-      card.addEventListener('dblclick', () => handleAssetConnect(asset, statusBar));
+      card.addEventListener('dblclick', () => {
+        if (card.dataset.connecting === '1') return;
+        card.dataset.connecting = '1';
+        Promise.resolve(handleAssetConnect(asset, statusBar)).finally(() => {
+          setTimeout(() => { delete card.dataset.connecting; }, 1500);
+        });
+      });
       list.appendChild(card);
     });
     assets.appendChild(list);
@@ -701,7 +707,8 @@ export function showJsConnectionContextMenu(x: number, y: number, config: JumpSe
   reloginItem.textContent = t('jsReconnectAction');
   reloginItem.onclick = async () => {
     cleanup();
-    const ok = await ensureJSAuthenticated(config);
+    // force=true 强制重新认证（弹 MFA），否则当前已登录时 ensureJSAuthenticated 会直接返回 true 不做任何事
+    const ok = await ensureJSAuthenticated(config, true);
     if (ok) {
       if (isJumpServerPanelOpen()) openJumpServerPanel(config);
     }

@@ -70,6 +70,11 @@ export function createChatPanel(
 ): HTMLDivElement {
   const panel = document.createElement('div');
   panel.className = 'ai-chat-panel';
+  // Tag with the owning session so cross-cutting code (e.g. the
+  // pre-wait card mounter in ai-capsule-tool-ui.ts) can locate the
+  // right chat panel via DOM query without taking a circular import
+  // on AICapsuleManager.
+  panel.dataset.sessionId = instance.sessionId;
 
   // Resize handle at the top edge
   const resizeHandle = document.createElement('div');

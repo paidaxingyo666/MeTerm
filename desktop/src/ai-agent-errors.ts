@@ -8,6 +8,13 @@ export type ErrorCategory =
   | 'context_overflow'
   | 'auth'
   | 'tool_unsupported'
+  /**
+   * Transport-level transient failures: DNS, TCP reset, TLS handshake,
+   * connection closed mid-stream, socket timeout — i.e. the kind of
+   * blip where retrying after a short backoff usually succeeds.
+   * Carries no HTTP status code (the request never made it round-trip).
+   */
+  | 'network'
   | 'abort'
   | 'unknown';
 
@@ -22,6 +29,11 @@ export const RETRY_CONFIGS: Record<string, RetryConfig> = {
   rate_limit:       { maxAttempts: 10, baseDelayMs: 2000,  maxDelayMs: 30000, backoffFactor: 2 },
   server_error:     { maxAttempts: 10, baseDelayMs: 5000,  maxDelayMs: 60000, backoffFactor: 2 },
   context_overflow: { maxAttempts: 2,  baseDelayMs: 500,   maxDelayMs: 500,   backoffFactor: 1 },
+  // Network blips usually clear quickly; back off fast and try a few
+  // times before giving up. 5 attempts ≈ 1s + 2s + 4s + 8s + 10s = 25s
+  // worst-case wait, which is well under the user's patience window
+  // but enough to ride out a WiFi flap or a brief carrier hiccup.
+  network:          { maxAttempts: 5,  baseDelayMs: 1000,  maxDelayMs: 10000, backoffFactor: 2 },
 };
 
 export function classifyError(err: Error): { category: ErrorCategory; statusCode: number } {
@@ -55,6 +67,39 @@ export function classifyError(err: Error): { category: ErrorCategory; statusCode
     ))
   ) {
     return { category: 'context_overflow', statusCode };
+  }
+
+  // Transient transport-level failures — these never reach the
+  // server, so they have no HTTP status. reqwest's default message is
+  // "error sending request for url (...)"; OkHttp / Go / etc. produce
+  // variants matched below. Putting this BEFORE the HTTP-status checks
+  // makes sure a "connection reset by peer" doesn't get mis-bucketed.
+  if (statusCode === 0) {
+    if (
+      lowerMsg.includes('error sending request') ||  // reqwest
+      lowerMsg.includes('connection reset') ||
+      lowerMsg.includes('connection refused') ||
+      lowerMsg.includes('connection closed') ||
+      lowerMsg.includes('connection aborted') ||
+      lowerMsg.includes('connection error') ||
+      lowerMsg.includes('broken pipe') ||
+      lowerMsg.includes('eof') ||
+      lowerMsg.includes('tls') ||
+      lowerMsg.includes('ssl') ||
+      lowerMsg.includes('handshake') ||
+      lowerMsg.includes('dns') ||
+      lowerMsg.includes('lookup') ||
+      lowerMsg.includes('resolve') ||
+      lowerMsg.includes('dial tcp') ||
+      lowerMsg.includes('network is unreachable') ||
+      lowerMsg.includes('no route to host') ||
+      lowerMsg.includes('temporary failure') ||
+      lowerMsg.includes('timeout') ||
+      lowerMsg.includes('timed out') ||
+      lowerMsg.includes('failed to fetch')
+    ) {
+      return { category: 'network', statusCode };
+    }
   }
 
   // Rate limit

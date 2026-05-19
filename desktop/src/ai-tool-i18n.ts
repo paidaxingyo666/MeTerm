@@ -67,6 +67,21 @@ export function planMoreItemsLabel(n: number): string {
 
 const WAIT_LABELS = {
   paused:    { en: 'Agent paused — please type in the terminal', zh: '已暂停 — 请在终端中输入' },
+  received:  {
+    en: '✓ Input received. Waiting for the command to finish — the agent will resume automatically.',
+    zh: '✓ 已收到你的输入，等待命令执行完成 — Agent 会自动恢复。',
+  },
+  hint: {
+    en: 'Type the input directly in the terminal below and press Enter. The agent will automatically resume when the command finishes. Timeout: {sec}s.',
+    zh: '请直接在下方终端中输入并按 Enter 提交，命令完成后 Agent 会自动恢复。超时时间：{sec} 秒。',
+  },
+  cancelBtn:        { en: 'Cancel wait', zh: '取消等待' },
+  cancellingBtn:    { en: 'Cancelling…', zh: '正在取消…' },
+  autoDetected:     { en: 'Auto-detected password prompt', zh: '自动检测到密码输入提示' },
+  autoDetectedFmt:  {
+    en: 'Auto-detected password prompt: {line}',
+    zh: '自动检测到密码输入提示：{line}',
+  },
   resumed:   { en: 'resumed',   zh: '已恢复' },
   cancelled: { en: 'cancelled', zh: '已取消' },
   timeout:   { en: 'timed out', zh: '已超时' },
@@ -74,6 +89,26 @@ const WAIT_LABELS = {
 
 export function waitPausedLabel(): string {
   return WAIT_LABELS.paused[getLanguage()] ?? WAIT_LABELS.paused.en;
+}
+export function waitReceivedLabel(): string {
+  return WAIT_LABELS.received[getLanguage()] ?? WAIT_LABELS.received.en;
+}
+export function waitHintLabel(timeoutSec: number): string {
+  const tpl = WAIT_LABELS.hint[getLanguage()] ?? WAIT_LABELS.hint.en;
+  return tpl.replace('{sec}', String(timeoutSec));
+}
+export function waitCancelBtnLabel(): string {
+  return WAIT_LABELS.cancelBtn[getLanguage()] ?? WAIT_LABELS.cancelBtn.en;
+}
+export function waitCancellingBtnLabel(): string {
+  return WAIT_LABELS.cancellingBtn[getLanguage()] ?? WAIT_LABELS.cancellingBtn.en;
+}
+export function waitAutoDetectedReason(detectorLine?: string): string {
+  if (detectorLine) {
+    const tpl = WAIT_LABELS.autoDetectedFmt[getLanguage()] ?? WAIT_LABELS.autoDetectedFmt.en;
+    return tpl.replace('{line}', detectorLine.slice(0, 120));
+  }
+  return WAIT_LABELS.autoDetected[getLanguage()] ?? WAIT_LABELS.autoDetected.en;
 }
 export function waitResolvedLabel(status: 'completed' | 'aborted' | 'timeout' | string): string {
   const base = toolDisplayName('wait_for_user_input');
