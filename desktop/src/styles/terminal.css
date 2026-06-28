@@ -7,6 +7,8 @@
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+  /* Floating panel on #main-content's canvas — no border, no radius (rounded corners
+     clipped the corner text). Defined by the canvas gap + being lighter than canvas. */
   background: rgba(var(--bg-primary), var(--app-window-opacity));
 }
 

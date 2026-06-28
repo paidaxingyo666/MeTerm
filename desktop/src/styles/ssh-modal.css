@@ -4,14 +4,18 @@
 .ssh-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.55);
   z-index: 2000;
   display: flex;
   align-items: center;
   justify-content: center;
   animation: ssh-overlay-in 0.18s ease-out;
+}
+
+html.vibrancy-active .ssh-modal-overlay {
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 @keyframes ssh-overlay-in {
@@ -25,10 +29,8 @@
 }
 
 .ssh-modal {
-  background: rgba(var(--bg-toolbar), 0.96);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: none;
+  background: rgba(var(--bg-toolbar), 1);
+  border: 1px solid var(--border-primary);
   border-radius: 14px;
   padding: 20px 20px 18px;
   min-width: 280px;
@@ -428,6 +430,12 @@
   box-shadow:
     0 8px 40px rgba(0, 0, 0, 0.12),
     0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+
+html.vibrancy-active .ssh-modal {
+  background: rgba(var(--bg-toolbar), 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 [data-theme="light"] .ssh-input,

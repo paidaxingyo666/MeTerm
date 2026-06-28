@@ -80,9 +80,14 @@ pub async fn create_ssh_session(
             //       new dedicated SSH session with a wider window, so bulk
             //       SFTP does not stall the interactive terminal.
             //
-            // On failure we stash the reason on the Session so the next
-            // file-list request can surface it instead of a generic
-            // "SFTP_NOT_AVAILABLE, please retry".
+            // 自动 fallback：如果 dedicated SFTP 失败（最常见的是私钥认证
+            // 在服务端被 rate-limit / MaxAuthTries 限制，导致第二次 publickey
+            // 直接失败），自动 fallback 到 multiplexed SFTP 子通道。后者复用
+            // 已建立的 terminal SSH 连接，根本不需要二次认证，因此对任何拒绝
+            // 二次 publickey 的服务器都能工作；代价仅是和终端 I/O 共享带宽。
+            //
+            // 失败时把组合错误写入 sftp_init_error 供下一次 file-list 请求
+            // 透传到前端，便于诊断（而不是只显示 "未就绪，请重试"）。
             let session_bg = session.clone();
             let multiplex = sftp_config.multiplex_sftp;
             let ssh_handle_for_sftp = ssh_handle.clone();
@@ -90,7 +95,36 @@ pub async fn create_ssh_session(
                 let result = if multiplex {
                     SshTerminal::init_sftp(&ssh_handle_for_sftp).await
                 } else {
-                    SshTerminal::connect_sftp(&sftp_config).await
+                    match SshTerminal::connect_sftp(&sftp_config).await {
+                        Ok(sftp) => Ok(sftp),
+                        Err(dedicated_err) => {
+                            eprintln!(
+                                "[ssh] dedicated SFTP failed ({}), falling back to multiplexed channel",
+                                dedicated_err
+                            );
+                            // Log config context (no secrets) so users with weird
+                            // server policies (e.g. MaxAuthTries=1) can self-diagnose.
+                            eprintln!(
+                                "[ssh] sftp diag: auth_method={:?} has_private_key={} has_password={} has_passphrase={} trusted_fp={} proxy={}",
+                                sftp_config.auth_method,
+                                !sftp_config.private_key.is_empty(),
+                                !sftp_config.password.is_empty(),
+                                !sftp_config.passphrase.is_empty(),
+                                !sftp_config.trusted_fingerprint.is_empty(),
+                                if sftp_config.proxy_type.is_empty() { "none" } else { &sftp_config.proxy_type },
+                            );
+                            match SshTerminal::init_sftp(&ssh_handle_for_sftp).await {
+                                Ok(sftp) => {
+                                    eprintln!("[ssh] multiplexed SFTP fallback succeeded");
+                                    Ok(sftp)
+                                }
+                                Err(mux_err) => Err(format!(
+                                    "dedicated SFTP failed: {}; multiplex fallback also failed: {}",
+                                    dedicated_err, mux_err
+                                )),
+                            }
+                        }
+                    }
                 };
                 match result {
                     Ok(sftp_client) => {

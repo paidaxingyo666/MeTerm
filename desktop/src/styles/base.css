@@ -2,7 +2,7 @@
 body {
   background: transparent;
   color: var(--text-primary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family: var(--ui-font, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace);
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -10,17 +10,31 @@ body {
 
 #app {
   display: grid;
-  grid-template-rows: 32px 24px minmax(0, 1fr);
+  /* First row 38px = 32px toolbar + 6px breathing gap below the tabs (the gap
+     is the toolbar's own bottom padding, so it's a continuous toolbar-colored
+     block with no seam — see #window-toolbar). */
+  grid-template-rows: 33px 24px minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
   overflow: hidden;
   background: transparent;
+  transition: grid-template-rows 0.16s ease;
+}
+/* Status bar auto-hidden → collapse its grid row so the space is reclaimed. */
+#app.app-status-collapsed {
+  grid-template-rows: 33px 0px minmax(0, 1fr);
 }
 
 #main-content {
   display: flex;
+  gap: 8px;
+  padding: 8px;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+  /* The canvas the sidebar + terminal float on as inset cards. Goes transparent
+     under vibrancy (gaps show desktop blur — can't tint behind the translucent
+     terminal without over-darkening it). Disabled in fullscreen/PiP. */
+  background: rgba(var(--bg-canvas, 24, 24, 25), var(--app-window-opacity, 1));
 }
 

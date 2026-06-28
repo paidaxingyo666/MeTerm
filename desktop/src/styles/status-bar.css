@@ -13,6 +13,13 @@
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
+  transition: height 0.16s ease, border-bottom-color 0.16s ease;
+}
+
+/* Auto-hide: collapse to 0 when idle (no connecting/error/transfer/AI). */
+#status.status-collapsed {
+  height: 0;
+  border-bottom-color: transparent;
 }
 
 #status.error {

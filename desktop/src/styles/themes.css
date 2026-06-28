@@ -18,6 +18,7 @@ body,
    ============================================================================ */
 [data-theme="dark"] {
   --bg-primary: 30, 30, 30;
+  --bg-canvas: 24, 24, 25;             /* canvas: same family as --bg-primary (30,30,30), only ~6 steps darker so the square terminal still floats but the gap no longer reads as a near-black frame (was 13,13,14) */
   --bg-toolbar: 33, 33, 35;
   --bg-button: 50, 50, 52;
   --bg-button-hover: 64, 64, 66;
@@ -84,6 +85,7 @@ body,
    ============================================================================ */
 [data-theme="darker"] {
   --bg-primary: 0, 0, 0;
+  --bg-canvas: 0, 0, 0;
   --bg-toolbar: 10, 10, 12;
   --bg-button: 28, 28, 30;
   --bg-button-hover: 40, 40, 42;
@@ -150,6 +152,7 @@ body,
    ============================================================================ */
 [data-theme="navy"] {
   --bg-primary: 1, 3, 9;
+  --bg-canvas: 0, 1, 4;
   --bg-toolbar: 4, 8, 20;
   --bg-button: 12, 18, 38;
   --bg-button-hover: 20, 28, 52;
@@ -216,6 +219,7 @@ body,
    ============================================================================ */
 [data-theme="light"] {
   --bg-primary: 248, 248, 248;
+  --bg-canvas: 236, 236, 239;         /* closer to the light terminal (248) — still a soft seam, no harsh frame */
   --bg-toolbar: 238, 238, 240;
   --bg-button: 225, 225, 228;
   --bg-button-hover: 212, 212, 216;
@@ -334,6 +338,18 @@ html.vibrancy-active .home-view {
 }
 html.vibrancy-active #window-toolbar {
   background: rgba(var(--vibrancy-toolbar), var(--vibrancy-tint)) !important;
+}
+/* Docked connection sidebar under 毛玻璃: the card frosts to a toolbar tint. The
+   surrounding gaps are #main-content's canvas, which goes transparent under vibrancy
+   so the desktop blur shows (it can't tint behind the translucent terminal without
+   over-darkening it). Frost only when vibrancy is on. */
+html.vibrancy-active .home-side:not(.conn-sidebar--flyout) {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.03)),
+    rgba(var(--vibrancy-toolbar), var(--vibrancy-tint)) !important;
+}
+html.vibrancy-active #main-content {
+  background: transparent !important;
 }
 html.vibrancy-active .status-bar-container {
   background: rgba(var(--vibrancy-status), var(--vibrancy-tint)) !important;

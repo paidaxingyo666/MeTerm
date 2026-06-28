@@ -121,13 +121,25 @@ function looksLikePrompt(text: string): boolean {
   return false;
 }
 
+// ─── Bottom AI bar collapse persistence ──────────────────────────
+// The bottom command bar defaults to collapsed (hidden + floating ∧ button).
+// The chat side panel is a separate concern (driven by chatOpen).
+const LS_BAR_COLLAPSED = 'meterm-ai-bar-collapsed';
+function loadBarCollapsed(): boolean {
+  // Default collapsed: only an explicit '0' means "expanded".
+  return localStorage.getItem(LS_BAR_COLLAPSED) !== '0';
+}
+function saveBarCollapsed(collapsed: boolean): void {
+  localStorage.setItem(LS_BAR_COLLAPSED, collapsed ? '1' : '0');
+}
+
 // ─── AI Capsule Manager ──────────────────────────────────────────
 
 class AICapsuleManagerClass {
   private capsules = new Map<string, AICapsuleInstance>();
   /** Tab-scoped shared agent state (see ai-capsule-tab-state.ts). */
   private tabStates = new TabStateRegistry();
-  private _barHidden = false;
+  private _barHidden = loadBarCollapsed();
   private _floatingBtn: HTMLElement | null = null;
   private _lastShownSessionId: string | null = null;
   private _deleteSkipUntil = 0; // timestamp: skip confirm until this time
@@ -277,14 +289,41 @@ class AICapsuleManagerClass {
 
   private openChat(instance: AICapsuleInstance): void {
     openChatFn(instance, this.getChatOpsHost());
+    document.dispatchEvent(new CustomEvent('ai-chat-toggled'));
   }
 
   private minimizeChat(instance: AICapsuleInstance): void {
     minimizeChatFn(instance, this.getChatOpsHost());
+    document.dispatchEvent(new CustomEvent('ai-chat-toggled'));
   }
 
   private closeChatAndSave(instance: AICapsuleInstance): void {
     closeChatAndSaveFn(instance, this.getChatOpsHost());
+    document.dispatchEvent(new CustomEvent('ai-chat-toggled'));
+  }
+
+  // ─── Public: toolbar "agent" button entry point ──────────────
+  // Toggle the chat side panel for a session (defaults to the active one).
+  // Independent of the bottom bar's collapsed state.
+  toggleChatSidebar(sessionId?: string): void {
+    const sid = sessionId ?? this._lastShownSessionId
+      ?? (this.capsules.keys().next().value as string | undefined);
+    if (!sid) return;
+    if (!this.capsules.has(sid)) this.create(sid);
+    const inst = this.capsules.get(sid)!;
+    this._lastShownSessionId = sid;
+    if (inst.chatOpen) {
+      this.minimizeChat(inst);
+    } else {
+      this.openChat(inst);
+    }
+  }
+
+  /** Whether the chat side panel is currently open for the given/active session. */
+  isChatSidebarOpen(sessionId?: string): boolean {
+    const sid = sessionId ?? this._lastShownSessionId;
+    if (!sid) return false;
+    return !!this.capsules.get(sid)?.chatOpen;
   }
 
   private sendToLLMFrom(instance: AICapsuleInstance, text: string): void {
@@ -779,9 +818,13 @@ class AICapsuleManagerClass {
     }
     if (this._barHidden) {
       inst.element.style.display = 'none';
+      this._lastShownSessionId = sessionId;
+      this.ensureFloatingBtn();
+      if (this._floatingBtn) this._floatingBtn.style.display = 'flex';
       return;
     }
     inst.element.style.display = '';
+    if (this._floatingBtn) this._floatingBtn.style.display = 'none';
     this._lastShownSessionId = sessionId;
 
     // If any session in the tab has side panel open, keep bar in side-active mode
@@ -835,54 +878,43 @@ class AICapsuleManagerClass {
 
   show(sessionId: string): void {
     const inst = this.capsules.get(sessionId);
-    if (inst) {
-      if (this._barHidden) {
-        inst.element.style.display = 'none';
-        if (inst.layoutMode === 'side') {
-          if (inst.sidePanel) inst.sidePanel.style.display = 'none';
-        } else {
-          if (inst.chatPanel) inst.chatPanel.style.display = 'none';
-        }
-        this.ensureFloatingBtn();
-        if (this._floatingBtn) this._floatingBtn.style.display = 'flex';
-        return;
-      }
-      this._lastShownSessionId = sessionId;
+    if (!inst) return;
+    this._lastShownSessionId = sessionId;
+
+    // 1) Bottom AI bar visibility is gated SOLELY by the collapse flag.
+    //    (Decoupled from the chat side panel so a collapsed bar never hides
+    //    an open chat sidebar.)
+    if (this._barHidden) {
+      inst.element.style.display = 'none';
+      this.ensureFloatingBtn();
+      if (this._floatingBtn) this._floatingBtn.style.display = 'flex';
+    } else {
       inst.element.style.display = '';
-
-      // Hide other sessions' side panels, show this session's
-      this.capsules.forEach((other, otherId) => {
-        if (otherId !== sessionId && other.layoutMode === 'side' && other.sidePanel) {
-          hideSidePanel(other);
-        }
-      });
-
-      if (inst.layoutMode === 'side' && inst.chatOpen) {
-        // Side mode with chat open: ensure side panel is in DOM and visible
-        inst.element.classList.add('ai-bar--side-active');
-        if (inst.chatPanel) inst.chatPanel.style.display = '';
-        if (inst.sidePanel && !inst.sidePanel.parentElement) {
-          switchToSideMode(inst, getSideInputCallbacksFn(this.getChatOpsHost()));
-        }
-        showSidePanel(inst);
-      } else {
-        inst.element.classList.remove('ai-bar--side-active');
-        // Bottom mode: restore chat panel if it was open
-        if (inst.chatPanel && inst.chatOpen) {
-          inst.chatPanel.style.display = '';
-        }
-        // Side mode but chat not open: keep side panel hidden
-        if (inst.layoutMode === 'side' && inst.sidePanel) {
-          hideSidePanel(inst);
-        }
-      }
-      // Update model label whenever shown
+      if (this._floatingBtn) this._floatingBtn.style.display = 'none';
       const label = inst.element.querySelector('.ai-bar-model-label') as HTMLSpanElement;
       if (label) updateModelLabelFn(label);
-      // Sync AI bar position with current drawer state
-      const drawerHeight = DrawerManager.getDrawerHeight(sessionId);
-      this.setDrawerOffset(sessionId, drawerHeight);
     }
+
+    // 2) Chat side panel visibility is driven purely by chatOpen (chat is
+    //    sidebar-only). Hide every other session's side panel first.
+    this.capsules.forEach((other, otherId) => {
+      if (otherId !== sessionId && other.sidePanel) hideSidePanel(other);
+    });
+    if (inst.chatOpen) {
+      inst.element.classList.add('ai-bar--side-active');
+      if (inst.sidePanel && !inst.sidePanel.parentElement) {
+        switchToSideMode(inst, getSideInputCallbacksFn(this.getChatOpsHost()));
+      }
+      if (inst.chatPanel) inst.chatPanel.style.display = '';
+      showSidePanel(inst);
+    } else {
+      inst.element.classList.remove('ai-bar--side-active');
+      if (inst.sidePanel) hideSidePanel(inst);
+    }
+
+    // Sync AI bar position with current drawer state (no-op when bar hidden).
+    const drawerHeight = DrawerManager.getDrawerHeight(sessionId);
+    this.setDrawerOffset(sessionId, drawerHeight);
   }
 
   setDrawerOffset(sessionId: string, drawerHeight: number): void {
@@ -954,6 +986,7 @@ class AICapsuleManagerClass {
 
   hideBar(): void {
     this._barHidden = true;
+    saveBarCollapsed(true);
     this.capsules.forEach((inst) => {
       inst.element.style.display = 'none';
     });
@@ -966,6 +999,7 @@ class AICapsuleManagerClass {
 
   showBar(): void {
     this._barHidden = false;
+    saveBarCollapsed(false);
     const panel = document.getElementById('terminal-panel');
     if (panel) panel.classList.remove('ai-bar-hidden');
     if (this._floatingBtn) this._floatingBtn.style.display = 'none';

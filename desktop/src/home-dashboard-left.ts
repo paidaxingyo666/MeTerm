@@ -588,7 +588,7 @@ function showGroupContextMenu(event: MouseEvent, groupName: string, refreshView:
   autoCloseMenu(menu);
 }
 
-function showConnectionContextMenu(event: MouseEvent, item: ConnectionItem, currentGroup: string | null, refreshView: () => void): void {
+export function showConnectionContextMenu(event: MouseEvent, item: ConnectionItem, currentGroup: string | null, refreshView: () => void): void {
   removeContextMenu();
   const menu = document.createElement('div');
   menu.className = 'home-card-menu';

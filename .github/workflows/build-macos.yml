@@ -29,6 +29,15 @@ env:
   # Must match minimumSystemVersion in tauri.conf.json to ensure consistent
   # native UI rendering (traffic light buttons, titlebar style, etc.)
   MACOSX_DEPLOYMENT_TARGET: '14.0'
+  # Apple Developer ID code-signing + notarization. All optional: when the
+  # secrets are unset, APPLE_SIGNING_IDENTITY is empty and the sign/notarize
+  # steps are skipped (producing an unsigned, ad-hoc build as before).
+  APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+  APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+  APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+  APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+  APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+  APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
 
 jobs:
   build-macos-arm64:
@@ -77,6 +86,19 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
+      - name: Import Developer ID certificate
+        if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Prepare notarization API key
+        if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
+        run: |
+          printf '%s' "$APPLE_API_KEY" > "$RUNNER_TEMP/asc_api_key.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/asc_api_key.p8" >> "$GITHUB_ENV"
+
       - name: Build Tauri app (arm64)
         run: |
           cd desktop
@@ -87,25 +109,29 @@ jobs:
 
       - name: Build & embed Finder Extension (arm64)
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Only sign the appex with the real Developer ID when the .app will
+          # also be signed + notarized — otherwise keep it ad-hoc so the bundle
+          # is internally consistent.
+          SIGN_ENABLED: ${{ (github.event_name == 'push' || inputs.sign) && '1' || '' }}
         run: |
           APP_PATH=$(find desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
-          SIGN_ID="${APPLE_SIGNING_IDENTITY:--}"
+          if [ -n "$SIGN_ENABLED" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            SIGN_ID="$APPLE_SIGNING_IDENTITY"
+          else
+            SIGN_ID="-"
+          fi
           bash desktop/scripts/build-finder-extension.sh "$APP_PATH" "$SIGN_ID"
 
-      # 可选: 代码签名
-      - name: Code sign (optional)
-        if: ${{ inputs.sign && env.APPLE_SIGNING_IDENTITY != '' }}
+      # Developer ID sign + notarize + staple the .app (the .appex was already
+      # signed inside-out in the previous step). Runs on release tags, or on a
+      # manual dispatch with sign=true — whenever signing secrets are present.
+      - name: Sign & notarize app (arm64)
+        if: ${{ (github.event_name == 'push' || inputs.sign) && env.APPLE_SIGNING_IDENTITY != '' }}
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          ENTITLEMENTS_PATH: desktop/src-tauri/Entitlements.plist
         run: |
           APP_PATH=$(find desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
-          if [ -n "$APP_PATH" ]; then
-            codesign --deep --force --options runtime \
-              --sign "$APPLE_SIGNING_IDENTITY" \
-              --timestamp "$APP_PATH"
-            codesign --verify --verbose=2 "$APP_PATH"
-          fi
+          bash desktop/scripts/macos-sign-notarize.sh app "$APP_PATH"
 
       # Rebuild updater .tar.gz after embedding Finder Extension (Tauri creates it before we embed)
       - name: Rebuild updater artifact with Finder Extension (arm64)
@@ -156,6 +182,14 @@ jobs:
                 "$DMG_DIR/$DMG_NAME" \
                 "$APP_PATH" || true
             fi
+          fi
+
+      - name: Sign & notarize dmg (arm64)
+        if: ${{ (github.event_name == 'push' || inputs.sign) && env.APPLE_SIGNING_IDENTITY != '' }}
+        run: |
+          DMG_PATH=$(find desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" -maxdepth 1 | head -1)
+          if [ -n "$DMG_PATH" ]; then
+            bash desktop/scripts/macos-sign-notarize.sh dmg "$DMG_PATH"
           fi
 
       - name: Upload DMG (arm64)
@@ -229,6 +263,19 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
+      - name: Import Developer ID certificate
+        if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Prepare notarization API key
+        if: ${{ env.APPLE_SIGNING_IDENTITY != '' }}
+        run: |
+          printf '%s' "$APPLE_API_KEY" > "$RUNNER_TEMP/asc_api_key.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/asc_api_key.p8" >> "$GITHUB_ENV"
+
       - name: Build Tauri app (x86_64)
         run: |
           cd desktop
@@ -239,25 +286,26 @@ jobs:
 
       - name: Build & embed Finder Extension (x86_64)
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Only sign the appex with the real Developer ID when the .app will
+          # also be signed + notarized — otherwise keep it ad-hoc so the bundle
+          # is internally consistent.
+          SIGN_ENABLED: ${{ (github.event_name == 'push' || inputs.sign) && '1' || '' }}
         run: |
           APP_PATH=$(find desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
-          SIGN_ID="${APPLE_SIGNING_IDENTITY:--}"
+          if [ -n "$SIGN_ENABLED" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            SIGN_ID="$APPLE_SIGNING_IDENTITY"
+          else
+            SIGN_ID="-"
+          fi
           bash desktop/scripts/build-finder-extension.sh "$APP_PATH" "$SIGN_ID"
 
-      # 可选: 代码签名
-      - name: Code sign (optional)
-        if: ${{ inputs.sign && env.APPLE_SIGNING_IDENTITY != '' }}
+      - name: Sign & notarize app (x86_64)
+        if: ${{ (github.event_name == 'push' || inputs.sign) && env.APPLE_SIGNING_IDENTITY != '' }}
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          ENTITLEMENTS_PATH: desktop/src-tauri/Entitlements.plist
         run: |
           APP_PATH=$(find desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
-          if [ -n "$APP_PATH" ]; then
-            codesign --deep --force --options runtime \
-              --sign "$APPLE_SIGNING_IDENTITY" \
-              --timestamp "$APP_PATH"
-            codesign --verify --verbose=2 "$APP_PATH"
-          fi
+          bash desktop/scripts/macos-sign-notarize.sh app "$APP_PATH"
 
       # Rebuild updater .tar.gz after embedding Finder Extension
       - name: Rebuild updater artifact with Finder Extension (x86_64)
@@ -307,6 +355,14 @@ jobs:
                 "$DMG_DIR/$DMG_NAME" \
                 "$APP_PATH" || true
             fi
+          fi
+
+      - name: Sign & notarize dmg (x86_64)
+        if: ${{ (github.event_name == 'push' || inputs.sign) && env.APPLE_SIGNING_IDENTITY != '' }}
+        run: |
+          DMG_PATH=$(find desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg -name "*.dmg" -maxdepth 1 | head -1)
+          if [ -n "$DMG_PATH" ]; then
+            bash desktop/scripts/macos-sign-notarize.sh dmg "$DMG_PATH"
           fi
 
       - name: Upload DMG (x86_64)

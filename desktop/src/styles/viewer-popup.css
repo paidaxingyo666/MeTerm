@@ -2,9 +2,7 @@
    Viewer Popup (status bar click)
    ============================================================================ */
 .viewer-popup {
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
@@ -82,5 +80,11 @@
 }
 [data-theme="light"] .viewer-popup-row:hover {
   background: rgba(0, 0, 0, 0.04);
+}
+
+html.vibrancy-active .viewer-popup {
+  background: rgba(var(--bg-settings), 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 

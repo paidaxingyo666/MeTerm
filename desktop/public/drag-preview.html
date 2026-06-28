@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title></title>
+  <style>
+    :root {
+      --pv-bg: #1c1c1e;
+      --pv-titlebar: #2a2a2d;
+      --pv-fg: #e8e8e8;
+      --pv-fg-dim: #9a9a9a;
+      --pv-border: rgba(255, 255, 255, 0.10);
+      --pv-accent: #6aa4ff;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+      cursor: default;
+    }
+    body {
+      box-sizing: border-box;
+      /* Generous transparent margin so the card's box-shadow fully fades out
+         BEFORE the (transparent) window edge — otherwise the shadow is clipped
+         flat at the window bounds and shows as a hard-edged rectangular halo. */
+      padding: 24px;
+      display: flex;
+    }
+    /* The faux mini app-window */
+    #win {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--pv-bg);
+      border: 1px solid var(--pv-border);
+      /* Soft shadow kept small enough to fully fade within the 24px margin. */
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+      opacity: 0.98;
+      animation: pv-pop 0.13s ease-out;
+    }
+    @keyframes pv-pop {
+      from { transform: scale(0.94); opacity: 0; }
+      to   { transform: scale(1);    opacity: 0.98; }
+    }
+    #titlebar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 28px;
+      flex: 0 0 auto;
+      padding: 0 11px;
+      background: var(--pv-titlebar);
+      border-bottom: 1px solid var(--pv-border);
+      font: 600 11.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      color: var(--pv-fg);
+    }
+    #dots { display: inline-flex; gap: 6px; flex: 0 0 auto; }
+    #dots i { width: 9px; height: 9px; border-radius: 50%; display: block; opacity: 0.9; }
+    #dots i:nth-child(1) { background: #ff5f57; }
+    #dots i:nth-child(2) { background: #febc2e; }
+    #dots i:nth-child(3) { background: #28c840; }
+    #title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      opacity: 0.92;
+    }
+    #body {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 14px;
+      font: 500 12px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      color: var(--pv-fg-dim);
+      text-align: center;
+    }
+    #body svg { flex: 0 0 auto; color: var(--pv-accent); }
+    #hint { color: var(--pv-fg); }
+  </style>
+</head>
+<body>
+  <div id="win">
+    <div id="titlebar">
+      <span id="dots"><i></i><i></i><i></i></span>
+      <span id="title"></span>
+    </div>
+    <div id="body">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <path d="M3 9h18" />
+        <path d="M12 12.5v4.5m0 0 1.8-1.8M12 17l-1.8-1.8" />
+      </svg>
+      <span id="hint"></span>
+    </div>
+  </div>
+  <script src="./drag-preview.js"></script>
+</body>
+</html>

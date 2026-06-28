@@ -2,10 +2,14 @@
    Split Pane Layout
    ============================================================================ */
 
-/* Split tree root — overlays the terminal panel */
+/* Split tree root — overlays the terminal panel. Flush to all edges so the panes
+   reach the bottom exactly like a single (unsplit) terminal does; a bottom gap here
+   would expose the panel background as a stray full-width "divider" under the panes
+   (there is no pane below). The 5px bottom inset was a leftover from when the panel
+   had rounded bottom corners — it's square now. */
 .split-root {
   position: absolute;
-  inset: 0 0 5px 0;
+  inset: 0;
   display: flex;
   min-height: 0;
   min-width: 0;
@@ -58,15 +62,96 @@
 .split-pane.focused {
   border-radius: 6px;
 }
-.split-pane.focused::after {
+
+/* No border highlight. Instead: the focused pane stays at full brightness and
+   every INACTIVE pane's content is dimmed ~20%. Only inside a split (multiple
+   panes) — a lone pane (direct child of .split-root) is never dimmed. */
+.split-container .split-pane > .terminal-container {
+  transition: filter 0.15s ease;
+}
+.split-container .split-pane:not(.focused) > .terminal-container {
+  filter: brightness(0.7);
+}
+/* Light-base themes: brightness(0.7) crushes a white panel (248→~174) into a grey
+   overlay. Use an almost-imperceptible dim so the focused pane just reads brighter,
+   instead of veiling the inactive ones. Dark themes keep 0.7. */
+:is([data-theme="light"], [data-theme="neo-brutalism"], [data-theme="neo-brutalism-rounded"])
+  .split-container .split-pane:not(.focused) > .terminal-container {
+  filter: brightness(0.95);
+}
+.split-container .split-pane.focused > .terminal-container {
+  filter: none;
+}
+
+/* ── Pane drag handle (drag onto a pane's edge to reposition it there) ── */
+.pane-drag-handle {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 110;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--text-secondary, #aaa);
+  background: rgba(0, 0, 0, 0.28);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s;
+}
+.split-container .split-pane:hover .pane-drag-handle { opacity: 0.55; }
+.split-container .split-pane .pane-drag-handle:hover { opacity: 1; background: rgba(0, 0, 0, 0.45); color: var(--text-heading, #fff); }
+/* Hide the handle for a lone pane (no split). */
+.split-root > .split-pane > .pane-drag-handle { display: none; }
+
+/* Session-title flyout — slides out to the LEFT from the grip handle on hover. */
+.pane-title-flyout {
+  position: absolute;
+  top: 4px;
+  right: 28px;
+  z-index: 111;
+  max-width: 240px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: rgba(20, 20, 24, 0.85);
+  color: #e8e8e8;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translateX(8px);
+  transition: opacity 0.13s ease, transform 0.13s ease;
+}
+.pane-title-flyout.show {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; }
+/* Drop preview highlights the HALF of the target where the pane will land. */
+.split-pane.pane-drop-target::after {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: 6px;
-  border: 1px solid rgba(106, 164, 255, 0.35);
+  background: rgba(106, 164, 255, 0.18);
+  border: 2px solid rgba(106, 164, 255, 0.7);
   pointer-events: none;
-  z-index: 100;
+  z-index: 105;
+  transition: inset 0.08s ease;
 }
+/* Center = replace (whole pane, a touch more opaque); edges = insert (half). */
+.split-pane.pane-drop-target[data-drop-edge="center"]::after { inset: 0; background: rgba(106, 164, 255, 0.26); }
+.split-pane.pane-drop-target[data-drop-edge="left"]::after { inset: 0 50% 0 0; }
+.split-pane.pane-drop-target[data-drop-edge="right"]::after { inset: 0 0 0 50%; }
+.split-pane.pane-drop-target[data-drop-edge="top"]::after { inset: 0 0 50% 0; }
+.split-pane.pane-drop-target[data-drop-edge="bottom"]::after { inset: 50% 0 0 0; }
 
 /* Fix sub-row remainder gap: when container height is not evenly divisible
    by cellHeight, xterm.js sets .xterm-screen height = rows * cellHeight which
@@ -184,15 +269,19 @@
   overflow-y: auto;
   /* Semi-opaque glass — nested inside .ai-bar which has its own backdrop-filter,
      so child backdrop-filter can't blur through to page content in WebKit. */
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   padding: 3px;
   z-index: 310;
   animation: chat-slide-up 0.15s ease-out;
+}
+
+html.vibrancy-active .ai-bar-model-dropdown {
+  background: rgba(var(--bg-settings), 0.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .ai-bar-model-option {
@@ -237,25 +326,56 @@
   margin: 2px 6px;
   opacity: 0.6;
 }
-/* Resize handles */
+/* Resize handles — a visible divider line between panes (so they don't blend
+   into one terminal) that brightens on hover/drag so it's easy to grab. */
 .split-resize-handle {
   flex-shrink: 0;
   z-index: 20;
+  position: relative;
+  background: transparent;
+}
+.split-resize-handle::before {
+  content: '';
+  position: absolute;
+  background: var(--border-primary, rgba(128, 128, 128, 0.35));
+  transition: background 0.12s, width 0.1s, height 0.1s;
 }
 
 .split-resize-handle.split-resize-horizontal {
-  width: 4px;
-  min-width: 4px;
+  width: 6px;
+  min-width: 6px;
   cursor: col-resize;
-  background: transparent;
+}
+.split-resize-horizontal::before {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
 }
 
 .split-resize-handle.split-resize-vertical {
-  height: 4px;
-  min-height: 4px;
+  height: 6px;
+  min-height: 6px;
   cursor: row-resize;
-  background: transparent;
 }
+.split-resize-vertical::before {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+/* Hover or active drag → accent-colored + thicker, so it's findable & grabbable. */
+.split-resize-handle:hover::before,
+.split-resize-handle.split-resize-active::before {
+  background: var(--accent, #6aa4ff);
+}
+.split-resize-horizontal:hover::before,
+.split-resize-horizontal.split-resize-active::before { width: 3px; }
+.split-resize-vertical:hover::before,
+.split-resize-vertical.split-resize-active::before { height: 3px; }
 
 /* Global state during split resize */
 body.split-resizing,
@@ -281,4 +401,11 @@ body.split-resizing .split-resize-handle.split-resize-vertical ~ * {
   min-width: 0;
   overflow: hidden;
 }
+
+/* ── Light-theme overrides (white overlays/borders are invisible or too dark on a
+      light panel; remap to low-alpha black). ── */
+[data-theme="light"] .pane-drag-handle { background: rgba(0, 0, 0, 0.10); color: var(--text-secondary); }
+[data-theme="light"] .split-container .split-pane .pane-drag-handle:hover { background: rgba(0, 0, 0, 0.18); color: var(--text-heading); }
+[data-theme="light"] .ai-bar-model-dropdown { border-color: rgba(0, 0, 0, 0.10); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1); }
+
 

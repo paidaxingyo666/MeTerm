@@ -86,9 +86,12 @@ export class FileTreeRenderer {
 
   /** Set root directory and its children, then render */
   setRoot(path: string, files: FileInfo[]): void {
-    this.rootPath = path;
+    // Canonicalize to '/' so the root, node-map keys, and reveal targets share a
+    // single separator. Windows local paths arrive with '\'; no-op on mac/Linux.
+    const root = path.replace(/\\/g, '/');
+    this.rootPath = root;
     this.nodeMap.clear();
-    this.rootNodes = this.filesToNodes(files, path, 0);
+    this.rootNodes = this.filesToNodes(files, root, 0);
     this.rootRenderedCount = TREE_PAGE_SIZE;
     this.render();
   }
@@ -229,8 +232,10 @@ export class FileTreeRenderer {
   }
 
   async revealPath(targetPath: string): Promise<void> {
-    const target = targetPath.endsWith('/') && targetPath.length > 1
-      ? targetPath.slice(0, -1) : targetPath;
+    // Canonicalize separators so Windows search hits ('\') match node-map keys ('/').
+    const normalized = targetPath.replace(/\\/g, '/');
+    const target = normalized.endsWith('/') && normalized.length > 1
+      ? normalized.slice(0, -1) : normalized;
 
     if (!target.startsWith(this.rootPath) && this.rootPath !== '/') return;
 

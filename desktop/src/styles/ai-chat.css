@@ -336,20 +336,21 @@ body.ai-chat-resizing * {
 .ai-danger-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.55);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 10000;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   animation: msg-appear 0.12s ease-out;
 }
+html.vibrancy-active .ai-danger-overlay {
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
 .ai-danger-dialog {
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--bg-settings), 1);
+  border: 1px solid var(--border-primary);
   border-radius: 14px;
   padding: 20px 24px;
   min-width: 340px;
@@ -360,6 +361,11 @@ body.ai-chat-resizing * {
   background: rgba(var(--bg-settings), var(--app-window-opacity));
   border-color: rgba(255, 255, 255, 0.5);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+html.vibrancy-active .ai-danger-dialog {
+  background: rgba(var(--bg-settings), 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 .ai-danger-title {
   font-size: 15px;
@@ -613,9 +619,7 @@ body.ai-chat-resizing * {
   max-height: 70vh;
   overflow: hidden;
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
   animation: tldr-popup-in 0.2s ease-out;
@@ -656,6 +660,11 @@ body.ai-chat-resizing * {
 [data-theme="light"] .tldr-popup {
   background: rgba(255, 255, 255, 0.25);
   border-color: rgba(255, 255, 255, 0.45);
+}
+html.vibrancy-active .tldr-popup {
+  background: rgba(var(--bg-settings), 0.78);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 /* ─── Inline Ghost Text Completion ─── */
@@ -811,14 +820,17 @@ body.ai-chat-resizing * {
   max-height: 300px;
   overflow-y: auto;
   /* Semi-opaque glass — see ai-bar.css .ai-bar-history-panel comment */
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   z-index: 100;
   padding: 4px 0;
+}
+html.vibrancy-active .ai-side-model-dropdown {
+  background: rgba(var(--bg-settings), 0.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 /* Reuse the existing model option styles */
 .ai-side-model-dropdown .ai-bar-model-option,
@@ -1199,3 +1211,14 @@ body.ai-chat-resizing * {
   color: rgba(180, 90, 20, 0.95);
   border-color: rgba(220, 120, 30, 0.3);
 }
+
+/* Chat is sidebar-only — the side/bottom layout toggle is retired (both the
+   chat-header toggle and the side-input toggle). */
+.ai-chat-layout-toggle,
+.ai-side-btn-layout {
+  display: none !important;
+}
+
+/* ── Light-theme overrides: white-on-light bubbles/code lose all contrast; use black. ── */
+[data-theme="light"] .ai-msg-assistant .ai-msg-content { background: rgba(0, 0, 0, 0.04); }
+[data-theme="light"] .ai-inline-code { background: rgba(0, 0, 0, 0.06); }

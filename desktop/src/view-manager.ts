@@ -154,7 +154,18 @@ export async function activateTab(tabId: string): Promise<void> {
       const mainContent = terminalPanelEl.parentElement;
       if (mainContent) {
         SidebarManager.mountTo(focusedSessionId, mainContent);
-        if (SidebarManager.isOpen(focusedSessionId)) {
+        // File-sidebar open-state is conceptually TAB-level: if ANY pane in this
+        // tab had the sidebar open, keep it open and follow the focused pane.
+        // Consolidate the flag onto the focused session so there is exactly one
+        // open carrier per tab — that keeps connection-sidebar mutual-exclusivity
+        // (closeFileManager(getActiveSessionId())) correct. Without this, splitting
+        // moves focus to a new session that never opened the sidebar, so the
+        // per-session isOpen gate re-shows nothing and the sidebar "self-closes".
+        const tabSidebarOpen = leaves.some((l) => SidebarManager.isOpen(l.sessionId));
+        if (tabSidebarOpen) {
+          for (const l of leaves) {
+            if (l.sessionId !== focusedSessionId) SidebarManager.markOpen(l.sessionId, false);
+          }
           SidebarManager.show(focusedSessionId);
         }
       }
@@ -174,6 +185,12 @@ export async function activateTab(tabId: string): Promise<void> {
   }
 
   TerminalRegistry.resizeAll();
+  if (isSplit) {
+    // Re-fit once the browser has applied the new flex layout, so panes whose
+    // size just changed (split / close / extract / drag-rearrange / swap) get
+    // accurate rows/cols instead of measuring a pre-layout (stale) size.
+    requestAnimationFrame(() => TerminalRegistry.resizeAll());
+  }
   syncViewerOverlayForActiveTab();
   syncReclaimOverlayForActiveTab();
   syncMasterApprovalForActiveTab();

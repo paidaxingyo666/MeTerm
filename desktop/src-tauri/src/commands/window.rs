@@ -144,6 +144,65 @@ pub fn create_window_at_position(app: AppHandle, x: f64, y: f64) -> Result<Strin
     Ok(window_label)
 }
 
+/// Create a small, borderless, click-through overlay window that follows the
+/// cursor during a tab tear-off drag (it shows the dragged tab's title).
+///
+/// It is non-activating (`focused(false)`) and ignores cursor events, so it can
+/// never steal the in-progress drag — the source window keeps pointer capture
+/// and drives this overlay's position/visibility. The title is read by the page
+/// from shared localStorage (same origin as the main window).
+#[tauri::command]
+pub fn create_drag_preview_window(
+    app: AppHandle,
+    label: String,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    use tauri::WebviewUrl;
+
+    if app.get_webview_window(&label).is_some() {
+        return Ok(());
+    }
+
+    let webview_url = WebviewUrl::App("drag-preview.html".into());
+
+    #[allow(unused_mut)]
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, webview_url)
+        .title("")
+        // Sized to fit the ~232x130 card plus a 24px transparent margin all
+        // around, so the card's drop-shadow can fade out without being clipped.
+        .inner_size(280.0, 178.0)
+        .position(x, y)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .shadow(false)
+        .visible(false);
+
+    // Linux/GTK: transparent(true) alone does NOT yield a transparent surface —
+    // the card's surrounding 24px margin would render as an opaque box. Set an
+    // alpha-0 background and apply GTK CSD (RGBA visual + app_paintable) below.
+    // macOS/Windows are already transparent via transparent(true); leave them be
+    // (an opaque background_color there would defeat the transparent margin).
+    #[cfg(target_os = "linux")]
+    {
+        builder = builder.background_color(tauri::window::Color(0, 0, 0, 0));
+    }
+
+    let win = builder.build().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    apply_gtk_csd(&win);
+
+    // Click-through: the overlay must never intercept the ongoing drag.
+    let _ = win.set_ignore_cursor_events(true);
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_window_position(window: tauri::Window) -> Result<(f64, f64), String> {
     let scale = window.scale_factor().unwrap_or(1.0);
@@ -155,7 +214,7 @@ pub fn get_window_position(window: tauri::Window) -> Result<(f64, f64), String> 
 pub fn get_all_window_geometries(app: AppHandle) -> Result<Vec<WindowGeometry>, String> {
     let mut geometries = Vec::new();
     for (label, window) in app.webview_windows() {
-        if label == "settings" {
+        if label == "settings" || label.starts_with("drag-preview") {
             continue;
         }
         let scale = window.scale_factor().unwrap_or(1.0);

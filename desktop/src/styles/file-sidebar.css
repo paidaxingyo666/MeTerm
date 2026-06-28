@@ -7,19 +7,39 @@
   min-width: 0;
   max-width: 50vw;
   height: 100%;
-  background: rgba(var(--bg-primary), var(--app-window-opacity));
+  /* Match the connection sidebar's floating card: toolbar tone + 3% lift, rounded. */
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.03)),
+    rgba(var(--bg-toolbar, 33, 33, 35), var(--app-window-opacity, 1));
+  border-radius: 12px;
   flex-shrink: 0;
   overflow: hidden;
   position: relative;
   font-size: var(--file-manager-font-size, 12px);
   color: var(--text-primary);
   user-select: none;
-  transition: width 0.2s ease, min-width 0.2s ease;
 }
 
 .file-sidebar.open {
   width: var(--sidebar-width, 240px);
   min-width: 180px;
+}
+/* Frost under 毛玻璃 like the connection sidebar (vibrancy-toolbar + 3% lift). */
+html.vibrancy-active .file-sidebar {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.03)),
+    rgba(var(--vibrancy-toolbar), var(--vibrancy-tint));
+}
+
+/* Auto-hide the inner overlay scrollbar — hidden by default, fades in only while the
+   sidebar is active (hovered) or its scrollbar is being dragged. */
+.file-sidebar .overlay-sb {
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.file-sidebar:hover .overlay-sb,
+.file-sidebar .overlay-sb.dragging {
+  opacity: 1;
 }
 
 /* Disable transition during resize drag for instant mouse tracking */
@@ -33,7 +53,7 @@
 .sidebar-resize-handle {
   width: 8px;
   min-width: 8px;
-  margin: 0 -3.5px;
+  margin: 0 -8px;            /* fill the 8px #main-content gap exactly, like the connection sidebar */
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
@@ -44,19 +64,19 @@
 .sidebar-resize-handle::after {
   content: '';
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: 12px;
+  bottom: 12px;
   left: 50%;
-  width: 1px;
-  background: var(--border-primary);
-  transition: width 0.15s, left 0.15s, background 0.15s;
+  width: 3px;
+  border-radius: 3px;
+  transform: translateX(-50%);
+  background: transparent;     /* no resting line — accent bar only on hover (like the connection sidebar) */
+  transition: background 0.12s;
 }
 
 .sidebar-resize-handle:hover::after,
 .file-sidebar.resizing + .sidebar-resize-handle::after {
-  width: 3px;
-  left: calc(50% - 1px);
-  background: var(--accent-primary, rgba(59, 130, 246, 0.5));
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.55);
 }
 
 /* ── Header ── */
@@ -68,7 +88,6 @@
   padding: 6px 8px;
   min-height: 28px;
   overflow: hidden;
-  border-bottom: 1px solid var(--border-primary);
   gap: 4px;
 }
 
@@ -125,7 +144,7 @@
   border-radius: 3px;
   padding: 1px 4px;
   font-size: 11px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: inherit;
   outline: none;
   box-sizing: border-box;
 }
@@ -168,6 +187,21 @@
   padding: 2px 0;
   user-select: none;
   -webkit-user-select: none;
+}
+/* Scroll-edge feather (like the connection sidebar list) — applied via JS only when
+   the tree overflows; no top fade at the very top (first item stays crisp), no bottom
+   fade at the very bottom. */
+.sidebar-tree-container.is-faded {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+}
+.sidebar-tree-container.is-faded.at-top {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
+}
+.sidebar-tree-container.is-faded.at-bottom {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 100%);
 }
 
 .sidebar-tree-container.drag-over {
@@ -613,7 +647,6 @@
   justify-content: space-between;
   padding: 3px 8px;
   min-height: 20px;
-  border-top: 1px solid var(--border-primary);
   font-size: 10px;
   color: var(--text-muted);
   gap: 6px;
@@ -717,3 +750,113 @@ html.platform-linux .file-sidebar {
 }
 
 /* Move confirm modal now uses .drawer-modal styles from drawer.css */
+
+/* ── Sidebar recursive search ───────────────────────────────────── */
+.sidebar-search-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-primary);
+  flex-shrink: 0;
+}
+.sidebar-search-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.sidebar-search-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0;
+}
+.sidebar-search-input::placeholder {
+  color: var(--text-muted);
+}
+.sidebar-search-clear {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.sidebar-search-clear:hover {
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.15);
+  color: var(--text-primary);
+}
+
+.sidebar-search-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.sidebar-search-status {
+  padding: 10px 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.sidebar-search-count {
+  padding: 5px 10px;
+  color: var(--text-muted);
+  font-size: 10px;
+  position: sticky;
+  top: 0;
+  background: rgba(var(--bg-toolbar, 33, 33, 35), 0.96);
+  border-bottom: 1px solid var(--border-primary);
+  z-index: 1;
+}
+.sidebar-search-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.sidebar-search-item:hover {
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.1);
+}
+.sidebar-search-item .ssi-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.sidebar-search-item.is-dir .ssi-icon {
+  color: var(--accent, #6aa4ff);
+}
+.sidebar-search-item .ssi-name {
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+.sidebar-search-item .ssi-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 10px;
+  direction: rtl;
+}

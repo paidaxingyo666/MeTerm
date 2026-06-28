@@ -273,6 +273,7 @@ export interface AppSettings {
   opacity: number;
   fontSize: number;
   fontFamily: string;
+  uiFontFamily: string;
   enableNerdFont: boolean;
   enableLigatures: boolean;
   fontWeight: number;  // 300 | 400 | 500 | 700
@@ -368,10 +369,11 @@ const SETTINGS_KEY = 'meterm-settings';
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'default',
-  colorScheme: 'auto',
+  colorScheme: 'darker', // 默认纯黑主题（terminal/canvas 0,0,0）
   opacity: 92,
   fontSize: 14,
   fontFamily: 'jetbrains-mono',
+  uiFontFamily: 'ui-mono',
   enableNerdFont: false,
   enableLigatures: false,
   fontWeight: 400,

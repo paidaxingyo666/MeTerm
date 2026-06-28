@@ -14,6 +14,8 @@ import {
   getFirstLeaf,
   findLeafById,
   updateRatio,
+  movePaneAdjacent,
+  swapLeafSessions,
 } from './split-pane';
 
 type SessionCreateResponse = {
@@ -220,9 +222,6 @@ class TabManagerClass {
     const tab = this.tabs.find((t) => t.id === tabId);
     if (!tab) return null;
 
-    // Check max 4 leaves
-    if (countLeaves(tab.splitRoot) >= 4) return null;
-
     // Create new session — SSH or local
     let newSessionId: string;
     if (sshConfig) {
@@ -318,6 +317,71 @@ class TabManagerClass {
       }
     }
 
+    this.notify();
+  }
+
+  /**
+   * Extract a pane out of its tab into a brand-new standalone tab, keeping the
+   * session alive. No-op when the tab has only one pane. Returns the new tab id.
+   */
+  extractPaneToNewTab(tabId: string, paneId: string): string | null {
+    const tab = this.tabs.find((t) => t.id === tabId);
+    if (!tab) return null;
+    const leaf = findLeafById(tab.splitRoot, paneId);
+    if (!leaf) return null;
+    if (countLeaves(tab.splitRoot) <= 1) return null; // already standalone
+
+    const sessionId = leaf.sessionId;
+
+    // Detach from the source tab (do NOT destroy the session).
+    const newRoot = removeLeaf(tab.splitRoot, paneId);
+    if (!newRoot) return null;
+    tab.splitRoot = newRoot;
+    tab.paneNumbers.delete(paneId);
+    if (tab.focusedPaneId === paneId) {
+      const fl = getFirstLeaf(newRoot);
+      tab.focusedPaneId = fl.id;
+      const mt = TerminalRegistry.get(fl.sessionId);
+      if (mt) {
+        tab.title = mt.shellTitle || mt.title;
+        tab.status = mt.ended ? 'ended' : (mt.ws || mt.transport?.connected) ? 'connected' : 'disconnected';
+      }
+    }
+
+    // Build the standalone tab carrying the extracted session.
+    const newPaneId = generatePaneId();
+    const newTabId = generateTabId();
+    const mt = TerminalRegistry.get(sessionId);
+    const newTab: Tab = {
+      id: newTabId,
+      splitRoot: { type: 'leaf', id: newPaneId, sessionId },
+      focusedPaneId: newPaneId,
+      title: mt?.shellTitle || mt?.title || 'Terminal',
+      status: mt?.ended ? 'ended' : (mt?.ws || mt?.transport?.connected) ? 'connected' : 'disconnected',
+      paneCounterNext: 2,
+      paneNumbers: new Map([[newPaneId, 1]]),
+    };
+
+    const srcIdx = this.tabs.findIndex((t) => t.id === tabId);
+    this.tabs.splice(srcIdx >= 0 ? srcIdx + 1 : this.tabs.length, 0, newTab);
+    this.activeTabId = newTabId;
+    this.notify();
+    return newTabId;
+  }
+
+  /** Move a pane next to a target (drag-to-rearrange / insert-reorder). */
+  movePane(tabId: string, sourcePaneId: string, targetPaneId: string, direction: SplitDirection, before: boolean): void {
+    const tab = this.tabs.find((t) => t.id === tabId);
+    if (!tab || sourcePaneId === targetPaneId) return;
+    tab.splitRoot = movePaneAdjacent(tab.splitRoot, sourcePaneId, targetPaneId, direction, before);
+    this.notify();
+  }
+
+  /** Swap two panes' sessions (drop on a pane's CENTER → replace). */
+  swapPanes(tabId: string, paneA: string, paneB: string): void {
+    const tab = this.tabs.find((t) => t.id === tabId);
+    if (!tab || paneA === paneB) return;
+    tab.splitRoot = swapLeafSessions(tab.splitRoot, paneA, paneB);
     this.notify();
   }
 

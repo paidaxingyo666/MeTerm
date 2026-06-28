@@ -2,19 +2,20 @@
 .pairing-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.55);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 10000;
+}
+html.vibrancy-active .pairing-overlay {
+  background: rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
 }
 
 .pairing-dialog {
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
   padding: 24px;
@@ -23,9 +24,14 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 [data-theme="light"] .pairing-dialog {
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  background: rgba(var(--bg-settings), 1);
   border-color: rgba(255, 255, 255, 0.5);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+html.vibrancy-active .pairing-dialog {
+  background: rgba(var(--bg-settings), 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .pairing-title {
@@ -142,20 +148,22 @@
 .master-approval-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 200;
-  backdrop-filter: blur(4px);
   animation: fade-in 0.2s ease;
+}
+html.vibrancy-active .master-approval-overlay {
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 .master-approval-dialog {
-  background: rgba(var(--bg-toolbar, 33, 33, 35), 0.96);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: none;
+  background: rgba(var(--bg-toolbar, 33, 33, 35), 1);
+  border: 1px solid var(--border-primary);
   border-radius: 14px;
   padding: 24px;
   min-width: 340px;
@@ -163,6 +171,11 @@
   text-align: center;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.35),
               0 0 0 0.5px rgba(255, 255, 255, 0.06);
+}
+html.vibrancy-active .master-approval-dialog {
+  background: rgba(var(--bg-toolbar, 33, 33, 35), 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .master-approval-icon {

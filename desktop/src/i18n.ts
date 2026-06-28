@@ -11,6 +11,7 @@ export interface Translations {
   enableVibrancy: string;
   fontSize: string;
   fontFamily: string;
+  uiFontFamily: string;
   cjkFontFamily: string;
   cjkFontAuto: string;
   enableNerdFont: string;
@@ -185,6 +186,7 @@ export interface Translations {
   sidebarTreeMore: string;
   fileManager: string;
   ctxMenuOpen: string;
+  ctxMenuSetAsRoot: string;
   ctxMenuOpenWith: string;
   ctxMenuBuiltinEditor: string;
   ctxMenuSystemDefault: string;
@@ -714,6 +716,7 @@ const translations: Record<Language, Translations> = {
     enableVibrancy: 'Background Blur (Vibrancy)',
     fontSize: 'Font Size',
     fontFamily: 'Font',
+    uiFontFamily: 'UI Font',
     cjkFontFamily: 'CJK Font',
     cjkFontAuto: 'System Default',
     enableNerdFont: 'Nerd Font Icons',
@@ -887,6 +890,7 @@ const translations: Record<Language, Translations> = {
     sidebarTreeMore: '{n} more, click to load',
     fileManager: 'File Manager',
     ctxMenuOpen: 'Open',
+    ctxMenuSetAsRoot: 'Set as Root',
     ctxMenuOpenWith: 'Open With',
     ctxMenuBuiltinEditor: 'Built-in Editor',
     ctxMenuSystemDefault: 'System Default',
@@ -1330,12 +1334,12 @@ const translations: Record<Language, Translations> = {
     jsSaveAndConnect: 'Save & Connect',
     homeSearchPlaceholder: 'Search connections, commands or docs',
     homeGroupDefault: 'Default',
-    homeGroupUngrouped: 'Ungrouped',
+    homeGroupUngrouped: 'Recent',
     homeGroupManage: 'Manage Groups',
     homeGroupNew: 'New Group',
     homeGroupRename: 'Rename',
     homeGroupDelete: 'Delete Group',
-    homeGroupDeleteConfirm: 'Delete this group? Connections will be moved to Ungrouped.',
+    homeGroupDeleteConfirm: 'Delete this group? Connections will be moved to Recent.',
     homeGroupMoveToGroup: 'Move to Group',
     homeGroupNodeCount: '{count} Nodes',
     homeGroupColor: 'Color',
@@ -1412,6 +1416,7 @@ const translations: Record<Language, Translations> = {
     enableVibrancy: '背景模糊（毛玻璃）',
     fontSize: '字体大小',
     fontFamily: '字体',
+    uiFontFamily: '界面字体',
     cjkFontFamily: '中文字体',
     cjkFontAuto: '系统默认',
     enableNerdFont: 'Nerd Font 图标',
@@ -1585,6 +1590,7 @@ const translations: Record<Language, Translations> = {
     sidebarTreeMore: '还有 {n} 项,点击加载',
     fileManager: '文件管理',
     ctxMenuOpen: '打开',
+    ctxMenuSetAsRoot: '设为根目录',
     ctxMenuOpenWith: '打开方式',
     ctxMenuBuiltinEditor: '内置编辑器',
     ctxMenuSystemDefault: '系统默认',
@@ -2028,12 +2034,12 @@ const translations: Record<Language, Translations> = {
     jsSaveAndConnect: '保存并连接',
     homeSearchPlaceholder: '搜索连接、指令或文档',
     homeGroupDefault: '默认',
-    homeGroupUngrouped: '未分组',
+    homeGroupUngrouped: '最近',
     homeGroupManage: '管理分组',
     homeGroupNew: '新建分组',
     homeGroupRename: '重命名',
     homeGroupDelete: '删除分组',
-    homeGroupDeleteConfirm: '删除该分组？连接将移至未分组。',
+    homeGroupDeleteConfirm: '删除该分组？连接将移至最近。',
     homeGroupMoveToGroup: '移动到分组',
     homeGroupNodeCount: '{count} 个节点',
     homeGroupColor: '颜色',

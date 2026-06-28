@@ -1,7 +1,7 @@
 import { THEMES, AppSettings, ColorScheme } from './themes';
 import { getAvailableLanguages, t, setLanguage } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
-import { FONT_REGISTRY, getFontDef, getAvailableCJKFonts } from './fonts';
+import { FONT_REGISTRY, UI_FONT_EXTRAS, getFontDef, getAvailableCJKFonts } from './fonts';
 import { isMacPlatform } from './app-state';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
@@ -357,6 +357,23 @@ export function createGeneralTab(
     update({ fontFamily: fontFamilySelect.value });
   };
   tabGeneral.appendChild(fontFamilySection);
+
+  // --- UI Font (interface font — independent of the terminal font) ---
+  const uiFontSection = document.createElement('div');
+  uiFontSection.className = 'settings-section';
+  uiFontSection.innerHTML = `<label>${t('uiFontFamily')}</label>`;
+  const uiFontSelect = createSettingsSelect([
+    ...UI_FONT_EXTRAS.map((f) => ({ value: f.key, label: f.displayName, selected: f.key === current.uiFontFamily })),
+    ...FONT_REGISTRY
+      .filter((f) => !f.isSystem || isMacPlatform)
+      .map((f) => ({ value: f.key, label: f.displayName, selected: f.key === current.uiFontFamily })),
+  ]);
+  uiFontSection.appendChild(uiFontSelect.el);
+  uiFontSelect.onchange = () => {
+    current.uiFontFamily = uiFontSelect.value;
+    update({ uiFontFamily: uiFontSelect.value });
+  };
+  tabGeneral.appendChild(uiFontSection);
 
   // --- CJK Font Family ---
   const cjkFontSection = document.createElement('div');

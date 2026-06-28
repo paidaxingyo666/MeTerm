@@ -8,7 +8,7 @@ import { TerminalRegistry } from './terminal';
 import { DrawerManager } from './drawer';
 import { AICapsuleManager } from './ai-capsule';
 import { type SplitNode, getAllLeaves, findLeafById, generatePaneId } from './split-pane';
-import { jumpServerConfigMap } from './app-state';
+import { jumpServerConfigMap, settings } from './app-state';
 import { createWindowAtPosition } from './window-utils';
 
 interface WindowGeometry {
@@ -93,6 +93,147 @@ const DRAG_THRESHOLD = 5;
 const TAB_BAR_REGION_HEIGHT = 50; // screen px — only top strip of target counts as tab bar
 let dragState: DragState | null = null;
 let dragDidOccur = false;
+
+// --- Tab tear-off preview overlay (a real borderless OS window that follows the
+// cursor outside the source window, since a DOM ghost is clipped to the window).
+// Rendered as a small "mini window" (titlebar + release hint). ---
+//
+// CRASH-SAFETY: we REUSE a single persistent overlay window per source window
+// (created once, then only hidden/shown/moved). Closing a webview window while
+// WebKit still has an in-flight layer-tree commit causes an async use-after-free
+// crash (EXC_BAD_ACCESS in RemoteLayerTreeDrawingAreaProxy::commitLayerTree).
+// Hiding (orderOut) does NOT tear down the drawing area, so it is safe; the
+// overlay is closed only when the source window itself unloads (it's hidden by
+// then, so no commits are pending).
+//
+// Tunables: where the mini-window sits relative to the cursor (cursor rests on
+// the faux titlebar, mimicking grabbing a window by its title).
+const PREVIEW_OFFSET_X = -50;
+const PREVIEW_OFFSET_Y = -34;
+let previewLabel: string | null = null;   // stable per-window label, created once
+let previewCreating = false;
+let previewVisible = false;
+let previewWanted = false;
+let previewUnloadHooked = false;
+let previewPosRaf = false;
+let previewPosX = 0;
+let previewPosY = 0;
+
+/** Throttle preview window repositioning to one move per animation frame. */
+function schedulePreviewMove(label: string): void {
+  if (previewPosRaf) return;
+  previewPosRaf = true;
+  requestAnimationFrame(() => {
+    previewPosRaf = false;
+    void WebviewWindow.getByLabel(label).then((w) => {
+      if (w) void w.setPosition(new LogicalPosition(previewPosX, previewPosY));
+    });
+  });
+}
+
+/** Resolve the source window's theme into a {mode, accent} the preview can use. */
+function computePreviewTheme(): { mode: 'dark' | 'light'; accent: string } {
+  const root = getComputedStyle(document.documentElement);
+  const accent = (root.getPropertyValue('--accent') || '').trim() || '#6aa4ff';
+  let mode: 'dark' | 'light' = 'dark';
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:absolute;left:-9999px;top:-9999px;color:var(--text-primary)';
+  document.body.appendChild(probe);
+  const rgb = getComputedStyle(probe).color;
+  probe.remove();
+  const m = rgb.match(/(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+  if (m) {
+    const lum = (0.299 * +m[1] + 0.587 * +m[2] + 0.114 * +m[3]) / 255;
+    mode = lum > 0.5 ? 'dark' : 'light'; // light text ⇒ dark UI
+  }
+  return { mode, accent };
+}
+
+/** Push the dragged tab's title + current theme to the overlay via shared
+ *  localStorage (the overlay re-renders on the resulting `storage` event). */
+function writePreviewData(): void {
+  const tab = dragState ? TabManager.tabs.find((t) => t.id === dragState!.sessionId) : null;
+  const zh = settings?.language === 'zh';
+  const { mode, accent } = computePreviewTheme();
+  try {
+    localStorage.setItem('meterm-drag-preview', JSON.stringify({
+      title: tab?.title || 'Terminal',
+      hint: zh ? '松开以在新窗口打开' : 'Release to open in new window',
+      mode,
+      accent,
+    }));
+  } catch { /* localStorage unavailable — overlay falls back to defaults */ }
+}
+
+/** Position + show the overlay; self-heal if the window vanished. */
+function showPreviewWindow(label: string): void {
+  void WebviewWindow.getByLabel(label).then((w) => {
+    if (!w) {
+      // Overlay was closed out from under us — allow recreation next drag.
+      if (previewLabel === label) { previewLabel = null; previewVisible = false; }
+      return;
+    }
+    void w.setPosition(new LogicalPosition(previewPosX, previewPosY));
+    void w.show();
+  });
+}
+
+/**
+ * Ensure the (reusable) tear-off overlay exists and follows the cursor. Creates
+ * it once on first drag-out; afterwards just refreshes content + repositions.
+ */
+function ensureDragPreview(screenX: number, screenY: number): void {
+  previewPosX = screenX + PREVIEW_OFFSET_X;
+  previewPosY = screenY + PREVIEW_OFFSET_Y;
+  previewWanted = true;
+
+  // Close the persistent overlay when this source window unloads (it's hidden by
+  // then, so closing is safe — no in-flight compositor commits).
+  if (!previewUnloadHooked) {
+    previewUnloadHooked = true;
+    window.addEventListener('beforeunload', () => {
+      if (previewLabel) void WebviewWindow.getByLabel(previewLabel).then((w) => { if (w) void w.close(); });
+    });
+  }
+
+  if (previewLabel) {
+    schedulePreviewMove(previewLabel);
+    if (!previewVisible) {
+      previewVisible = true;
+      writePreviewData();              // refresh title/theme for this drag
+      showPreviewWindow(previewLabel);
+    }
+    return;
+  }
+
+  if (previewCreating) return;
+  previewCreating = true;
+  writePreviewData();                  // set content before the page first loads
+  const label = `drag-preview-${getCurrentWindow().label}`;
+  void invoke('create_drag_preview_window', { label, x: previewPosX, y: previewPosY })
+    .then(() => {
+      previewCreating = false;
+      previewLabel = label;
+      // Cursor may have moved back inside while the window was building — honour
+      // the latest intent rather than blindly showing (kills edge jitter).
+      if (!previewWanted) { previewVisible = false; return; }
+      previewVisible = true;
+      showPreviewWindow(label);
+    })
+    .catch((err) => {
+      console.error('[TAB-DRAG] Failed to create drag preview window:', err);
+      previewCreating = false;
+    });
+}
+
+/** Hide (never close) the overlay — cursor back inside or over another tab bar. */
+function hideDragPreview(): void {
+  previewWanted = false;
+  if (!previewLabel || !previewVisible) return;
+  previewVisible = false;
+  const label = previewLabel;
+  void WebviewWindow.getByLabel(label).then((w) => { if (w) void w.hide(); });
+}
 
 // --- Single-tab window drag state (manual window movement + merge) ---
 interface WindowDragState {
@@ -385,6 +526,8 @@ function onPointerMove(event: PointerEvent): void {
   const tabBar = getTabBarElement();
 
   if (inside && tabBar) {
+    // Back inside the source window — the in-window drop indicator takes over.
+    hideDragPreview();
     // Clear any cross-window hover indicator
     if (dragState.currentTarget) {
       void emit('single-tab-drag-leave', {
@@ -455,6 +598,9 @@ function onPointerMove(event: PointerEvent): void {
     const prevTarget = dragState.currentTarget;
 
     if (target) {
+      // Over another window's tab bar → that window shows its own merge
+      // indicator; hide our "new window" preview.
+      hideDragPreview();
       dragState.currentTarget = target.label;
       const tab = TabManager.tabs.find((t) => t.id === dragState!.sessionId);
       void emit('single-tab-drag-hover', {
@@ -472,6 +618,13 @@ function onPointerMove(event: PointerEvent): void {
         } satisfies SingleTabDragLeavePayload);
       }
       dragState.currentTarget = null;
+      // Over empty desktop → dropping here creates a new window. Show the
+      // tear-off preview following the cursor so there's visible feedback.
+      if (!inside) {
+        ensureDragPreview(event.screenX, event.screenY);
+      } else {
+        hideDragPreview();
+      }
     }
   }
 }
@@ -511,6 +664,10 @@ async function onPointerUp(event: PointerEvent): Promise<void> {
   dragState = null;
   document.removeEventListener('pointermove', onPointerMove);
   document.removeEventListener('pointerup', onPointerUp as unknown as EventListener);
+
+  // Hide (do NOT close) the reusable tear-off overlay — closing a webview window
+  // mid-composite races WebKit's layer-tree commit and can crash.
+  hideDragPreview();
 
   if (!wasDragging) return;
 
@@ -865,7 +1022,12 @@ export function setupTabTransferListener(
       singleTabMergeWindowLabel = null;
       console.log('[TAB-DRAG] Single-tab merge complete, closing source window');
       await invoke('allow_window_close', { windowLabel: currentLabel });
-      await getCurrentWindow().close();
+      // Hide first so WebKit stops compositing this window, then close on a later
+      // tick. Closing a window mid-composite races RemoteLayerTreeDrawingAreaProxy
+      // and can crash (EXC_BAD_ACCESS in commitLayerTree).
+      const srcWin = getCurrentWindow();
+      try { await srcWin.hide(); } catch { /* ignore */ }
+      setTimeout(() => { void srcWin.close(); }, 180);
       return;
     }
 

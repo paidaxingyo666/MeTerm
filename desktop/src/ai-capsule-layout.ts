@@ -32,8 +32,9 @@ export const SVG_LAYOUT_BOTTOM = `<svg width="14" height="14" viewBox="0 0 16 16
 // ── Persistence ──
 
 export function getSavedLayoutMode(): AIChatLayoutMode {
-  const saved = localStorage.getItem(LS_LAYOUT_KEY);
-  return saved === 'side' ? 'side' : 'bottom';
+  // Chat is sidebar-only now — the bottom-panel mode has been retired, so the
+  // chat always opens as the right-side panel regardless of any saved value.
+  return 'side';
 }
 
 export function saveLayoutMode(mode: AIChatLayoutMode): void {

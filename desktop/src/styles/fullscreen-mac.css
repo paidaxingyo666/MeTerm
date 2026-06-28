@@ -53,3 +53,13 @@ html.fs-mac.platform-macos.vibrancy-active #status {
 html.fs-mac.platform-macos.vibrancy-active .home-view {
   background: rgb(var(--bg-primary)) !important;
 }
+
+/* Floating-card inset is disabled in fullscreen — terminal goes edge-to-edge. */
+html.fs-mac.platform-macos #main-content {
+  padding: 0;
+  gap: 0;
+}
+html.fs-mac.platform-macos #terminal-panel {
+  border: none;
+  border-radius: 0;
+}

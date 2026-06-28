@@ -35,6 +35,7 @@ import { TabManager } from './tabs';
 import { TerminalRegistry } from './terminal';
 import { loadSettings } from './themes';
 import { applyWindowOpacity, applyAiBarOpacity, applyColorScheme, applyBackgroundImage, applyVibrancy } from './appearance';
+import { applyUiFont } from './fonts';
 import { applyNbPalette, listenForNbPaletteChanges } from './nb-palette';
 import { setHomeViewSettings } from './home';
 import { setGalleryViewSettings, setGalleryProgressGetter } from './gallery';
@@ -183,6 +184,7 @@ async function init(): Promise<void> {
   applyColorScheme(settings);
   applyBackgroundImage(settings, terminalPanelEl);
   void applyVibrancy(settings.enableVibrancy);
+  applyUiFont(settings.uiFontFamily);
   // Listen for NB palette changes from the settings window (cross-window
   // localStorage events). This is more reliable than emit('settings-changed')
   // because it fires immediately when the other window writes to localStorage.
@@ -315,8 +317,10 @@ async function init(): Promise<void> {
         sessionCreated = true;
       }
     } catch { /* ignore */ }
-    // Auto-create local session on startup (if enabled and no session was created above)
-    if (!sessionCreated && settings.autoNewSession) {
+    // Terminal-first: always open a local terminal on startup (unless one was
+    // already created from an initial path). The connection manager is now a
+    // toggleable left sidebar rather than a landing page.
+    if (!sessionCreated) {
       try {
         await createNewSession();
         sessionCreated = true;

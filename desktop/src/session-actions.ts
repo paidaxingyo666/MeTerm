@@ -71,6 +71,9 @@ export async function doSplitPane(
     // 本地会话分屏：也创建文件抽屉
     DrawerManager.create(result.sessionId, 'local');
   }
+  // 清除源面板因右键(macOS Control+Click 打开菜单)残留的 xterm 原生文本选区。
+  // 所有分屏入口(⌘D/⌘⇧D、两处右键菜单)都汇聚到 doSplitPane，在此统一清。
+  TerminalRegistry.clearAllSelections();
 }
 
 export async function createNewSession(shell?: string, cwd?: string): Promise<void> {

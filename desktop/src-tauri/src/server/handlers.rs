@@ -260,8 +260,10 @@ pub async fn create_ssh_session(
             super::session::Session::start_terminal(session.clone(), Box::new(terminal)).await;
 
             // Initialize SFTP in background — does not block terminal usability.
-            // Same dual-strategy as the Tauri create_ssh_session path: multiplex
-            // on the existing channel for JumpServer, dedicated session otherwise.
+            // Same dual-strategy + fallback as the Tauri create_ssh_session path:
+            // multiplex on the existing channel for JumpServer; otherwise prefer a
+            // dedicated session but fall back to multiplex when the server refuses
+            // a second auth (e.g. private-key rate limiting, MaxAuthTries=1).
             let session_bg = session.clone();
             let multiplex = sftp_config.multiplex_sftp;
             let ssh_handle_for_sftp = ssh_handle.clone();
@@ -269,7 +271,34 @@ pub async fn create_ssh_session(
                 let result = if multiplex {
                     super::terminal::ssh::SshTerminal::init_sftp(&ssh_handle_for_sftp).await
                 } else {
-                    super::terminal::ssh::SshTerminal::connect_sftp(&sftp_config).await
+                    match super::terminal::ssh::SshTerminal::connect_sftp(&sftp_config).await {
+                        Ok(sftp) => Ok(sftp),
+                        Err(dedicated_err) => {
+                            eprintln!(
+                                "[ssh] dedicated SFTP failed ({}), falling back to multiplexed channel",
+                                dedicated_err
+                            );
+                            eprintln!(
+                                "[ssh] sftp diag: auth_method={:?} has_private_key={} has_password={} has_passphrase={} trusted_fp={} proxy={}",
+                                sftp_config.auth_method,
+                                !sftp_config.private_key.is_empty(),
+                                !sftp_config.password.is_empty(),
+                                !sftp_config.passphrase.is_empty(),
+                                !sftp_config.trusted_fingerprint.is_empty(),
+                                if sftp_config.proxy_type.is_empty() { "none" } else { &sftp_config.proxy_type },
+                            );
+                            match super::terminal::ssh::SshTerminal::init_sftp(&ssh_handle_for_sftp).await {
+                                Ok(sftp) => {
+                                    eprintln!("[ssh] multiplexed SFTP fallback succeeded");
+                                    Ok(sftp)
+                                }
+                                Err(mux_err) => Err(format!(
+                                    "dedicated SFTP failed: {}; multiplex fallback also failed: {}",
+                                    dedicated_err, mux_err
+                                )),
+                            }
+                        }
+                    }
                 };
                 match result {
                     Ok(sftp_client) => {

@@ -70,7 +70,9 @@ swiftc \
 # Copy Info.plist
 cp "$EXT_SRC/Info.plist" "$APPEX_DIR/Contents/Info.plist"
 
-# Sign the .appex (skip --timestamp for ad-hoc signing)
+# Sign the .appex (inside-out: this runs before the host .app is signed).
+# Ad-hoc ("-") skips --timestamp and hardened runtime. A real Developer ID must
+# use --options runtime + --timestamp so Apple notarization accepts the appex.
 echo "  Signing .appex..."
 if [ "$SIGN_IDENTITY" = "-" ]; then
     codesign --force --sign "$SIGN_IDENTITY" \
@@ -79,6 +81,7 @@ if [ "$SIGN_IDENTITY" = "-" ]; then
 else
     codesign --force --sign "$SIGN_IDENTITY" \
         --entitlements "$EXT_SRC/MeTermFinder.entitlements" \
+        --options runtime \
         --timestamp \
         "$APPEX_DIR"
 fi

@@ -270,6 +270,30 @@ export async function loadFont(key: string, nerd: boolean, weight?: number): Pro
   console.log(`[font] All registered faces:`, [...document.fonts].map(f => `${f.family}@${f.weight}`));
 }
 
+// ── UI (interface) font — independent of the terminal font ──────────────────
+// A couple of system stacks (incl. a non-mono UI option) plus the bundled
+// monospace fonts (reused from FONT_REGISTRY). Applied via the --ui-font CSS var.
+export const UI_FONT_EXTRAS: { key: string; displayName: string; cssFamily: string }[] = [
+  { key: 'ui-sans', displayName: 'System UI', cssFamily: '-apple-system, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif' },
+  { key: 'ui-mono', displayName: 'System Mono', cssFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' },
+];
+
+function getUiFontStack(key: string): string {
+  const extra = UI_FONT_EXTRAS.find((f) => f.key === key);
+  if (extra) return extra.cssFamily;
+  const reg = FONT_REGISTRY.find((f) => f.key === key);
+  if (reg) {
+    if (!reg.isSystem) void loadFont(key, false);
+    return getFontFamily(key, false);
+  }
+  return UI_FONT_EXTRAS[1].cssFamily; // fallback: system mono
+}
+
+/** Apply the UI/interface font — sets the --ui-font CSS var that the whole UI inherits. */
+export function applyUiFont(key: string): void {
+  document.documentElement.style.setProperty('--ui-font', getUiFontStack(key));
+}
+
 export function getFontFamily(key: string, nerd: boolean, weight?: number, cjkKey?: string): string {
   const def = FONT_REGISTRY.find((f) => f.key === key);
   if (!def) return 'Menlo, Monaco, "Courier New", monospace';

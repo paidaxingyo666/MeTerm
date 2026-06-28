@@ -8,9 +8,12 @@
 import { TabManager } from './tabs';
 import { TerminalRegistry } from './terminal';
 import { DrawerManager } from './drawer';
+import { SidebarManager } from './file-sidebar';
+import { getAllLeaves } from './split-pane';
 import { AICapsuleManager } from './ai-capsule';
 import { loadSettings, saveSettings } from './themes';
 import { applyWindowOpacity, applyAiBarOpacity, applyVibrancy, resolveThemeAttr, applyColorScheme, applyBackgroundImage } from './appearance';
+import { applyUiFont } from './fonts';
 import { setHomeViewSettings } from './home';
 import { updateGalleryView, setGalleryViewSettings } from './gallery';
 import { t } from './i18n';
@@ -186,6 +189,27 @@ export function setupDomEventListeners(): void {
       DrawerManager.mountTo(sessionId, terminalPanelEl);
       DrawerManager.show(sessionId);
     }
+    // File sidebar (per-session FileManager) follows the focused pane too,
+    // mirroring the drawer above — but only when the tab's sidebar is open, and
+    // keep a single open carrier per tab so connection-sidebar mutual-exclusivity
+    // (which closes the focused session's sidebar) stays correct. Clicking a pane
+    // does NOT re-run activateTab, so without this the sidebar shows the previous
+    // pane's stale files and the open flag drifts off the focused session.
+    if (loadSettings().fileManagerMode === 'sidebar') {
+      const sbLeaves = getAllLeaves(activeTab.splitRoot);
+      if (sbLeaves.some((l) => SidebarManager.isOpen(l.sessionId))) {
+        SidebarManager.hideAll();
+        const mainContent = document.getElementById('main-content');
+        if (mainContent) {
+          if (!SidebarManager.has(sessionId)) SidebarManager.create(sessionId);
+          SidebarManager.mountTo(sessionId, mainContent);
+          for (const l of sbLeaves) {
+            if (l.sessionId !== sessionId) SidebarManager.markOpen(l.sessionId, false);
+          }
+          SidebarManager.show(sessionId);
+        }
+      }
+    }
     // Only switch AI Bar, keep side panel as-is (shared within tab)
     AICapsuleManager.switchBarOnly(sessionId, terminalPanelEl);
     TerminalRegistry.focusTerminal(sessionId);
@@ -203,6 +227,22 @@ export function setupDomEventListeners(): void {
     const activeTab = TabManager.getActiveTab();
     if (!activeTab) return;
     TabManager.updateSplitRatio(activeTab.id, e.detail.branchId, e.detail.ratio);
+  }) as EventListener);
+
+  // Drag-to-rearrange: drop on the CENTER → swap (replace); drop near an EDGE →
+  // insert the pane on that side. Then re-render + re-mount.
+  document.addEventListener('pane-move-request', ((e: CustomEvent<{ sourcePaneId: string; targetPaneId: string; edge: 'center' | 'left' | 'right' | 'top' | 'bottom' }>) => {
+    const activeTab = TabManager.getActiveTab();
+    if (!activeTab) return;
+    const { sourcePaneId, targetPaneId, edge } = e.detail;
+    if (edge === 'center') {
+      TabManager.swapPanes(activeTab.id, sourcePaneId, targetPaneId);
+    } else {
+      const direction = (edge === 'left' || edge === 'right') ? 'horizontal' : 'vertical';
+      const before = edge === 'left' || edge === 'top';
+      TabManager.movePane(activeTab.id, sourcePaneId, targetPaneId, direction, before);
+    }
+    void activateTab(activeTab.id).then(() => renderTabs());
   }) as EventListener);
 
   // Window aspect ratio helper
@@ -720,6 +760,7 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
     applyAiBarOpacity(settings.aiBarOpacity);
     applyBackgroundImage(settings, terminalPanelEl);
     void applyVibrancy(settings.enableVibrancy);
+    applyUiFont(settings.uiFontFamily);
     // setSettings is async (awaits loadFont) and re-sets all terminal
     // themes at the end. NB palette must run AFTER it finishes so our
     // custom terminal bg/fg aren't clobbered.

@@ -30,6 +30,13 @@ html.pip-mode #app {
 html.pip-mode #main-content {
   position: relative;
   overflow: hidden;
+  padding: 0;
+  gap: 0;
+}
+/* No floating-card inset in PiP — the terminal panel is scaled/positioned by JS. */
+html.pip-mode #terminal-panel {
+  border: none;
+  border-radius: 0;
 }
 
 /* Terminal panel transform is applied via inline styles in pip.ts
@@ -107,10 +114,14 @@ html.pip-mode .pip-readonly-overlay:active {
   display: flex;
   align-items: center;
   justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  animation: pip-overlay-in 0.18s ease-out;
+}
+
+html.vibrancy-active .pip-tab-select-backdrop {
   background: rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
-  animation: pip-overlay-in 0.18s ease-out;
 }
 
 @keyframes pip-overlay-in {
@@ -124,9 +135,7 @@ html.pip-mode .pip-readonly-overlay:active {
 }
 
 .pip-tab-select-dialog {
-  background: rgba(var(--bg-toolbar), 0.96);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(var(--bg-toolbar), 1);
   border: none;
   border-radius: 14px;
   padding: 20px;
@@ -137,6 +146,12 @@ html.pip-mode .pip-readonly-overlay:active {
     0 8px 40px rgba(0, 0, 0, 0.35),
     0 0 0 0.5px rgba(255, 255, 255, 0.06);
   animation: pip-dialog-in 0.22s ease-out;
+}
+
+html.vibrancy-active .pip-tab-select-dialog {
+  background: rgba(var(--bg-toolbar), 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .pip-tab-select-title {

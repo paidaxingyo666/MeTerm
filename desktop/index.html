@@ -5,10 +5,10 @@
     <script>
       // Set background color immediately to prevent white flash in new windows
       (function() {
-        var bg = '#2d2d2d';
+        var bg = '#121214';
         try {
           var s = JSON.parse(localStorage.getItem('meterm-settings') || '{}');
-          var cs = s.colorScheme || 'auto';
+          var cs = s.colorScheme || 'darker';
           if (cs === 'neo-brutalism' || cs === 'neo-brutalism-rounded') {
             // NB theme: use custom bg from nbCustomColors or default warm white
             bg = (s.nbCustomColors && s.nbCustomColors['--nb-bg']) || '#FFFEF0';

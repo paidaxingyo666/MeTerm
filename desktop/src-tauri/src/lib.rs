@@ -268,6 +268,7 @@ fn get_target_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     // menu actions must be dispatched to a main window so they are actually handled.
     let is_main = |label: &str| {
         label != "settings" && label != "updater" && label != "about" && label != "tray-dialog"
+            && !label.starts_with("drag-preview")
     };
 
     // Try to get the currently focused main window first
@@ -308,10 +309,10 @@ fn get_quit_confirmation_window(app: &tauri::AppHandle) -> String {
             return "main".to_string();
         }
     }
-    // Find first visible window
+    // Find first visible window (never the transient tab-drag preview overlay)
     app.webview_windows()
         .values()
-        .find(|w| w.is_visible().unwrap_or(false))
+        .find(|w| !w.label().starts_with("drag-preview") && w.is_visible().unwrap_or(false))
         .map(|w| w.label().to_string())
         .unwrap_or_else(|| "main".to_string())
 }
@@ -965,6 +966,7 @@ pub fn run() {
             commands::window::hide_main_window,
             commands::window::get_all_window_geometries,
             commands::window::create_window_at_position,
+            commands::window::create_drag_preview_window,
             commands::window::get_window_position,
             commands::window::dock_child_window,
             commands::window::undock_child_window,
@@ -1066,8 +1068,9 @@ pub fn run() {
                         let lifecycle = app_handle.state::<AppLifecycleState>();
                         lifecycle.remove_initialized_window(&label);
 
-                        // When a utility window is destroyed, skip the main-window check
-                        let is_utility = label == "settings" || label == "tray-dialog" || label == "updater" || label == "about" || label == "editor";
+                        // When a utility window (or the transient tab-drag preview
+                        // overlay) is destroyed, skip the main-window check
+                        let is_utility = label == "settings" || label == "tray-dialog" || label == "updater" || label == "about" || label == "editor" || label.starts_with("drag-preview");
                         if !is_utility {
                             const UTIL_LABELS: &[&str] = &["settings", "tray-dialog", "updater", "about", "editor"];
                             let lifecycle = app_handle.state::<AppLifecycleState>();
@@ -1094,8 +1097,9 @@ pub fn run() {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         let lifecycle = app_handle.state::<AppLifecycleState>();
 
-                        // Always allow utility windows to close
-                        if label == "settings" || label == "tray-dialog" || label == "updater" || label == "about" || label == "editor" {
+                        // Always allow utility windows (and the transient tab-drag
+                        // preview overlay) to close
+                        if label == "settings" || label == "tray-dialog" || label == "updater" || label == "about" || label == "editor" || label.starts_with("drag-preview") {
                             debug_log!("[DEBUG] Window {} close allowed (utility)", label);
                             return;
                         }

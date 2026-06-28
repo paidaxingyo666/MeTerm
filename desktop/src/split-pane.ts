@@ -118,6 +118,62 @@ export function removeLeaf(root: SplitNode, targetPaneId: string): SplitNode | n
   return recurse(root);
 }
 
+/**
+ * Swap the sessions of two leaves (by pane id), keeping the tree shape and
+ * pane numbers fixed — only which session sits in each position changes.
+ * Used for drag-to-rearrange.
+ */
+export function swapLeafSessions(root: SplitNode, paneA: string, paneB: string): SplitNode {
+  const la = findLeafById(root, paneA);
+  const lb = findLeafById(root, paneB);
+  if (!la || !lb) return root;
+  const sa = la.sessionId;
+  const sb = lb.sessionId;
+  function recurse(node: SplitNode): SplitNode {
+    if (node.type === 'leaf') {
+      if (node.id === paneA) return { ...node, sessionId: sb };
+      if (node.id === paneB) return { ...node, sessionId: sa };
+      return node;
+    }
+    return { ...node, children: [recurse(node.children[0]), recurse(node.children[1])] };
+  }
+  return recurse(root);
+}
+
+/**
+ * Move a pane next to a target pane (drag-to-rearrange / insert-reorder).
+ * Removes the source leaf, then replaces the target leaf with a new branch
+ * splitting in `direction`, with the moved pane placed `before` or after the
+ * target. The moved pane keeps its id (and therefore its pane number).
+ */
+export function movePaneAdjacent(
+  root: SplitNode,
+  sourcePaneId: string,
+  targetPaneId: string,
+  direction: SplitDirection,
+  before: boolean,
+): SplitNode {
+  if (sourcePaneId === targetPaneId) return root;
+  const sourceLeaf = findLeafById(root, sourcePaneId);
+  if (!sourceLeaf) return root;
+  const moved: LeafNode = { type: 'leaf', id: sourceLeaf.id, sessionId: sourceLeaf.sessionId };
+
+  const removed = removeLeaf(root, sourcePaneId);
+  if (!removed) return root; // source was the only pane
+
+  function recurse(node: SplitNode): SplitNode {
+    if (node.type === 'leaf') {
+      if (node.id !== targetPaneId) return node;
+      const children: [SplitNode, SplitNode] = before ? [moved, node] : [node, moved];
+      return { type: 'branch', id: generatePaneId(), direction, ratio: 0.5, children };
+    }
+    return { ...node, children: [recurse(node.children[0]), recurse(node.children[1])] };
+  }
+  const result = recurse(removed);
+  // If the target vanished (shouldn't happen), keep the original tree.
+  return findLeafById(result, sourcePaneId) ? result : root;
+}
+
 export function updateRatio(root: SplitNode, branchId: string, newRatio: number): SplitNode {
   if (root.type === 'leaf') return root;
   if (root.id === branchId) {
@@ -188,6 +244,37 @@ class SplitPaneManagerClass {
       paneEl.addEventListener('mousedown', () => {
         this.focusPane(node.id);
       });
+
+      // Drag handle (top-right) — drag onto another pane to rearrange. Hovering
+      // it slides a flyout out to the LEFT showing this pane's session title
+      // (panes have no title bar of their own). Only inside a split; CSS hides
+      // the handle for a lone pane.
+      const dragHandle = document.createElement('div');
+      dragHandle.className = 'pane-drag-handle';
+      dragHandle.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="5" cy="3" r="1.3"/><circle cx="11" cy="3" r="1.3"/><circle cx="5" cy="8" r="1.3"/><circle cx="11" cy="8" r="1.3"/><circle cx="5" cy="13" r="1.3"/><circle cx="11" cy="13" r="1.3"/></svg>';
+
+      const titleFlyout = document.createElement('div');
+      titleFlyout.className = 'pane-title-flyout';
+      paneEl.appendChild(titleFlyout);
+
+      dragHandle.addEventListener('mouseenter', () => {
+        const mt = TerminalRegistry.get(node.sessionId);
+        titleFlyout.textContent = mt?.shellTitle || mt?.title || 'Terminal';
+        titleFlyout.classList.add('show');
+      });
+      dragHandle.addEventListener('mouseleave', () => {
+        // Keep the title visible while this pane is being dragged.
+        if (!document.body.classList.contains('pane-dragging')) titleFlyout.classList.remove('show');
+      });
+      dragHandle.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const mt = TerminalRegistry.get(node.sessionId);
+        titleFlyout.textContent = mt?.shellTitle || mt?.title || 'Terminal';
+        titleFlyout.classList.add('show'); // keep it shown for the whole drag
+        this.startPaneDrag(node.id);
+      });
+      paneEl.appendChild(dragHandle);
 
       parent.appendChild(paneEl);
       return;
@@ -267,6 +354,7 @@ class SplitPaneManagerClass {
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.body.classList.remove('split-resizing');
+      handle.classList.remove('split-resize-active');
 
       // Trigger resize for all terminals now that drag is complete
       TerminalRegistry.resizeAll();
@@ -290,6 +378,7 @@ class SplitPaneManagerClass {
       }
 
       document.body.classList.add('split-resizing');
+      handle.classList.add('split-resize-active');
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
     });
@@ -328,6 +417,62 @@ class SplitPaneManagerClass {
     document.dispatchEvent(new CustomEvent('split-pane-focus-changed', {
       detail: { paneId, sessionId },
     }));
+  }
+
+  /**
+   * Begin dragging a pane by its grip handle. Highlights the pane under the
+   * cursor; on release over a different pane, dispatches a 'pane-swap-request'
+   * for the view layer to swap the two panes' sessions.
+   */
+  private startPaneDrag(sourcePaneId: string): void {
+    document.body.classList.add('pane-dragging');
+    let targetPaneId: string | null = null;
+    let dropZone: 'center' | 'left' | 'right' | 'top' | 'bottom' | null = null;
+    const clearTargets = (): void => {
+      document.querySelectorAll('.split-pane.pane-drop-target').forEach((p) => {
+        p.classList.remove('pane-drop-target');
+        (p as HTMLElement).removeAttribute('data-drop-edge');
+      });
+    };
+    const onMove = (ev: PointerEvent): void => {
+      const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      const paneEl = el?.closest('.split-pane') as HTMLElement | null;
+      clearTargets();
+      if (paneEl && paneEl.dataset.paneId && paneEl.dataset.paneId !== sourcePaneId) {
+        // Center zone → replace (swap); near an edge → insert on that side.
+        const r = paneEl.getBoundingClientRect();
+        const px = (ev.clientX - r.left) / r.width;
+        const py = (ev.clientY - r.top) / r.height;
+        const minDist = Math.min(px, 1 - px, py, 1 - py);
+        if (minDist > 0.3) {
+          dropZone = 'center';
+        } else {
+          const dist = { left: px, right: 1 - px, top: py, bottom: 1 - py };
+          dropZone = (Object.keys(dist) as Array<'left' | 'right' | 'top' | 'bottom'>)
+            .reduce((a, b) => (dist[a] <= dist[b] ? a : b));
+        }
+        paneEl.classList.add('pane-drop-target');
+        paneEl.setAttribute('data-drop-edge', dropZone);
+        targetPaneId = paneEl.dataset.paneId;
+      } else {
+        targetPaneId = null;
+        dropZone = null;
+      }
+    };
+    const onUp = (): void => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.body.classList.remove('pane-dragging');
+      document.querySelectorAll('.pane-title-flyout.show').forEach((f) => f.classList.remove('show'));
+      clearTargets();
+      if (targetPaneId && dropZone && targetPaneId !== sourcePaneId) {
+        document.dispatchEvent(new CustomEvent('pane-move-request', {
+          detail: { sourcePaneId, targetPaneId, edge: dropZone },
+        }));
+      }
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
   }
 
   getFocusedPaneId(): string | null {

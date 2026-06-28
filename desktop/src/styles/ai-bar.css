@@ -250,9 +250,7 @@
   /* Semi-opaque glass — nested inside .ai-bar which has its own backdrop-filter,
      so child backdrop-filter can't blur through to page content in WebKit.
      Use opaque-enough background to create frosted appearance. */
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
@@ -261,9 +259,15 @@
   flex-direction: column;
 }
 [data-theme="light"] .ai-bar-history-panel {
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  background: rgba(var(--bg-settings), 1);
   border-color: rgba(255, 255, 255, 0.5);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+/* 毛玻璃开启时恢复半透明 + 模糊 */
+html.vibrancy-active .ai-bar-history-panel {
+  background: rgba(var(--bg-settings), 0.78);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 /* Inner scroll viewport for popup panels (used with JS overlay scrollbar) */
@@ -404,9 +408,7 @@
   overflow: hidden;
   z-index: 9999;
   /* Semi-opaque glass — see .ai-bar-history-panel comment */
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
@@ -415,9 +417,15 @@
   flex-direction: column;
 }
 [data-theme="light"] .ai-bar-chat-history-panel {
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  background: rgba(var(--bg-settings), 1);
   border-color: rgba(255, 255, 255, 0.5);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+/* 毛玻璃开启时恢复半透明 + 模糊 */
+html.vibrancy-active .ai-bar-chat-history-panel {
+  background: rgba(var(--bg-settings), 0.78);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .ai-chat-hist-header {
@@ -585,6 +593,9 @@
    AI Side Panel — right-side layout mode
    ============================================ */
 
+/* Floating rounded card matching the left side panels (connection / file): toolbar
+   tone + a 3% white lift so it reads a touch brighter than the terminal/canvas,
+   rounded corners, no border. Floats on #main-content's canvas via its 8px gap. */
 .ai-side-panel {
   display: flex;
   flex-direction: column;
@@ -593,15 +604,26 @@
   min-width: 280px;
   max-width: 600px;
   overflow: visible;
-  background: rgba(var(--bg-primary), var(--app-window-opacity));
-  border-left: 1px solid var(--border-subtle);
+  position: relative;
+  border-radius: 12px;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.03)),
+    rgba(var(--bg-toolbar, 33, 33, 35), var(--app-window-opacity, 1));
+}
+/* Frost under 毛玻璃 like the left side panels (vibrancy-toolbar + 3% lift). */
+html.vibrancy-active .ai-side-panel {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.03)),
+    rgba(var(--vibrancy-toolbar), var(--vibrancy-tint));
 }
 
-/* Resize handle between terminal and AI side panel */
+/* Resize handle between terminal and AI side panel — same as the left side panels:
+   an independent flex element that fills the 8px gap, with no resting line and an
+   accent bar only on hover/drag. */
 .ai-side-resize-handle {
   width: 8px;
   min-width: 8px;
-  margin: 0 -3.5px;
+  margin: 0 -8px;            /* fill the 8px #main-content gap exactly */
   cursor: col-resize;
   background: transparent;
   flex-shrink: 0;
@@ -611,18 +633,18 @@
 .ai-side-resize-handle::after {
   content: '';
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: 12px;
+  bottom: 12px;
   left: 50%;
-  width: 1px;
-  background: var(--border-subtle);
-  transition: width 0.15s, left 0.15s, background 0.15s;
+  width: 3px;
+  border-radius: 3px;
+  transform: translateX(-50%);
+  background: transparent;     /* no resting line — accent bar only on hover */
+  transition: background 0.12s;
 }
 .ai-side-resize-handle:hover::after,
 .ai-side-resizing .ai-side-resize-handle::after {
-  width: 3px;
-  left: calc(50% - 1px);
-  background: var(--accent-primary, rgba(59, 130, 246, 0.5));
+  background: rgba(var(--accent-rgb, 106, 164, 255), 0.55);
 }
 .ai-side-resizing {
   user-select: none;
@@ -665,9 +687,7 @@
   padding: 4px 10px;
   font-size: 11px;
   /* Semi-opaque glass — see .ai-bar-history-panel comment */
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
@@ -709,8 +729,14 @@
 }
 
 [data-theme="light"] .ai-prompt-hint {
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  background: rgba(var(--bg-settings), 1);
   border-color: rgba(255, 255, 255, 0.5);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+/* 毛玻璃开启时恢复半透明 + 模糊 */
+html.vibrancy-active .ai-prompt-hint {
+  background: rgba(var(--bg-settings), 0.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 

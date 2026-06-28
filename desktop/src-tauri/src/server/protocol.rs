@@ -60,6 +60,11 @@ pub const MSG_FILE_READ_REQUEST: u8 = 0x30;
 pub const MSG_FILE_READ_RESPONSE: u8 = 0x31;
 pub const MSG_FILE_SAVE_REQUEST: u8 = 0x32;
 
+// Recursive file search (sidebar). Request {path, query, request_id, max_results};
+// results stream back as MSG_FILE_SEARCH_RESP batches (done=false … done=true).
+pub const MSG_FILE_SEARCH: u8 = 0x33;
+pub const MSG_FILE_SEARCH_RESP: u8 = 0x34;
+
 // ---------------------------------------------------------------------------
 // Error codes (sent inside MsgError payload)
 // ---------------------------------------------------------------------------

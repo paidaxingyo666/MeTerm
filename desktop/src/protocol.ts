@@ -44,6 +44,25 @@ export const MsgFileReadRequest = 0x30;
 export const MsgFileReadResponse = 0x31;
 export const MsgFileSaveRequest = 0x32;
 
+// Recursive file search (sidebar). Request {path, query, request_id, max_results};
+// results stream back as MsgFileSearchResp batches (done:false … done:true).
+export const MsgFileSearch = 0x33;
+export const MsgFileSearchResp = 0x34;
+
+export interface FileSearchHit {
+  path: string;
+  name: string;
+  is_dir: boolean;
+}
+
+export interface FileSearchResponse {
+  request_id?: string;
+  hits: FileSearchHit[];
+  done: boolean;
+  truncated: boolean;
+  error?: string;
+}
+
 export const ErrNotMaster = 0x01;
 export const ErrSessionNotFound = 0x02;
 export const ErrSessionPrivate = 0x03;

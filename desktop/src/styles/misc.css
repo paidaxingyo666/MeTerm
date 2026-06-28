@@ -3,18 +3,19 @@
   position: fixed;
   inset: 0;
   z-index: 99999;
-  background: rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.55);
   display: flex;
   align-items: center;
   justify-content: center;
 }
+html.vibrancy-active .navigate-confirm-overlay {
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
 .navigate-confirm-dialog {
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(var(--bg-settings), 1);
+  border: 1px solid var(--border-primary);
   border-radius: 14px;
   padding: 20px 24px;
   min-width: 320px;
@@ -22,9 +23,14 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 [data-theme="light"] .navigate-confirm-dialog {
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
+  background: rgba(var(--bg-settings), 1);
   border-color: rgba(255, 255, 255, 0.5);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+html.vibrancy-active .navigate-confirm-dialog {
+  background: rgba(var(--bg-settings), 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 .navigate-confirm-title {
   font-size: 14px;
@@ -116,9 +122,7 @@
 .file-link-context-menu {
   position: fixed;
   z-index: 99999;
-  background: rgba(var(--bg-settings), var(--app-window-opacity));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 6px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
@@ -127,6 +131,11 @@
 }
 [data-theme="light"] .file-link-context-menu {
   border-color: rgba(255, 255, 255, 0.5);
+}
+html.vibrancy-active .file-link-context-menu {
+  background: rgba(var(--bg-settings), 0.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 .file-link-context-menu-item {
   padding: 6px 14px;

@@ -20,6 +20,7 @@ import { openFileInEditor } from './file-editor-bridge';
 import { isImageFile } from './file-editor-md';
 import { invoke } from '@tauri-apps/api/core';
 import { MsgInput } from './protocol';
+import { SidebarSearchController } from './file-sidebar-search';
 
 // ── Types ──
 
@@ -52,15 +53,17 @@ interface SidebarInstance {
   followingFm: boolean;
   /** Unsubscribe from FileManager's path-changed observers. */
   fmPathUnsub: (() => void) | null;
+  /** Recursive-search controller for the sidebar search row. */
+  search: SidebarSearchController | null;
 }
 
 // ── SidebarManagerClass ──
 
 class SidebarManagerClass {
   private sidebars = new Map<string, SidebarInstance>();
-  private readonly MIN_WIDTH = 180;
+  private readonly MIN_WIDTH = 120;   // shared with the connection sidebar
   private readonly MAX_WIDTH_RATIO = 0.5;
-  private readonly DEFAULT_WIDTH = 240;
+  private readonly DEFAULT_WIDTH = 280;
 
   constructor() {
     // Listen for FileManager connection ready events
@@ -99,7 +102,9 @@ class SidebarManagerClass {
     if (!drawerInst?.fileManager) return null;
 
     const settings = loadSettings();
-    const savedWidth = settings.sidebarWidth > 0 ? settings.sidebarWidth : this.DEFAULT_WIDTH;
+    const savedWidth = settings.sidebarWidth > 0
+      ? Math.max(this.MIN_WIDTH, Math.min(560, settings.sidebarWidth))
+      : this.DEFAULT_WIDTH;
 
     const element = this.createSidebarElement(sessionId);
     const treeContainer = element.querySelector('.sidebar-tree-container') as HTMLElement;
@@ -143,13 +148,7 @@ class SidebarManagerClass {
       },
       onContextMenu: (_node, event) => { void event; },
       onDropToRoot: (dirPath) => {
-        this.changeTreeRoot(instance, dirPath);
-        // 拖入目录到面包屑：若当前未锁定，自动锁定目录树根
-        // 防止 CWD 变化时把用户刚选的根切走
-        if (!instance.locked) {
-          instance.locked = true;
-          this.syncLockButton(instance);
-        }
+        this.setTreeRootAndLock(instance, dirPath);
       },
       onDropToTerminal: (dirPath) => {
         // Send cd command to terminal
@@ -209,9 +208,35 @@ class SidebarManagerClass {
       currentRootPath: '/',
       followingFm: true,
       fmPathUnsub: null,
+      search: null,
     };
 
     this.sidebars.set(sessionId, instance);
+
+    // Recursive search row (server-side: walkdir local / read_dir SFTP+JumpServer).
+    const searchRow = element.querySelector('.sidebar-search-row') as HTMLElement;
+    const searchInput = element.querySelector('.sidebar-search-input') as HTMLInputElement;
+    const searchClear = element.querySelector('.sidebar-search-clear') as HTMLButtonElement;
+    const searchResults = element.querySelector('.sidebar-search-results') as HTMLElement;
+    const searchBtn = element.querySelector('.btn-sidebar-search') as HTMLButtonElement | null;
+    if (searchRow && searchInput && searchClear && searchResults) {
+      instance.search = new SidebarSearchController({
+        rowEl: searchRow,
+        input: searchInput,
+        clearBtn: searchClear,
+        resultsContainer: searchResults,
+        treeContainer,
+        getFileManager: () => fileManager,
+        getRootPath: () => instance.currentRootPath,
+        revealPath: (p) => instance.tree.revealPath(p),
+      });
+      // Toolbar search button (right of the lock button) toggles the row.
+      searchBtn?.addEventListener('click', () => {
+        const open = instance.search!.toggle();
+        searchBtn.classList.toggle('active', open);
+      });
+    }
+
     this.setupResizeHandle(instance);
     this.setupToolbar(instance, drawerInst);
     this.setupDragDrop(instance, drawerInst);
@@ -225,7 +250,24 @@ class SidebarManagerClass {
     });
     setupContextMenu(drawerInst, treeContainer, undefined, {
       getCurrentDir: () => instance.currentRootPath,
+      // 文件夹右键 → "设为根目录"，等同拖入面包屑设根
+      onSetAsRoot: (path) => this.setTreeRootAndLock(instance, path),
     });
+
+    // Scroll-edge feather for the tree (like the connection sidebar list): top/bottom
+    // fade only when it overflows — no top fade at the very top (first item stays
+    // crisp), no bottom fade at the very bottom. Recompute on scroll, resize, and tree
+    // content changes (expand/collapse/navigate mutate the DOM).
+    const updateTreeFade = (): void => {
+      const overflow = treeContainer.clientHeight > 0 && treeContainer.scrollHeight > treeContainer.clientHeight + 1;
+      treeContainer.classList.toggle('is-faded', overflow);
+      treeContainer.classList.toggle('at-top', treeContainer.scrollTop <= 0);
+      treeContainer.classList.toggle('at-bottom', treeContainer.scrollTop + treeContainer.clientHeight >= treeContainer.scrollHeight - 1);
+    };
+    treeContainer.addEventListener('scroll', updateTreeFade, { passive: true });
+    new ResizeObserver(updateTreeFade).observe(treeContainer);
+    new MutationObserver(() => requestAnimationFrame(updateTreeFade)).observe(treeContainer, { childList: true, subtree: true });
+    requestAnimationFrame(updateTreeFade);
 
     element.style.setProperty('--sidebar-width', `${savedWidth}px`);
 
@@ -283,36 +325,36 @@ class SidebarManagerClass {
   toggle(sessionId: string): void {
     const instance = this.sidebars.get(sessionId);
     if (!instance) return;
-
-    if (instance.isOpen) {
-      // Close with animation
-      instance.element.classList.remove('open');
-      instance.isOpen = false;
-      instance.resizeHandle.style.display = 'none';
-      // After transition, hide completely
-      const onEnd = () => {
-        instance.element.removeEventListener('transitionend', onEnd);
-        if (!instance.isOpen) {
-          instance.element.style.display = 'none';
-        }
-        TerminalRegistry.resizeAll();
-      };
-      instance.element.addEventListener('transitionend', onEnd);
-      // Fallback if transitionend doesn't fire
-      setTimeout(onEnd, 300);
-    } else {
-      // Open with animation
+    const willOpen = !instance.isOpen;
+    instance.isOpen = willOpen;
+    if (willOpen) {
+      // Re-read the SHARED width (the connection sidebar may have changed it).
+      const sw = loadSettings().sidebarWidth;
+      if (sw > 0) {
+        instance.width = Math.max(this.MIN_WIDTH, Math.min(560, sw));
+        instance.element.style.setProperty('--sidebar-width', `${instance.width}px`);
+      }
       instance.element.style.display = '';
       instance.resizeHandle.style.display = '';
-      instance.isOpen = true;
-      requestAnimationFrame(() => {
-        instance.element.classList.add('open');
-      });
-      if (!instance.rootLoaded) {
-        this.loadTreeRoot(instance);
-      }
+      instance.element.classList.add('open');
+      if (!instance.rootLoaded) this.loadTreeRoot(instance);
+    } else {
+      instance.element.classList.remove('open');
+      instance.element.style.display = 'none';
+      instance.resizeHandle.style.display = 'none';
     }
-    requestAnimationFrame(() => TerminalRegistry.resizeAll());
+    TerminalRegistry.resizeAll();
+  }
+
+  /** Hide instantly — used when switching to the connection sidebar. */
+  closeImmediate(sessionId: string): void {
+    const instance = this.sidebars.get(sessionId);
+    if (!instance) return;
+    instance.element.classList.remove('open');
+    instance.element.style.display = 'none';
+    instance.resizeHandle.style.display = 'none';
+    instance.isOpen = false;
+    TerminalRegistry.resizeAll();
   }
 
   has(sessionId: string): boolean {
@@ -349,6 +391,7 @@ class SidebarManagerClass {
     instance.cwdUnsubscribe?.();
     instance.fmPathUnsub?.();
     instance.fmPathUnsub = null;
+    instance.search?.destroy();
     instance.tree.destroy();
     instance.resizeHandle.remove();
     instance.element.remove();
@@ -403,9 +446,18 @@ class SidebarManagerClass {
               <path d="M5 7V5a3 3 0 0 1 6 0" />
             </svg>
           </button>
+          <button class="btn-sidebar-search" title="搜索文件">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14"/></svg>
+          </button>
         </div>
       </div>
+      <div class="sidebar-search-row" style="display:none">
+        <span class="sidebar-search-icon"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14"/></svg></span>
+        <input class="sidebar-search-input" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        <button class="sidebar-search-clear" type="button" tabindex="-1" style="display:none">&times;</button>
+      </div>
       <div class="sidebar-tree-container"></div>
+      <div class="sidebar-search-results styled-scrollbar" style="display:none"></div>
       <div class="sidebar-transfer-panel" style="display:none">
         <div class="sidebar-transfer-toolbar">
           <div class="sidebar-transfer-filters">
@@ -593,6 +645,19 @@ class SidebarManagerClass {
     }
   }
 
+  /**
+   * Re-root the tree at `path` and auto-lock so terminal CWD changes don't
+   * switch the user's chosen root away. Shared by drag-to-breadcrumb
+   * (onDropToRoot) and the folder context menu ("Set as Root").
+   */
+  private setTreeRootAndLock(instance: SidebarInstance, path: string): void {
+    this.changeTreeRoot(instance, path);
+    if (!instance.locked) {
+      instance.locked = true;
+      this.syncLockButton(instance);
+    }
+  }
+
   private updateStatusCount(instance: SidebarInstance, count: number): void {
     const countEl = instance.element.querySelector('.sidebar-file-count');
     if (countEl) countEl.textContent = `${count} ${t('sidebarItems')}`;
@@ -651,7 +716,7 @@ class SidebarManagerClass {
     const onMouseMove = (e: MouseEvent) => {
       if (!isResizing) return;
       const delta = e.clientX - startX;
-      const maxWidth = window.innerWidth * this.MAX_WIDTH_RATIO;
+      const maxWidth = Math.min(560, window.innerWidth * this.MAX_WIDTH_RATIO);
       const newWidth = Math.min(maxWidth, Math.max(this.MIN_WIDTH, startWidth + delta));
       instance.width = newWidth;
       instance.element.style.setProperty('--sidebar-width', `${newWidth}px`);

@@ -20,6 +20,7 @@
 :is([data-theme="neo-brutalism"],[data-theme="neo-brutalism-rounded"]) {
   /* Backgrounds — solid, no transparency */
   --bg-primary: 255, 254, 240;        /* warm white #FFFEF0 */
+  --bg-canvas: 236, 235, 222;
   --bg-toolbar: 255, 254, 240;
   --bg-button: 255, 255, 255;
   --bg-button-hover: 255, 238, 88;    /* vivid yellow on hover */

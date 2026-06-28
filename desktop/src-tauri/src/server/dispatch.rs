@@ -116,6 +116,26 @@ pub async fn dispatch_message(
                 }
             }
         }
+        protocol::MSG_FILE_SEARCH => {
+            if !is_master(session, client_id) {
+                return;
+            }
+            let sftp = session.sftp.lock().unwrap().clone();
+            let client_id = client_id.to_string();
+            let session = session.clone();
+            let payload = payload.to_vec();
+            if let Some(sftp) = sftp {
+                // SFTP (SSH / JumpServer): async recursive read_dir walk.
+                tokio::spawn(async move {
+                    super::file_search::handle_sftp_file_search(&payload, &sftp, &session, &client_id).await;
+                });
+            } else {
+                // Local filesystem: blocking walkdir on a blocking thread.
+                tokio::task::spawn_blocking(move || {
+                    super::file_search::handle_local_file_search(&payload, &session, &client_id);
+                });
+            }
+        }
         protocol::MSG_FILE_OPERATION => {
             let is_stat = serde_json::from_slice::<serde_json::Value>(payload)
                 .ok()

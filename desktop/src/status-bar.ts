@@ -141,6 +141,7 @@ class StatusBarClass {
     this.listenForTransfers();
     this.listenForAI();
     this.initialized = true;
+    this.updateVisibility();
   }
 
   // ── Public API ──────────────────────────────────────────────
@@ -150,6 +151,7 @@ class StatusBarClass {
     this.state.connectionLabel = label ?? this.defaultLabel(status);
     this.renderConnectionCapsule();
     this.renderLatencyCapsule();
+    this.updateVisibility();
   }
 
   setLatency(ms: number | null): void {
@@ -479,6 +481,7 @@ class StatusBarClass {
         `<span>${arrow} ${t.fileCount} file${t.fileCount !== 1 ? 's' : ''} ${pct}%</span>` +
         `<div class="transfer-progress-bar"><div class="transfer-progress-fill" style="width:${t.progress}%"></div></div>`;
     }
+    this.updateVisibility();
   }
 
   private renderAICapsule(): void {
@@ -495,6 +498,7 @@ class StatusBarClass {
 
     this.aiCapsule.innerHTML =
       `<span class="ai-dot"></span>${svgIcons.ai}<span>AI</span>`;
+    this.updateVisibility();
   }
 
   // ── Capsule Lifecycle Animations ────────────────────────────
@@ -524,11 +528,32 @@ class StatusBarClass {
       el.removeEventListener('animationend', onEnd);
       el.remove();
       cleanup();
+      this.updateVisibility();
     };
     const onEnd = () => finish();
     el.addEventListener('animationend', onEnd);
     // Safety net: clean up if animationend never fires (e.g. element not in DOM)
     setTimeout(finish, 300);
+  }
+
+  /**
+   * Auto-hide the status bar when idle, show it only when something notable is
+   * happening: connecting / reconnecting / error, a file transfer, or AI running.
+   * (A steady connected/idle session shows nothing → the bar collapses to 0.)
+   */
+  private updateVisibility(): void {
+    if (!this.container) return;
+    const s = this.state;
+    const show =
+      s.connectionStatus === 'connecting' ||
+      s.connectionStatus === 'reconnecting' ||
+      s.connectionStatus === 'error' ||
+      s.transfer != null ||
+      s.aiActive ||
+      this.activeTransfers.size > 0;
+    this.container.classList.toggle('status-collapsed', !show);
+    // Also collapse the #app grid row so the reserved 24px space is reclaimed.
+    document.getElementById('app')?.classList.toggle('app-status-collapsed', !show);
   }
 
   // ── Latency Monitor ────────────────────────────────────────

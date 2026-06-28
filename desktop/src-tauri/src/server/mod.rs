@@ -11,6 +11,7 @@ pub mod discover;
 pub mod encoding;
 pub mod executor;
 pub mod file_handler;
+pub mod file_search;
 pub mod handlers;
 pub mod jumpserver;
 pub mod pairing;

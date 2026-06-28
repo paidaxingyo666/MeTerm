@@ -3,8 +3,12 @@
   grid-template-columns: max-content minmax(0, 1fr) max-content;
   align-items: center;
   gap: 10px;
-  padding: 1px 12px;
-  height: 32px;
+  /* Extra bottom padding = breathing gap below the tabs, before the terminal.
+     Top padding stays 1px so the content box height (and thus the centered
+     position of the tabs/icons) is unchanged — they stay aligned with the
+     macOS traffic lights; the +6px lives below as continuous toolbar color. */
+  padding: 1px 12px 2px;
+  height: 33px;
   box-sizing: border-box;
   border-bottom: 1px solid var(--border-toolbar);
   background: rgba(var(--bg-toolbar), var(--app-window-opacity));
@@ -82,7 +86,7 @@ html.platform-linux .editor-tabs-area {
 #window-toolbar-right {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 2.4px;
   position: relative;
   z-index: 2;
   transform: translateY(0);
@@ -115,15 +119,19 @@ html.platform-linux #window-toolbar-right {
   align-items: center;
 }
 
+/* Title-bar action & icon buttons + tabs: borderless, icon-first.
+   No persistent button box — state is conveyed by icon/text color
+   (and a bottom underline for the active tab). Neo-Brutalism overrides
+   every one of these with !important and keeps its boxed look unchanged. */
 .toolbar-action-btn,
 .title-tab,
 .toolbar-icon-btn {
   border: none;
   border-radius: 6px;
-  background: rgba(var(--bg-button), var(--app-window-opacity));
-  color: var(--text-button);
+  background: transparent;
+  color: var(--text-secondary);
   height: 22px;
-  padding: 0 10px;
+  padding: 0 6px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -134,19 +142,22 @@ html.platform-linux #window-toolbar-right {
   app-region: no-drag;
   -webkit-user-select: none;
   user-select: none;
-  transition: background 0.12s;
+  outline: none;            /* pure icon — never a focus frame */
+  transition: color 0.12s;
 }
 
+/* Pure-icon states: NO background box in ANY state (not even hover/active).
+   Only the icon color changes — default muted, hover bright, active accent. */
 .toolbar-action-btn:hover,
-.title-tab:hover,
 .toolbar-icon-btn:hover {
-  background: rgba(var(--bg-button-hover), var(--app-window-opacity));
+  color: var(--text-heading);
 }
 
 .toolbar-action-btn.active,
-.title-tab.active {
-  background: rgba(var(--bg-button-hover), var(--app-window-opacity));
-  color: var(--text-heading);
+.toolbar-icon-btn.active,
+.toolbar-action-btn.active:hover,
+.toolbar-icon-btn.active:hover {
+  color: var(--accent);
 }
 
 #window-toolbar-tabs {
@@ -165,9 +176,14 @@ html.platform-linux #window-toolbar-right {
   margin-right: 0;
 }
 
-.toolbar-icon-btn {
-  width: 24px;
-  min-width: 24px;
+/* Left-side action buttons and right-side icon buttons share the same square box
+   (no horizontal padding) so icon spacing is identical on both sides. Enlarged ~10%
+   over the 22px tab box; height overrides the shared 22px so tabs stay unchanged. */
+.toolbar-icon-btn,
+.toolbar-action-btn {
+  width: 24.2px;
+  min-width: 24.2px;
+  height: 24.2px;
   justify-content: center;
   padding: 0;
 }
@@ -261,6 +277,17 @@ html[data-theme="light"] .win-close-btn:hover {
   padding: 0 6px;
   width: auto;
   pointer-events: auto;
+  color: var(--text-muted);
+}
+
+/* Inactive tab: brighten text on hover (no box) */
+.title-tab:hover {
+  color: var(--text-secondary);
+}
+
+/* Active tab: distinguished by brighter text only (no underline). */
+.title-tab.active {
+  color: var(--text-heading);
 }
 
 .tab-icon-area {
@@ -399,16 +426,12 @@ html[data-theme="light"] .win-close-btn:hover {
   line-height: 1;
   opacity: 0;
   transition: opacity 0.15s;
-  background: linear-gradient(to right, transparent, rgba(var(--bg-button), 1) 40%);
-  z-index: 1;
+  background: transparent;       /* no gradient chrome — × sits directly on the tab */
+  z-index: 2;
 }
 
 .title-tab:hover .tab-close {
   opacity: 1;
-}
-
-.title-tab.active .tab-close {
-  background: linear-gradient(to right, transparent, rgba(var(--bg-button-hover), 1) 40%);
 }
 
 /* Tab drag-and-drop */
@@ -532,14 +555,24 @@ html[data-theme="light"] .win-close-btn:hover {
 
 .toolbar-action-btn .tab-icon,
 .toolbar-action-btn .tab-icon svg {
-  width: 14px;
-  height: 14px;
+  width: 15.4px;
+  height: 15.4px;
 }
 
 .toolbar-icon-btn .tab-icon,
 .toolbar-icon-btn .tab-icon svg {
-  width: 13px;
-  height: 13px;
+  width: 15.4px;
+  height: 15.4px;
+}
+
+/* AI agent button shows the letters "AI" instead of an icon. Color is inherited
+   from the button state (muted default → bright hover → accent when active). */
+.ai-agent-text {
+  font-size: 12.1px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  line-height: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 /* Update available icon in toolbar */
 .toolbar-update-btn {

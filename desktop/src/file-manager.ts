@@ -10,12 +10,15 @@ import {
   MsgError,
   MsgFileListProgress,
   MsgFileReadResponse,
+  MsgFileSearch,
+  MsgFileSearchResp,
   type FileInfo,
   type FileListResponse,
   type FileOperationRequest,
   type ErrorResponse,
   type FileListProgressResponse,
   type ServerInfoResponse,
+  type FileSearchResponse,
 } from './protocol';
 import { handleFileReadResponse, handleSaveResponse } from './file-editor-bridge';
 import { isMacPlatform } from './app-state';
@@ -393,9 +396,52 @@ export class FileManager {
       }
     } else if (msgType === MsgFileReadResponse) {
       handleFileReadResponse(payload);
+    } else if (msgType === MsgFileSearchResp) {
+      this.handleFileSearchResponse(payload);
+      return true;
     }
 
     return isFileMsg;
+  }
+
+  // ─── Recursive file search (sidebar) ──────────────────────────
+  // Streaming: the server sends MsgFileSearchResp batches keyed by request_id;
+  // the last has done=true. Stale requests are simply unregistered so their
+  // late batches are dropped.
+  private searchCallbacks = new Map<string, (resp: FileSearchResponse) => void>();
+
+  /** Start a recursive search rooted at `path`. `onResp` receives streamed
+   *  batches; the final one has done=true. Returns the request id used. */
+  searchFiles(path: string, query: string, requestId: string, onResp: (resp: FileSearchResponse) => void): void {
+    if (!this._isConnected) {
+      onResp({ request_id: requestId, hits: [], done: true, truncated: false, error: 'not connected' });
+      return;
+    }
+    this.searchCallbacks.set(requestId, onResp);
+    const request = JSON.stringify({ path, query, request_id: requestId, max_results: 2000 });
+    const message = this.encodeMessage(MsgFileSearch, new TextEncoder().encode(request));
+    this._send(message);
+  }
+
+  /** Stop caring about a search's results (its in-flight batches are dropped). */
+  cancelSearch(requestId: string): void {
+    this.searchCallbacks.delete(requestId);
+  }
+
+  private handleFileSearchResponse(payload: Uint8Array): void {
+    let resp: FileSearchResponse;
+    try {
+      resp = JSON.parse(new TextDecoder().decode(payload)) as FileSearchResponse;
+    } catch (e) {
+      console.error('Failed to parse file search response:', e);
+      return;
+    }
+    const id = resp.request_id;
+    if (!id) return;
+    const cb = this.searchCallbacks.get(id);
+    if (!cb) return; // stale / cancelled
+    cb(resp);
+    if (resp.done) this.searchCallbacks.delete(id);
   }
 
   async loadDirectory(path: string, options?: { loadAll?: boolean }): Promise<void> {
@@ -810,7 +856,12 @@ export class FileManager {
           console.warn('⏭️ JumpServer SFTP 不可用，已静默:', error.message);
           return;
         }
-        userMessage = 'SSH 文件系统未就绪\n请确保已成功连接到 SSH 服务器';
+        // 保留后端 detail（含 fallback 双失败信息或服务器认证拒绝原因），
+        // 仅在 detail 是占位符 "not ready yet, please retry" 时回退到通用文案。
+        const looksLikePlaceholder = msgLower.includes('not ready') || msgLower.includes('please retry') || !error.message.trim();
+        userMessage = looksLikePlaceholder
+          ? 'SSH 文件系统未就绪\n请确保已成功连接到 SSH 服务器'
+          : `SSH 文件系统不可用\n${error.message}`;
       } else if (error.code === 'LIST_FAILED') {
         if (this.suppressListErrors) {
           console.warn('⏭️ JumpServer SFTP 列目录错误已静默:', error.message);

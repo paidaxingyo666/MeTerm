@@ -8,6 +8,7 @@ import { openFileInEditor } from './file-editor-bridge';
 import { isImageFile } from './file-editor-md';
 import { loadSettings, saveSettings } from './themes';
 import { invoke } from '@tauri-apps/api/core';
+import { isMacPlatform } from './app-state';
 import { t } from './i18n';
 import { showFileDetailsDialog } from './file-details-dialog';
 
@@ -105,6 +106,10 @@ function buildMenu(items: MenuItem[], parent: HTMLElement, closeMenu: () => void
 export interface ContextMenuOptions {
   /** Provide the "current directory" for the context (e.g. sidebar tree root) */
   getCurrentDir?: () => string;
+  /** Re-root the file tree at the right-clicked folder (sidebar only). When
+   *  provided, a "Set as Root" item appears on a folder's context menu —
+   *  same effect as dragging the folder onto the breadcrumb. */
+  onSetAsRoot?: (path: string) => void;
 }
 
 export function setupContextMenu(
@@ -271,6 +276,17 @@ export function setupContextMenu(
     else {
       const editable = !isDir && (isEditableFile(fileName) || isImageFile(fileName));
 
+      // 文件夹：设为文件树根目录（仅文件侧栏提供该回调；等同于把文件夹拖到面包屑）
+      if (isDir && options?.onSetAsRoot) {
+        const setRoot = options.onSetAsRoot;
+        const rootPath = fullPath;
+        items.push({
+          label: t('ctxMenuSetAsRoot'),
+          action: () => setRoot(rootPath),
+        });
+        items.push({ separator: true, label: '' });
+      }
+
       // 打开 / 用...打开:仅文件
       if (!isDir) {
         items.push({
@@ -339,6 +355,26 @@ export function setupContextMenu(
             ],
           });
         }
+        items.push({ separator: true, label: '' });
+      }
+
+      // 在系统文件管理器中打开（仅本地会话——远程文件不在本机）。
+      // 目录 → 打开该文件夹；文件 → 在其所在目录中定位/选中。
+      if (isLocal) {
+        items.push({
+          label: isMacPlatform
+            ? (settings.language === 'zh' ? '在访达中打开' : 'Open in Finder')
+            : (settings.language === 'zh' ? '在资源管理器中打开' : 'Open in File Explorer'),
+          action: () => {
+            if (isDir) {
+              invoke('open_path', { path: fullPath }).catch(() => {});
+            } else {
+              import('@tauri-apps/plugin-opener')
+                .then(({ revealItemInDir }) => revealItemInDir(fullPath).catch(() => {}))
+                .catch(() => {});
+            }
+          },
+        });
         items.push({ separator: true, label: '' });
       }
 

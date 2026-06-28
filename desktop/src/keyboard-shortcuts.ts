@@ -200,7 +200,7 @@ export function setupKeyboardShortcuts(): void {
       event.stopPropagation();
       event.stopImmediatePropagation();
       const splitTab = TabManager.getActiveTab();
-      if (splitTab && countLeaves(splitTab.splitRoot) < 4) {
+      if (splitTab) {
         void (async () => {
           await doSplitPane(splitTab.id, splitTab.focusedPaneId, 'horizontal');
           await activateTab(splitTab.id);
@@ -216,7 +216,7 @@ export function setupKeyboardShortcuts(): void {
       event.stopPropagation();
       event.stopImmediatePropagation();
       const splitTab = TabManager.getActiveTab();
-      if (splitTab && countLeaves(splitTab.splitRoot) < 4) {
+      if (splitTab) {
         void (async () => {
           await doSplitPane(splitTab.id, splitTab.focusedPaneId, 'vertical');
           await activateTab(splitTab.id);

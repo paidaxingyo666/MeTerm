@@ -27,7 +27,9 @@ import { settings, isHomeView, isGalleryView, isWindowsPlatform, isLinuxPlatform
 import { toggleJumpServerPanel, isJumpServerPanelOpen, showJsConnectionContextMenu } from './jumpserver-panel';
 import { isPipActive, togglePip } from './pip';
 import { DrawerManager } from './drawer';
-import { toggleFileManager } from './file-manager-toggle';
+import { AICapsuleManager } from './ai-capsule';
+import { ConnectionSidebar } from './connection-sidebar';
+import { toggleFileManager, closeFileManager, isFileManagerOpen } from './file-manager-toggle';
 import appIconUrl from '../src-tauri/icons/icon.svg';
 
 /** Platforms that need custom window controls (no native overlay titlebar). */
@@ -36,6 +38,11 @@ const needsCustomControls = isWindowsPlatform || isLinuxPlatform;
 // ── Always-on-top state ──
 
 let isAlwaysOnTop = false;
+
+// Re-render the toolbar when the AI chat sidebar opens/closes from anywhere
+// (sidebar close button, Ctrl+Enter, etc.) so the agent button's active state
+// stays in sync. Registered once, lazily, from renderToolbarActions.
+let _aiChatToggleHooked = false;
 
 async function toggleAlwaysOnTop(): Promise<void> {
   const win = getCurrentWindow();
@@ -257,6 +264,11 @@ export function showWindowsToolbarMenu(anchor: HTMLElement): void {
 // ── Main toolbar rendering ──
 
 export function renderToolbarActions(): void {
+  if (!_aiChatToggleHooked) {
+    _aiChatToggleHooked = true;
+    document.addEventListener('ai-chat-toggled', () => renderToolbarActions());
+  }
+
   const toolbarLeftEl = getToolbarLeftEl();
   const toolbarRightEl = getToolbarRightEl();
 
@@ -279,14 +291,25 @@ export function renderToolbarActions(): void {
   }
 
   const homeBtn = document.createElement('button');
-  homeBtn.className = `toolbar-action-btn ${isHomeView ? 'active' : ''}`;
+  homeBtn.className = `toolbar-action-btn conn-toggle-btn ${ConnectionSidebar.isOpen() ? 'active' : ''}`;
   homeBtn.type = 'button';
-  homeBtn.title = t('contextMenuHome');
-  homeBtn.innerHTML = `<span class="tab-icon">${icon('home')}</span>`;
+  homeBtn.title = settings?.language === 'zh' ? '连接' : 'Connections';
+  // Sidebar-style icon (panel with a left column) — toggles the docked
+  // connection sidebar (which pushes the terminal aside, never covers it).
+  homeBtn.innerHTML = `<span class="tab-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg></span>`;
   homeBtn.onclick = () => {
-    showHomeView();
-    renderTabs();
+    ConnectionSidebar.toggle();
+    const open = ConnectionSidebar.isOpen();
+    homeBtn.classList.toggle('active', open);
+    // Mutually exclusive with the file manager — opening the sidebar closes it.
+    if (open) {
+      const sid = TabManager.getActiveSessionId();
+      if (sid) closeFileManager(sid);
+    }
   };
+  // Hover → float the sidebar out as a dropdown menu; click pins it docked.
+  homeBtn.addEventListener('mouseenter', () => ConnectionSidebar.showFlyout(homeBtn));
+  homeBtn.addEventListener('mouseleave', () => ConnectionSidebar.scheduleHideFlyout());
   toolbarLeftEl.appendChild(homeBtn);
 
   // File manager toggle button — only when tabs exist and not in home/gallery view
@@ -295,10 +318,10 @@ export function renderToolbarActions(): void {
     const hasFm = activeSessionId && DrawerManager.has(activeSessionId);
     if (hasFm) {
       const fmBtn = document.createElement('button');
-      fmBtn.className = 'toolbar-action-btn';
+      fmBtn.className = `toolbar-action-btn ${isFileManagerOpen(activeSessionId) ? 'active' : ''}`;
       fmBtn.type = 'button';
       fmBtn.title = t('fileManager');
-      fmBtn.innerHTML = `<span class="tab-icon"><svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16"><path d="M2 19V7a2 2 0 012-2h5l2 2h7a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+      fmBtn.innerHTML = `<span class="tab-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/><line x1="12.2" y1="9" x2="17.8" y2="9"/><line x1="12.2" y1="12.5" x2="17.8" y2="12.5"/><line x1="12.2" y1="16" x2="17.8" y2="16"/></svg></span>`;
       fmBtn.onclick = () => {
         toggleFileManager(activeSessionId);
       };
@@ -356,6 +379,26 @@ export function renderToolbarActions(): void {
     toolbarRightEl.appendChild(jsBtn);
   }
 
+  // AI agent button — toggles the AI chat side panel for the active session.
+  // Placed to the LEFT of the share button. Only shown when a terminal tab is
+  // active (the AI capsule is session-scoped).
+  if (TabManager.tabs.length > 0 && !isHomeView && !isGalleryView) {
+    const agentSessionId = TabManager.getActiveSessionId();
+    if (agentSessionId) {
+      const chatOpen = AICapsuleManager.isChatSidebarOpen(agentSessionId);
+      const agentBtn = document.createElement('button');
+      agentBtn.className = `toolbar-icon-btn ai-agent-btn${chatOpen ? ' active' : ''}`;
+      agentBtn.type = 'button';
+      agentBtn.title = settings?.language === 'zh' ? 'AI 助手' : 'AI Agent';
+      agentBtn.innerHTML = `<span class="ai-agent-text">AI</span>`;
+      agentBtn.onclick = () => {
+        AICapsuleManager.toggleChatSidebar(agentSessionId);
+        renderToolbarActions();
+      };
+      toolbarRightEl.appendChild(agentBtn);
+    }
+  }
+
   const shareBtn = document.createElement('button');
   shareBtn.className = 'toolbar-icon-btn';
   shareBtn.type = 'button';
@@ -401,13 +444,8 @@ export function renderToolbarActions(): void {
     toolbarRightEl.appendChild(pipBtn);
   }
 
-  const settingsBtn = document.createElement('button');
-  settingsBtn.className = 'toolbar-icon-btn';
-  settingsBtn.type = 'button';
-  settingsBtn.title = t('settings');
-  settingsBtn.innerHTML = `<span class="tab-icon">${icon('settings')}</span>`;
-  settingsBtn.onclick = () => openSettings();
-  toolbarRightEl.appendChild(settingsBtn);
+  // Settings is reachable from the connection sidebar footer, the macOS menu
+  // bar, and ⌘, — the toolbar gear was removed per request.
 
   if (needsCustomControls) {
     // Visual separator between app buttons and OS window controls

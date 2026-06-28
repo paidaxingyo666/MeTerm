@@ -793,6 +793,15 @@ class TerminalRegistryClass {
     });
   }
 
+  /** Clear native xterm text selection across all terminals (e.g. after a split,
+   *  where a macOS Control+Click that opened the context menu can leave a stray
+   *  selection on the source pane). */
+  clearAllSelections(): void {
+    this.terminals.forEach((mt) => {
+      try { mt.terminal.clearSelection(); } catch { /* terminal may be disposed */ }
+    });
+  }
+
   /** Reset lastSentCols/Rows to 0 so the next resize always sends SIGWINCH. */
   resetLastSentDimensions(): void {
     this.terminals.forEach((mt) => {

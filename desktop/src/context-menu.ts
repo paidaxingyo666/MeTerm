@@ -236,7 +236,7 @@ export function showTabContextMenu(event: MouseEvent, tab: Tab, tabIndex: number
 
   addDivider();
 
-  const splitDisabled = countLeaves(tab.splitRoot) >= 4;
+  const splitDisabled = false; // split limit removed
   addItem(t('splitHorizontal'), () => {
     void (async () => {
       TabManager.activate(tab.id);
@@ -487,7 +487,7 @@ export function showCustomContextMenu(event: MouseEvent): void {
   const activeTabForCtx = TabManager.getActiveTab();
   if (activeTabForCtx) {
     menu.appendChild(document.createElement('div')).className = 'custom-context-menu-divider';
-    const splitCtxDisabled = countLeaves(activeTabForCtx.splitRoot) >= 4;
+    const splitCtxDisabled = false; // split limit removed
     addItem(t('splitHorizontal'), () => {
       void (async () => {
         await doSplitPane(activeTabForCtx.id, activeTabForCtx.focusedPaneId, 'horizontal');
@@ -504,6 +504,16 @@ export function showCustomContextMenu(event: MouseEvent): void {
     }, splitCtxDisabled);
 
     if (countLeaves(activeTabForCtx.splitRoot) > 1) {
+      addItem(settings?.language === 'zh' ? '抽取为独立标签' : 'Extract pane to new tab', () => {
+        const newTabId = TabManager.extractPaneToNewTab(activeTabForCtx.id, activeTabForCtx.focusedPaneId);
+        if (newTabId) {
+          void (async () => {
+            // Re-render the source tab (pane removed) then activate the new tab.
+            await activateTab(newTabId);
+            renderTabs();
+          })();
+        }
+      });
       addItem(t('closePane'), () => {
         const closingLeaf = findLeafById(activeTabForCtx.splitRoot, activeTabForCtx.focusedPaneId);
         if (closingLeaf) {

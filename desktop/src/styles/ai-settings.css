@@ -940,9 +940,7 @@
   right: 0;
   min-width: 200px;
   /* Liquid Glass */
-  background: rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   padding: 4px;
@@ -1042,6 +1040,11 @@
   background: rgba(255, 255, 255, 0.25);
   border-color: rgba(255, 255, 255, 0.45);
   box-shadow: none;
+}
+html.vibrancy-active .ai-trust-dropdown {
+  background: rgba(var(--bg-settings), 0.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 [data-theme="light"] .ai-trust-item:hover {
   background: rgba(0, 0, 0, 0.04);
