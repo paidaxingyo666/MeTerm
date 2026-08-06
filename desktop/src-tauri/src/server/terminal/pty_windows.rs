@@ -29,7 +29,16 @@ impl ConPtyTerminal {
     ///
     /// PowerShell hook injection: adds `-NoExit -Command "..."` for OSC 7 CWD tracking.
     /// cmd.exe: sets PROMPT for OSC 7 CWD tracking.
-    pub fn new(shell: &str, cwd: &str, cols: u16, rows: u16) -> Result<Self, String> {
+    ///
+    /// `envs`:调用方额外注入的环境变量(agent 终端镜像 M1 的 METERM_* hook env)。
+    /// Windows 原生 shell 是本机进程,loopback 可达,故与 unix 一样直接注入。
+    pub fn new(
+        shell: &str,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+        envs: &[(String, String)],
+    ) -> Result<Self, String> {
         let pty_system = xpty::native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -52,7 +61,10 @@ impl ConPtyTerminal {
             let mut cmd = CommandBuilder::new(&resolved);
 
             let shell_lower = resolved.to_lowercase();
-            let basename = shell_lower.rsplit(['\\', '/']).next().unwrap_or(&shell_lower);
+            let basename = shell_lower
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or(&shell_lower);
 
             // PowerShell hook: OSC 7 (CWD) + OSC 7766 (init) + OSC 7768 (shell state)
             // Matches Go psStartupHook. Uses [char]27/[char]7 for PowerShell 5 compat.
@@ -71,10 +83,7 @@ impl ConPtyTerminal {
             }
             // cmd.exe: set PROMPT for OSC 7
             else if basename == "cmd.exe" || basename == "cmd" {
-                cmd.env(
-                    "PROMPT",
-                    "$E]7;file://%COMPUTERNAME%/$P$E\\$P$G",
-                );
+                cmd.env("PROMPT", "$E]7;file://%COMPUTERNAME%/$P$E\\$P$G");
             }
             // WSL: detected by basename, delegate to pty_wsl.rs
             // (caller should check and use WslPtyTerminal instead)
@@ -86,6 +95,11 @@ impl ConPtyTerminal {
             cmd.cwd(cwd);
         }
         cmd.env("TERM", "xterm-256color");
+
+        // 调用方注入的环境变量(agent 镜像 hook env 等)。
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
 
         let mut reader = pair
             .master
@@ -207,8 +221,10 @@ fn default_windows_shell() -> String {
 
 /// Check if an executable exists in any PATH directory (no subprocess).
 fn find_in_path(exe: &str) -> bool {
-    let Ok(path_var) = std::env::var("PATH") else { return false };
-    path_var.split(';').any(|dir| {
-        !dir.is_empty() && std::path::Path::new(dir).join(exe).is_file()
-    })
+    let Ok(path_var) = std::env::var("PATH") else {
+        return false;
+    };
+    path_var
+        .split(';')
+        .any(|dir| !dir.is_empty() && std::path::Path::new(dir).join(exe).is_file())
 }

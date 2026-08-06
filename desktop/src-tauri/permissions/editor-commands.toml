@@ -1,0 +1,7 @@
+[[permission]]
+identifier = "editor-window-commands"
+description = "Allows the editor window to update only its native appearance."
+commands.allow = [
+  "set_window_vibrancy",
+  "reveal_window",
+]

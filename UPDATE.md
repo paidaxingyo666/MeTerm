@@ -1,5 +1,52 @@
 # MeTerm 更新记录
 
+## v0.2.12
+
+### Agent 双形态(原生 TUI + 手机聊天镜像)
+
+- **审批桥(手机可批)** — claude 弹权限确认时,手机 Agent 页直接出审批卡(允许/拒绝),点了即回投给 claude,**终端不再弹窗**;手机 90 秒未决/离线自动回落原生 TUI 弹窗,审批永不被吞。local TUI 模式手机可批,这是 Happy 做不到的
+- **对话实时展示** — assistant 正文改走 MessageDisplay hook 实时流式下行(markdown 原文行批),不再等整轮结束 transcript 落盘才一次性冒出;hook 失联轮自动回落 transcript 全文兜底,历史回放不受影响
+- **工具进行中态** — PreToolUse hook 实时合成工具卡(执行开始瞬间出现「运行中」spinner 徽章),轮末 transcript 的重复卡由手机归约器幂等吸收(同 id 就地合并,不重复建卡、不打断流式气泡)
+- **Agent 页状态条** — 顶部实时显示 claude 在做什么:思考中(紫)/ 执行 <工具>(蓝)/ 等待你的确认(橙);idle 自动隐藏。由 hook 事件流驱动(UserPromptSubmit/PreToolUse/PostToolUse/Stop/Notification),零 token
+- **启动模式** — 欢迎页新增启动模式选择:标准 / 继续上次对话(--continue)/ 计划模式(--permission-mode plan)/ 跳过权限确认(--dangerously-skip-permissions,红色警示);对当前目录与选目录启动均生效
+- **通知去重** — 审批卡在手机上时不再同时弹「去终端确认」的 attention 卡;任务完成后的空闲提醒不再误报成审批提示(状态条置 idle)
+- **Agent 页 statusline(对齐 ccstatusline)** — 输入框下方状态行:模型(展示名,可点切换 /model)· 思考等级(可点切换 /effort)· git 分支 · 上下文占用百分比(分级着色,接近 compact 阈值转橙/红);数据零侵入取自 transcript(model/usage/gitBranch/cwd)与 hook 的 CLAUDE_EFFORT,不注入 statusLine 配置、不影响用户终端里自己的 statusline
+- **模型/思考等级菜单动态化(告别硬编码漂移)** — 新增 `GET /api/agent-options`:桌面运行时从本机 claude 二进制提取 /model 别名全集与 /effort 档位全集(claude 升级增删模型后自动跟随,含 ultracode 第 6 档),带进程级缓存与结构校验;提取失败逐级回落(内置快照,UI 可标注);手机菜单 label 按规则生成,未知新别名自动可读
+- **状态指示器归位** — 从页面左上角移进对话流,跟在最新消息下方(思考中/执行工具/等待确认小胶囊),出现自动滚入视野
+- **工具卡合并 + 紧凑化** — 同批连续工具调用合并为一张组卡(每工具一行、独立展开、独立运行中/完成徽章);卡片留白减半、不再占满全宽
+- **Agent 页标题** — 跟随会话标签名(与终端页一致),不再固定显示 "Agent"
+- **审批卡对齐终端语义** — 选项 = 允许 / 总是允许(claude 建议的 don't-ask-again,回 updatedPermissions)/ 拒绝(可附"告诉 Claude 该怎么做"反馈);已决后收缩为一行结果摘要
+- **AskUserQuestion 选择题** — claude 问选择题时手机出问题卡:单选点即提交、多选、自定义文本回答;答案经 updatedInput.answers 回传(masko-code 同款机制)
+- **对话体验** — 气泡长按复制;列表底部锚定(新内容自动追随、键盘弹出内容跟随上推);右上角操作菜单(打断 / /compact / 复制全部对话 / /clear)
+- **新增底部 tab:任务** — claude 任务清单(TodoWrite)实时展示:进度条 + pending/进行中/已完成状态,claude 退出自动清空
+- **新增底部 tab:Git(GitHub 图标)** — 会话目录的仓库面板:分支与 ahead/behind、变更文件列表(点开逐行着色 diff,支持 untracked)、提交说明输入 + 全部暂存提交、pull(--ff-only)/push、提交历史;桌面新增 5 个会话级 git REST 端点(仅本机会话,cwd 由 shell integration OSC 上报实时跟踪)
+- **Git tab 完善(fix14)** — 右上角操作菜单:切换分支(sheet 列表,当前打勾)/ 新建分支 / Fetch / Stash 暂存与恢复 / 丢弃全部改动(双确认);文件行右滑暂存/取消暂存(带绿勾反馈)、左滑丢弃(确认);提交历史点开看完整提交 diff(git show,超长截断)、长按复制 hash;桌面再增 6 个 git 端点(branches/show/checkout/stage/discard/stash),分支名防 flag 注入、hash 严格校验
+- **Git tab 图标** — GitHub mark 换 SF Symbol 分支符号(arrow.triangle.branch),自动跟随 tab 高亮着色,删自定义资源
+
+### 主页「文件」tab(配对电脑文件管理)
+
+- **文件浏览** — 主页第 2 个 tab 从占位实现为配对桌面本机文件浏览器:从家目录逐级进入(系统返回/右滑),图标/大小/修改时间与会话页一致,下拉刷新、搜索过滤当前目录、显示隐藏文件;不依赖终端会话、不需要接管;桌面新增 4 个会话无关文件 REST 端点(list/download/upload/op,Bearer 鉴权,上传临时文件+原子落位、同名自动加 (N) 后缀)
+- **传输队列** — 右上角队列按钮(进行中数量角标):多任务上传/下载并发 2,进度条、取消、失败重试、清除已完成;下载落系统文件 app 可见的 MeTerm/Downloads(完成项点开预览、可分享);上传支持文件多选与相册照片
+- **预览分流** — 点文件:图片/音视频/PDF/Office 走 QuickLook;小文本原生预览可编辑保存;可执行/库/压缩包等不可预览类型直接弹操作菜单(下载到文件/复制路径),不再下载后弹无意义占位页;下载后再过一遍 canPreview 兜底(损坏/伪装扩展名)
+- **多桌面 + 冷启动** — 顶部多桌面切换器(会话页同款,0/1 台自动隐藏);冷启动三态:离线橙条 / 首载「连接中…」占位 / 失败内联通知卡带重试,桌面回连自动重载,不闪空态不弹错
+- **切换桌面传输保护** — 有进行中的传输任务时,切换桌面(切换器/桌面管理页任一入口)先弹确认「中断传输并切换」,确认后干净取消在飞任务再切换;无任务直切零打扰
+- **系统分享接入(用 MeTerm 打开)** — 注册为通用文档处理 app:文件 app 分享菜单与任何应用的「用其他应用打开」里出现 MeTerm,选中后进「上传到电脑」引导——选目标电脑(多台可选,默认当前活跃)→ 逐级浏览选目标文件夹 → 逐文件进度上传(失败单个重试);多文件连续分享合并一次引导;冷启动预热窗口静默重试 3 发(显示"连接中…",不闪假错),回连自动重载
+
+### 问题修复 / 优化
+
+- **连接 JumpServer 堡垒机报「No common algorithm」** — SSH 算法偏好不再隐式继承 russh 的默认表。上游默认表在版本间会漂移，而漂移会静默改变「能连上哪些服务器」：russh 0.46 不提供 `ssh-rsa` 主机密钥算法，而 JumpServer Koko 的 RSA 主机密钥恰恰只以这一个名字宣告，两边交集为空导致密钥交换直接失败，且旧版错误信息不含任何算法类别、无从诊断。现改为在上游表基础上**只做追加**（上游新增的 mlkem768 等仍自动获得）：补 `ssh-rsa` 主机密钥、补 OpenSSH/Go 标配但 russh 至今不默认提供的 `ecdh-sha2-nistp256/384/521` 密钥交换、补 `aes128-gcm@openssh.com`；追加项一律排在末尾，现代服务器的协商结果不变。桌面端的终端会话与 SFTP 两条连接、移动端 SSH 核心一处，共三处保持同一套偏好，并由两侧同构的单元测试锚定——今后升级 russh 若收窄可连服务器集合，由 CI 而不是用户在堡垒机前发现。同时补回上游 0.61 移出默认的 SHA-1 HMAC（`hmac-sha1` / `hmac-sha1-etm`），但严格排在全部 SHA-2 MAC 之后——只支持 SHA-1 MAC 的老堡垒机与网络设备恢复可连（这是升级 russh 相对 v0.2.11 的回退），而现代对端不受任何影响：它们要么提供 SHA-2 MAC，要么协商到 AEAD 密码从而根本不进行 MAC 协商。该排序由单元测试锚定，防止今后被无意提前
+- **macOS 开发版钥匙串弹窗收口** — SSH、Remote、JumpServer 与 Settings 启动均不再逐条自动扫描/重试旧 Keychain：主窗口只检查 Web Storage 并记录脱敏 pending/manual/complete 状态或非敏感 presence cache，辅助窗口只读 cache；明文来源保留，只允许由显式连接、设置或后续正式 recovery UI 处理。原生 Release 服务启动也不再扫描 registry 对应 SSH 项或整库删除 legacy service。签名 `MeTerm Dev` 的单连接 v2 恢复永不读取正式 v3，桌面私钥路径必须本机重选，key-ladder 只写新 authority marker。SSH、Remote、JumpServer、Settings、Relay 与 TLS 的 macOS 新 account 均采用 add-only 创建；SSH 不凭公开 binding 自动提升 v2，Relay 孤儿/legacy current item 不会被覆盖。SSH registry 双写使用 before-image、延迟删源及 post-rename 可见提交语义。Relay 禁用状态启动不读取/删除 vault。真实签名升级、包括 SSH/Remote/JumpServer/Settings/Relay 在内的 deterministic current-item ACL provenance/随机 generation、持久崩溃恢复 journal、正式 recovery UI 与孤儿审计等事项仍按发布清单阻断
+- **macOS 终端从后台恢复后低频字形错乱** — 窗口重新聚焦时仅重建 xterm 渲染纹理并全量重绘；WebGL context 无法恢复时自动回退默认 renderer。保留锁屏/休眠与 PiP 退出原有的 SIGWINCH 尺寸抖动逻辑，普通聚焦不改变 PTY 尺寸
+- **移动端与中继安全加固** — 中继参数不再出现在 Android/iOS 界面或普通日志；移动端改用设备级可撤销凭据与固定证书，桌面端按精确凭据代次断开连接/推送，慢请求在正文读取期间持续复验撤销状态；本机 Agent Hook 在读取正文前校验可信入口和会话密钥，并限制为 64 KiB/30 秒空闲超时。完整威胁模型与正式分发阻断项见 `docs/SECURITY.md`
+- **分发安全基线与供应链闸门** — 标准桌面 Release 的移动控制 scope 默认全空并由编译期/36 路由矩阵共同锁定；Android 改为直接使用 AndroidKeyStore 与有界 RFC 6455 reader，正式 AAB 强制 upload key 签名校验；iOS 加入 privacy manifest、Keychain group 隔离与 production APNs entitlement，FFI 原生依赖固定最低系统 18.0。新增依赖锁定、含 Control Broker 与更新服务 Worker 的 9 份 CycloneDX SBOM、统一审计脚本、Relay 最小权限 systemd 样例及 `docs/RELEASE_CHECKLIST.md`；9 份 SBOM 本机已成功生成，OSV/审计门禁对 RSA、`quick-xml` 与 allowed/unmaintained 残余持续失败关闭
+- **正式签名隔离拆分** — 针对旧工作流“同 runner 构建后再注入长期密钥”的风险，macOS、Windows、Linux、Android、iOS 已全部改为新鲜 build → 唯一生产 signer → 新鲜 public-only verifier；所有 `v*` 仍在 checkout/Environment/secret 前阻断，直到真实签名演练、源码证据单一编排、密钥迁移和仓库外保护闭环
+- **独立 Control Broker 第一阶段** — 新增第四个独立 Rust workspace，落地严格长度前缀 CBOR、transport peer 认证门、固定只读 `status.get`、版本/deadline/大小/in-flight/replay 失败关闭及跨进程负向测试；生产 binary 从不自行创建 listener，继续返回 `blocked`/空 scope，不迁移或暴露任何现有 secret
+- **Linux Control Broker 第二阶段** — 增加只接受 systemd fd 3 的固定 Unix socket adapter，校验 `SO_PEERCRED`、PID/start-time/UID/GID、root-owned App inode 与 SHA-256 manifest，并加入连接限额、hash 单调时钟预算/I/O deadline、hardened service/socket/sysusers/tmpfiles 及负向测试；仍为 status-only，跨 UID `/proc` 发行矩阵未验收时失败关闭，不授予 root/`CAP_SYS_PTRACE`，不启用任何 scope
+- **Windows/macOS Control Broker 第二阶段** — Windows 落地 restricted service SID、固定 pipe、token/file ID/ACL/Authenticode 验证；macOS 落地 XPC audit-token/Developer ID requirement、root manifest/file ID/SHA-256/CDHash 验证与 `_meterm-control`/SMAppService 部署输入。两者仍只返回 `blocked`/空 scope，不持有 secret 或联网；当前 macOS App 的动态库/可执行内存例外会被新 peer policy 故意拒绝，三平台仍需完成 clean-machine 安装/升级/回滚、secret/scope/业务 operation 迁移
+- **依赖残余风险收口** — 桌面 `plist` 升至 1.10.0 并移除一组易受攻击的 `quick-xml 0.38`；剩余 Windows 通知/Linux 构建期 XML 路径与 RSA SSH advisory 已记录可达性和发布签字要求
+
+---
+
 ## v0.2.11
 
 ### 新功能

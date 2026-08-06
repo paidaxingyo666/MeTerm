@@ -74,7 +74,7 @@
 
 - 多客户端共享 — 多人实时连接同一终端
 - 角色权限控制 — Master / Viewer / ReadOnly，支持权限转移
-- mDNS 服务发现 — 局域网自动发现设备
+- mDNS/Bonjour 服务发现 — macOS 使用系统 Bonjour 发布，Windows/Linux 使用跨平台实现
 - 断线自动重连 — 环形缓冲区补发丢失数据
 
 **其他：**
@@ -123,12 +123,10 @@
 > [!NOTE]
 > **Linux**：目前仅在 **Ubuntu 24.04** 上测试通过，其他发行版暂未测试，欢迎反馈问题。
 
-> [!WARNING]
-> **macOS**：应用未经 Apple 签名，首次打开可能提示"已损坏"或"无法验证开发者"。请在终端执行以下命令后重新打开：
->
-> ```bash
-> sudo xattr -rd com.apple.quarantine /Applications/MeTerm.app
-> ```
+> [!NOTE]
+> **macOS**：公开的 v0.2.11 构建已完成 Developer ID 签名、公证和装订。此后的每个待发布候选仍须
+> 独立通过 `docs/RELEASE_CHECKLIST.md` 中的签名、公证及 Keychain 升级验证；本地未签名开发构建
+> 不能作为发布包。
 
 ---
 
@@ -156,6 +154,35 @@ cd desktop && npm install && cd ..
 make desktop-dev
 ```
 
+在 macOS 上验证手机完整远控或中继时，不要使用未签名的热更新可执行文件，
+应运行隔离且经过 Apple Development 签名的开发包：
+
+```bash
+make desktop-run-dev              # 构建、签名并打开 MeTerm Dev.app（com.meterm.dev）
+```
+
+该目标不会打开或覆盖已安装的正式版 `MeTerm.app`。后续重建需保持同一签名身份，
+以确保开发 Keychain 的访问要求仍与应用匹配。
+
+只有 `desktop-build-dev` 会同时启用 `development-mobile-control` 与
+`development-credential-recovery`。Release 构建会拒绝该恢复 feature；导入命令执行前还会
+校验当前运行的确实是指定签名身份的 `MeTerm Dev.app`。
+
+`MeTerm Dev` 启动时绝不会扫描正式版 Keychain。开发凭据缺失时，只能在对应 SSH 保存连接的
+右键菜单中主动选择开发专用导入；原生本机身份确认只展示这一条连接的精确 authority。
+若 macOS 显示钥匙串弹窗，只选择“允许”，绝不要选择“始终允许”。该入口只允许读取已经隔离待处置的
+正式 `com.meterm.app.ssh.v2` 条目，绝不读取新的正式 v3 库；已绑定的 v2 凭据必须与 authority
+完全匹配，旧版未绑定 v2 只会在本次明确身份确认后绑定到提示中展示的 authority。副本写入
+隔离的开发 service；取消或失败后不会在下次启动自动重试，开发版正常运行也不会回退读取
+正式凭据库。桌面私钥文件路径不会从 v2 复制，必须在本机重新选择，以便系统身份确认展示规范化后的
+实际路径；ssh-agent/默认私钥授权不读取生产密钥字节，只在 owner confirmation 后写入新的 authority
+marker。
+
+旧 localStorage/name-keyed SSH、Remote、JumpServer 与设置凭据也不会在普通启动时自动打开钥匙串；
+启动只检查 Web Storage，并记录脱敏的 pending/manual/complete 状态或非敏感 presence cache。
+需要时请在对应连接/设置界面重新保存；正式、经本机身份确认的 recovery UI 落地前，不宣称分发包
+能够恢复这些旧凭据。
+
 Windows 开发（从 WSL 执行）：
 
 ```bash
@@ -173,8 +200,14 @@ make release-macos-arm64          # Apple Silicon
 make release-macos-x86_64         # Intel
 make release-macos-all            # 同时构建两个架构
 
-# 代码签名（需要 Apple Developer ID）
-./build-macos.sh --arch arm64 --sign
+# 使用本机 Keychain 里的 Developer ID 签名，不会导出私钥
+APPLE_SIGNING_IDENTITY='Developer ID Application: …' \
+  ./build-macos.sh --arch arm64 --sign
+
+# 公证还需设置 APPLE_API_KEY_ID、APPLE_API_ISSUER_ID，以及指向本机
+# App Store Connect .p8 文件的 APPLE_API_KEY_PATH
+APPLE_SIGNING_IDENTITY='Developer ID Application: …' \
+  ./build-macos.sh --arch arm64 --sign --notarize
 ```
 
 #### Windows
@@ -221,6 +254,7 @@ MeTerm/
 │               ├── discover    # mDNS 服务发现
 │               └── ...
 ├── frontend/             # 独立 Web 前端（xterm.js + Vite）
+├── control-broker/       # 独立、失败关闭的控制面协议核心（正式 scope 仍阻断）
 ├── cloudflare-worker/    # CF Worker 自动更新服务
 └── scripts/              # 构建辅助脚本
 ```
@@ -232,6 +266,7 @@ MeTerm/
 | **后端** | Rust, Axum, Tokio, xpty（跨平台 PTY）, russh（SSH/SFTP 终端链路）, ssh2/libssh2（桌面端 SSH 文件传输）, mdns-sd |
 | **前端** | TypeScript, Vite, xterm.js 5.x, CodeMirror 6 |
 | **桌面** | Tauri v2 (Rust + TypeScript), reqwest, keyring, rusqlite |
+| **控制 Broker** | 独立 Rust 进程/协议核心；三平台系统服务适配尚未达到分发条件 |
 | **更新** | Tauri Updater + Cloudflare Worker |
 
 ### 架构亮点

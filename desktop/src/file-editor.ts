@@ -3,6 +3,7 @@
  * Each tab has its own EditorView + wrapper div. Switching tabs shows/hides wrappers.
  */
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { emitTo, listen } from '@tauri-apps/api/event';
 import { revealAfterPaint } from './window-utils';
 import { confirm } from '@tauri-apps/plugin-dialog';
 import { loadSettings, resolveIsDark } from './themes';
@@ -13,11 +14,37 @@ import { keymap } from '@codemirror/view';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { createOverlayScrollbar } from './overlay-scrollbar';
 import { renderMarkdown, isImageFile } from './file-editor-md';
-
-const LS_PREFIX = 'meterm-editor-';
+import {
+  getEditorLanguage as getLang,
+  getEditorLanguageExtension as getLangExt,
+} from './file-editor-language';
+import {
+  EDITOR_CONTENT_EVENT,
+  EDITOR_DISCONNECTED_EVENT,
+  EDITOR_OPEN_EVENT,
+  EDITOR_PING_EVENT,
+  EDITOR_PONG_EVENT,
+  EDITOR_SAVE_REQUEST_EVENT,
+  EDITOR_SAVE_RESULT_EVENT,
+  EDITOR_TAB_CLOSED_EVENT,
+  EDITOR_WINDOW_CLOSED_EVENT,
+  MAX_EDITOR_FILE_BYTES,
+  editorTextFitsLimit,
+  isSafeEditorWindowLabel,
+  isValidEditorNonce,
+  purgeLegacyEditorStorage,
+  type EditorContent,
+  type EditorDisconnected,
+  type EditorOpen,
+  type EditorPing,
+  type EditorSaveRequest,
+  type EditorSaveResult,
+  type EditorTabClosed,
+} from './file-editor-events';
 
 interface TabInfo {
   tabId: string;
+  ownerLabel: string;
   sessionId: string;
   filePath: string;
   fileName: string;
@@ -53,198 +80,6 @@ let isDark = true;
 let tabBarEl: HTMLElement = null!;
 let contentEl: HTMLElement = null!;
 let statusBarEl: HTMLElement = null!;
-
-/** Get language hint from filename. Returns extension or special identifier. */
-function getExtFromName(name: string): string {
-  const base = name.split('/').pop() || name;
-  const nameMap: Record<string, string> = {
-    'Dockerfile': 'dockerfile', 'Containerfile': 'dockerfile',
-    'Makefile': 'sh', 'makefile': 'sh',
-    '.bashrc': 'sh', '.zshrc': 'sh', '.profile': 'sh', '.bash_profile': 'sh',
-    '.gitignore': 'properties', '.dockerignore': 'properties', '.editorconfig': 'properties',
-    '.env': 'env', '.env.local': 'env', '.env.production': 'env',
-  };
-  if (nameMap[base]) return nameMap[base];
-  const dot = base.lastIndexOf('.');
-  if (dot > 0) {
-    const ext = base.substring(dot + 1).toLowerCase();
-    // Extensions that are always unambiguous
-    if (ext !== 'txt' && ext !== 'log' && ext !== 'dat' && ext !== 'bak') return ext;
-  }
-  return '';
-}
-
-/** Detect language from file content (shebang, patterns). Used when extension is ambiguous. */
-function detectLangFromContent(content: string): string {
-  const first500 = content.substring(0, 500);
-  const firstLine = first500.split('\n')[0].trim();
-
-  // Shebang detection
-  if (firstLine.startsWith('#!')) {
-    if (/python/.test(firstLine)) return 'py';
-    if (/\b(bash|sh|zsh)\b/.test(firstLine)) return 'sh';
-    if (/\bnode\b/.test(firstLine)) return 'js';
-    if (/\bruby\b/.test(firstLine)) return 'rb';
-    if (/\bperl\b/.test(firstLine)) return 'pl';
-    if (/\blua\b/.test(firstLine)) return 'lua';
-  }
-
-  // JSON detection
-  if (/^\s*[\[{]/.test(firstLine) && /[}\]]\s*$/.test(content.trimEnd())) return 'json';
-
-  // YAML detection
-  if (/^---\s*$/.test(firstLine) || /^\w[\w-]*:\s/.test(firstLine)) return 'yaml';
-
-  // XML/HTML detection
-  if (/^\s*<\?xml/.test(firstLine) || /^\s*<!DOCTYPE\s+html/i.test(firstLine)) return firstLine.includes('html') ? 'html' : 'xml';
-  if (/^\s*<[a-zA-Z]/.test(firstLine)) return 'html';
-
-  // SQL detection
-  if (/^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|WITH)\b/i.test(firstLine)) return 'sql';
-
-  // JavaScript / TypeScript patterns
-  if (/^\s*(import\s+|export\s+|const\s+|let\s+|var\s+|function\s+|class\s+|async\s+)/.test(first500)) {
-    if (/:\s*(string|number|boolean|any|void)\b/.test(first500) || /interface\s+\w+/.test(first500)) return 'ts';
-    return 'js';
-  }
-
-  // Python patterns
-  if (/^\s*(def\s+|class\s+|import\s+|from\s+\w+\s+import|if\s+__name__)/.test(first500)) return 'py';
-
-  // Shell patterns
-  if (/^\s*(export\s+\w+=|if\s+\[|for\s+\w+\s+in\b|echo\s+)/.test(first500)) return 'sh';
-
-  // Go patterns
-  if (/^\s*package\s+\w+/.test(firstLine)) return 'go';
-
-  // Rust patterns
-  if (/^\s*(fn\s+|use\s+|mod\s+|pub\s+|impl\s+|struct\s+|enum\s+)/.test(first500)) return 'rs';
-
-  // Java patterns
-  if (/^\s*(public\s+class|package\s+\w|import\s+java\.)/.test(first500)) return 'java';
-
-  // PHP
-  if (/^\s*<\?php/.test(firstLine)) return 'php';
-
-  // C/C++
-  if (/^\s*#include\s+[<"]/.test(first500)) return 'cpp';
-
-  // Markdown
-  if (/^#\s+/.test(firstLine) && /\n##?\s+/.test(first500)) return 'md';
-
-  return '';
-}
-
-/** Get language for a tab — try filename first, then content detection. */
-function getLang(fileName: string, content: string): string {
-  return getExtFromName(fileName) || detectLangFromContent(content);
-}
-
-async function getLangExt(ext: string): Promise<Extension> {
-  switch (ext) {
-    // JavaScript / TypeScript
-    case 'js': case 'mjs': case 'cjs': return (await import('@codemirror/lang-javascript')).javascript();
-    case 'jsx': return (await import('@codemirror/lang-javascript')).javascript({ jsx: true });
-    case 'ts': case 'mts': case 'cts': return (await import('@codemirror/lang-javascript')).javascript({ typescript: true });
-    case 'tsx': return (await import('@codemirror/lang-javascript')).javascript({ jsx: true, typescript: true });
-    // Python
-    case 'py': case 'pyw': return (await import('@codemirror/lang-python')).python();
-    // JSON
-    case 'json': case 'jsonc': return (await import('@codemirror/lang-json')).json();
-    // HTML / XML / SVG
-    case 'html': case 'htm': return (await import('@codemirror/lang-html')).html();
-    case 'xml': case 'svg': case 'xsl': case 'xslt': return (await import('@codemirror/lang-xml')).xml();
-    // CSS / SASS
-    case 'css': return (await import('@codemirror/lang-css')).css();
-    case 'scss': case 'sass': return (await import('@codemirror/lang-sass')).sass();
-    case 'less': return (await import('@codemirror/lang-css')).css();
-    // Markdown
-    case 'md': case 'markdown': case 'mdx': return (await import('@codemirror/lang-markdown')).markdown();
-    // YAML
-    case 'yaml': case 'yml': return (await import('@codemirror/lang-yaml')).yaml();
-    // SQL
-    case 'sql': return (await import('@codemirror/lang-sql')).sql();
-    // Java / Kotlin
-    case 'java': return (await import('@codemirror/lang-java')).java();
-    case 'kt': case 'kts': return (await import('@codemirror/lang-java')).java();
-    // C / C++
-    case 'c': case 'h': return (await import('@codemirror/lang-cpp')).cpp();
-    case 'cpp': case 'cc': case 'cxx': case 'hpp': case 'hxx': return (await import('@codemirror/lang-cpp')).cpp();
-    // PHP
-    case 'php': return (await import('@codemirror/lang-php')).php();
-    // Go
-    case 'go': return (await import('@codemirror/lang-go')).go();
-    // Rust
-    case 'rs': return (await import('@codemirror/lang-rust')).rust();
-    // Shell (use legacy mode via StreamLanguage)
-    case 'sh': case 'bash': case 'zsh': case 'fish': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { shell } = await import('@codemirror/legacy-modes/mode/shell');
-      return StreamLanguage.define(shell);
-    }
-    // Dockerfile
-    case 'dockerfile': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { dockerFile } = await import('@codemirror/legacy-modes/mode/dockerfile');
-      return StreamLanguage.define(dockerFile);
-    }
-    // TOML
-    case 'toml': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { toml } = await import('@codemirror/legacy-modes/mode/toml');
-      return StreamLanguage.define(toml);
-    }
-    // Nginx
-    case 'nginx': case 'conf': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { nginx } = await import('@codemirror/legacy-modes/mode/nginx');
-      return StreamLanguage.define(nginx);
-    }
-    // Properties / INI
-    case 'properties': case 'ini': case 'cfg': case 'env': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { properties } = await import('@codemirror/legacy-modes/mode/properties');
-      return StreamLanguage.define(properties);
-    }
-    // Lua
-    case 'lua': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { lua } = await import('@codemirror/legacy-modes/mode/lua');
-      return StreamLanguage.define(lua);
-    }
-    // Ruby
-    case 'rb': case 'ruby': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { ruby } = await import('@codemirror/legacy-modes/mode/ruby');
-      return StreamLanguage.define(ruby);
-    }
-    // Perl
-    case 'pl': case 'pm': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { perl } = await import('@codemirror/legacy-modes/mode/perl');
-      return StreamLanguage.define(perl);
-    }
-    // R
-    case 'r': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { r } = await import('@codemirror/legacy-modes/mode/r');
-      return StreamLanguage.define(r);
-    }
-    // Swift
-    case 'swift': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { swift } = await import('@codemirror/legacy-modes/mode/swift');
-      return StreamLanguage.define(swift);
-    }
-    // PowerShell
-    case 'ps1': case 'psm1': {
-      const { StreamLanguage } = await import('@codemirror/language');
-      const { powerShell } = await import('@codemirror/legacy-modes/mode/powershell');
-      return StreamLanguage.define(powerShell);
-    }
-    default: return [];
-  }
-}
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -538,9 +373,8 @@ async function closeTab(tabId: string): Promise<void> {
   if (tab.editorView) tab.editorView.destroy();
   tab.wrapperEl.remove();
   tabs.delete(tabId);
-  for (const k of ['content', 'save', 'savereq']) localStorage.removeItem(`${LS_PREFIX}${k}-${tabId}`);
+  void emitTo(tab.ownerLabel, EDITOR_TAB_CLOSED_EVENT, { tabId } satisfies EditorTabClosed);
   if (tabs.size === 0) {
-    localStorage.setItem(`${LS_PREFIX}closed`, '1');
     void getCurrentWindow().close();
     return;
   }
@@ -550,21 +384,23 @@ async function closeTab(tabId: string): Promise<void> {
 
 function saveTab(tabId: string): void {
   const tab = tabs.get(tabId);
-  if (!tab || !tab.filePath || !tab.editorView || tab.isImage) return;
+  if (!tab || !tab.filePath || !tab.editorView || tab.isImage || tab.isSaving) return;
+  const content = tab.editorView.state.doc.toString();
+  if (!editorTextFitsLimit(content)) {
+    setSaveBtnState('failed');
+    return;
+  }
   tab.isSaving = true;
   setSaveBtnState('saving');
-  localStorage.setItem(`${LS_PREFIX}savereq-${tabId}`, JSON.stringify({
-    tabId, sessionId: tab.sessionId, filePath: tab.filePath,
-    content: tab.editorView.state.doc.toString(),
-  }));
-
-  // Safety timeout
-  setTimeout(() => {
-    if (tab.isSaving) {
+  void emitTo(tab.ownerLabel, EDITOR_SAVE_REQUEST_EVENT, {
+    tabId,
+    content,
+  } satisfies EditorSaveRequest).catch(() => {
+    if (tabs.get(tabId) === tab) {
       tab.isSaving = false;
-      setSaveBtnState('timeout');
+      setSaveBtnState('failed');
     }
-  }, 15_000);
+  });
 }
 
 /** Update the save button state text, auto-reset after 3s */
@@ -900,72 +736,127 @@ function showLangPicker(anchor: HTMLElement, tab: TabInfo): void {
   setTimeout(() => document.addEventListener('click', close), 0);
 }
 
-function pollPendingFiles(): void {
-  const raw = localStorage.getItem(`${LS_PREFIX}pending`);
-  if (raw) {
-    localStorage.removeItem(`${LS_PREFIX}pending`);
-    try {
-      for (const item of JSON.parse(raw) as Array<{ tabId: string; sessionId: string; filePath: string; fileName: string; host: string; isImage?: boolean; mimeType?: string }>) {
-        if (!tabs.has(item.tabId)) {
-          const wrapper = document.createElement('div');
-          wrapper.className = 'editor-tab-content';
-          wrapper.style.display = 'none';
-          contentEl.appendChild(wrapper);
-          const imgFile = item.isImage ?? isImageFile(item.fileName);
-          // MD files default to preview open; images and others default to closed
-          const isMdFile = !imgFile && (item.fileName.toLowerCase().endsWith('.md') || item.fileName.toLowerCase().endsWith('.markdown'));
-          tabs.set(item.tabId, {
-            ...item, editorView: null, wrapperEl: wrapper,
-            isDirty: false, isSaving: false, content: '', loaded: false, forcedLang: '',
-            isImage: imgFile, mimeType: item.mimeType ?? '',
-            previewOpen: isMdFile,
-            wrapLines: false, wrapCompartment: new Compartment(),
-          });
-        }
-        void activateTab(item.tabId);
-      }
-    } catch (e) { console.error('Failed to parse pending:', e); }
-  }
-  setTimeout(pollPendingFiles, 300);
+function showTabError(tab: TabInfo, error: string): void {
+  tab.content = '';
+  tab.loaded = true;
+  tab.wrapperEl.replaceChildren();
+  const message = document.createElement('div');
+  message.className = 'editor-error';
+  message.textContent = error.slice(0, 512);
+  tab.wrapperEl.appendChild(message);
 }
 
-function pollContent(): void {
-  for (const [tabId, tab] of tabs) {
-    if (tab.loaded) continue;
-    const raw = localStorage.getItem(`${LS_PREFIX}content-${tabId}`);
-    if (raw) {
-      localStorage.removeItem(`${LS_PREFIX}content-${tabId}`);
-      const data = JSON.parse(raw) as { content?: string; filePath?: string; error?: string; isImage?: boolean; mimeType?: string };
-      tab.loaded = true;
-      if (data.isImage) { tab.isImage = true; tab.mimeType = data.mimeType ?? tab.mimeType; }
-      if (data.error) {
-        tab.content = '';
-        tab.wrapperEl.innerHTML = `<div class="editor-error">${escapeHtml(data.error)}</div>`;
-      } else {
-        tab.content = data.content || '';
-        if (tabId === activeTabId) void activateTab(tabId);
-      }
+function validOpenPayload(item: EditorOpen): boolean {
+  return Boolean(item)
+    && isValidEditorNonce(item.tabId)
+    && isSafeEditorWindowLabel(item.ownerLabel)
+    && typeof item.sessionId === 'string' && item.sessionId.length <= 256
+    && typeof item.filePath === 'string' && item.filePath.length > 0 && item.filePath.length <= 65_536
+    && typeof item.fileName === 'string' && item.fileName.length > 0 && item.fileName.length <= 1_024
+    && typeof item.host === 'string' && item.host.length <= 1_024
+    && typeof item.isImage === 'boolean'
+    && typeof item.mimeType === 'string' && item.mimeType.length <= 128;
+}
+
+function handleOpen(item: EditorOpen): void {
+  if (!validOpenPayload(item)) return;
+  if (!tabs.has(item.tabId)) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'editor-tab-content';
+    wrapper.style.display = 'none';
+    contentEl.appendChild(wrapper);
+    const image = item.isImage && isImageFile(item.fileName);
+    const markdown = !image
+      && (item.fileName.toLowerCase().endsWith('.md')
+        || item.fileName.toLowerCase().endsWith('.markdown'));
+    tabs.set(item.tabId, {
+      ...item,
+      editorView: null,
+      wrapperEl: wrapper,
+      isDirty: false,
+      isSaving: false,
+      content: '',
+      loaded: false,
+      forcedLang: '',
+      isImage: image,
+      mimeType: image ? item.mimeType : '',
+      previewOpen: markdown,
+      wrapLines: false,
+      wrapCompartment: new Compartment(),
+    });
+  }
+  void activateTab(item.tabId);
+}
+
+function handleContent(data: EditorContent): void {
+  if (!data || !isValidEditorNonce(data.tabId)) return;
+  const tab = tabs.get(data.tabId);
+  if (!tab || tab.loaded) return;
+  if (typeof data.error === 'string') {
+    showTabError(tab, data.error || 'Unable to read file');
+    return;
+  }
+  if (typeof data.content !== 'string') {
+    showTabError(tab, 'Invalid response from main window');
+    return;
+  }
+
+  if (tab.isImage) {
+    const maxDataUrlChars = Math.ceil(MAX_EDITOR_FILE_BYTES * 4 / 3) + 256;
+    const expectedPrefix = `data:${tab.mimeType};base64,`;
+    if (data.content.length > maxDataUrlChars || !data.content.startsWith(expectedPrefix)) {
+      showTabError(tab, 'Invalid image response from main window');
+      return;
     }
+  } else if (!editorTextFitsLimit(data.content)) {
+    showTabError(tab, 'File exceeds editor size limit');
+    return;
   }
-  setTimeout(pollContent, 200);
+  tab.loaded = true;
+  tab.content = data.content;
+  if (data.tabId === activeTabId) void activateTab(data.tabId);
 }
 
-function pollSaveResults(): void {
-  for (const [tabId, tab] of tabs) {
-    if (!tab.isSaving) continue;
-    const raw = localStorage.getItem(`${LS_PREFIX}save-${tabId}`);
-    if (raw) {
-      localStorage.removeItem(`${LS_PREFIX}save-${tabId}`);
+function handleSaveResult(result: EditorSaveResult): void {
+  if (!result || !isValidEditorNonce(result.tabId) || typeof result.success !== 'boolean') return;
+  const tab = tabs.get(result.tabId);
+  if (!tab || !tab.isSaving) return;
+  tab.isSaving = false;
+  if (result.success) {
+    tab.isDirty = false;
+    renderTabs();
+    updateWindowTitle();
+  }
+  if (result.tabId === activeTabId) setSaveBtnState(result.success ? 'saved' : 'failed');
+}
+
+async function installEditorEventListeners(): Promise<void> {
+  // Register all data handlers before answering the readiness handshake. This
+  // guarantees the first open/content event cannot be lost during startup.
+  await Promise.all([
+    listen<EditorOpen>(EDITOR_OPEN_EVENT, event => handleOpen(event.payload)),
+    listen<EditorContent>(EDITOR_CONTENT_EVENT, event => handleContent(event.payload)),
+    listen<EditorSaveResult>(EDITOR_SAVE_RESULT_EVENT, event => handleSaveResult(event.payload)),
+    listen<EditorDisconnected>(EDITOR_DISCONNECTED_EVENT, event => {
+      const tabId = event.payload?.tabId;
+      if (!isValidEditorNonce(tabId)) return;
+      const tab = tabs.get(tabId);
+      if (!tab) return;
       tab.isSaving = false;
-      const result = JSON.parse(raw) as { success: boolean; error?: string };
-      if (result.success) { tab.isDirty = false; renderTabs(); updateWindowTitle(); }
-      setSaveBtnState(result.success ? 'saved' : 'failed');
-    }
-  }
-  setTimeout(pollSaveResults, 200);
+      if (!tab.loaded) showTabError(tab, 'Session disconnected');
+      if (tabId === activeTabId) setSaveBtnState('failed');
+    }),
+  ]);
+  await listen<EditorPing>(EDITOR_PING_EVENT, event => {
+    const payload = event.payload;
+    if (!payload || !isSafeEditorWindowLabel(payload.ownerLabel)
+        || !isValidEditorNonce(payload.requestId)) return;
+    void emitTo(payload.ownerLabel, EDITOR_PONG_EVENT, { requestId: payload.requestId });
+  });
 }
 
-export function initEditorContent(): void {
+export async function initEditorContent(): Promise<void> {
+  purgeLegacyEditorStorage(localStorage);
   const settings = loadSettings();
   isDark = resolveThemeAttr(settings.colorScheme) !== 'light';
 
@@ -989,18 +880,18 @@ export function initEditorContent(): void {
   statusBarEl.className = 'editor-statusbar';
   container.appendChild(statusBarEl);
 
-  pollPendingFiles();
-  pollContent();
-  pollSaveResults();
-
-  void getCurrentWindow().onCloseRequested(async (event) => {
+  await getCurrentWindow().onCloseRequested(async (event) => {
     const dirty = [...tabs.values()].filter(tab => tab.isDirty);
     if (dirty.length > 0) {
       const ok = await confirm(t('editorUnsavedChanges'), { title: 'MeTerm Editor', kind: 'warning' });
       if (!ok) { event.preventDefault(); return; }
     }
-    localStorage.setItem(`${LS_PREFIX}closed`, '1');
+    const owners = new Set([...tabs.values()].map(tab => tab.ownerLabel));
+    await Promise.all([...owners].map(owner => (
+      emitTo(owner, EDITOR_WINDOW_CLOSED_EVENT, {}).catch(() => {})
+    )));
   });
 
-  void revealAfterPaint(getCurrentWindow().label);
+  await installEditorEventListeners();
+  await revealAfterPaint(getCurrentWindow().label);
 }

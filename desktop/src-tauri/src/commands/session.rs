@@ -1,15 +1,17 @@
+use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
-use serde::Serialize;
 
-use crate::server::ServerState;
-use crate::server::executor::Executor;
 use super::MeTermConnectionInfo;
+use crate::server::executor::Executor;
+use crate::server::ServerState;
 
 #[tauri::command]
 pub fn get_meterm_connection_info(
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<ServerState>>,
 ) -> Result<MeTermConnectionInfo, String> {
+    require_operational_window(&window)?;
     if !state.is_running() {
         return Err("server is not running".into());
     }
@@ -23,13 +25,15 @@ pub fn get_meterm_connection_info(
 }
 
 #[tauri::command]
-pub fn get_pairing_info(state: State<'_, Arc<ServerState>>) -> Result<String, String> {
+pub fn get_pairing_info(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<ServerState>>,
+) -> Result<String, String> {
+    require_operational_window(&window)?;
     if !state.is_running() {
         return Err("server is not running".into());
     }
-    let token = state
-        .token()
-        .ok_or_else(|| "server token not ready".to_string())?;
+    let pair_ticket = state.pairing_manager.create_bootstrap_ticket()?;
 
     let port = state.lan_port();
 
@@ -54,13 +58,28 @@ pub fn get_pairing_info(state: State<'_, Arc<ServerState>>) -> Result<String, St
         .unwrap_or_default();
 
     let info = serde_json::json!({
-        "v": 1,
+        "v": 2,
         "addrs": addrs,
-        "token": token,
+        // Compatibility field for existing QR decoders. Owner credentials are
+        // never embedded; v2 clients redeem `pair_ticket` once over pinned TLS.
+        "token": "",
+        "pair_ticket": pair_ticket,
         "name": host,
+        "device_id": state.device_id(),
+        // 自签 TLS 证书指纹(SHA256 hex),供手机钉死信任(设计稿 §4)。未启用 TLS 时为空串。
+        "cert_fp": state.cert_fp(),
     });
 
     Ok(info.to_string())
+}
+
+fn require_operational_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let label = window.label();
+    if label == "main" || label == "settings" || label.starts_with("window-") {
+        Ok(())
+    } else {
+        Err("server connection capability is unavailable to this window".to_string())
+    }
 }
 
 #[tauri::command]
@@ -70,18 +89,29 @@ pub async fn create_session(
     cwd: Option<String>,
 ) -> Result<String, String> {
     let session = state.session_manager.create();
+
+    // agent 终端镜像地基(M1):给 local-shell 注入 hook 环境变量(见 handlers::create_session)。
+    let secret = crate::server::generate_token();
+    state
+        .hook_secrets
+        .register(session.id.clone(), secret.clone());
+    let envs = crate::server::hook_secret::hook_envs(&session.id, state.port(), &secret);
+
     let executor = crate::server::executor::local::LocalShellExecutor::new(
         shell.unwrap_or_default(),
         cwd.unwrap_or_default(),
         80,
         24,
-    );
+    )
+    .with_envs(envs);
     match executor.start().await {
         Ok(terminal) => {
             crate::server::session::Session::start_terminal(session.clone(), terminal).await;
         }
         Err(e) => {
             eprintln!("[cmd] terminal start failed: {}", e);
+            // 终端未起来,原子回收临时可见的 session 与 hook secret。
+            state.session_manager.discard_unstarted(&session.id);
             return Err(format!("terminal start failed: {}", e));
         }
     }
@@ -119,7 +149,14 @@ pub async fn delete_session(
 ) -> Result<String, String> {
     super::validate_id(&session_id)?;
     match state.session_manager.delete(&session_id) {
-        Ok(()) => Ok(serde_json::json!({ "ok": true }).to_string()),
+        Ok(()) => {
+            // 会话销毁,清除其 hook secret(agent 镜像 M1);非 local-shell 会话无登记则 no-op。
+            state.hook_secrets.remove(&session_id);
+            // 清除镜像状态并取消 tailer(agent 镜像 M3,对齐 handlers.rs HTTP delete 路径,
+            // 桌面 UI 关标签走的正是本 IPC 路径);无镜像则 no-op。
+            state.mirrors.remove_and_cancel(&session_id);
+            Ok(serde_json::json!({ "ok": true }).to_string())
+        }
         Err(e) => Err(e),
     }
 }
@@ -146,10 +183,8 @@ pub async fn inject_osc_marker(
         data,
     };
     if let Ok(json) = serde_json::to_vec(&[&event]) {
-        let msg = crate::server::protocol::encode_message(
-            crate::server::protocol::MSG_OSC_EVENT,
-            &json,
-        );
+        let msg =
+            crate::server::protocol::encode_message(crate::server::protocol::MSG_OSC_EVENT, &json);
         session.broadcast(msg);
     }
     Ok(())
@@ -215,7 +250,10 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
         use std::process::Command;
 
         /// Wait for a child process with a timeout, polling every 50ms.
-        fn wait_with_timeout(child: &mut std::process::Child, timeout: std::time::Duration) -> Option<std::process::ExitStatus> {
+        fn wait_with_timeout(
+            child: &mut std::process::Child,
+            timeout: std::time::Duration,
+        ) -> Option<std::process::ExitStatus> {
             let start = std::time::Instant::now();
             loop {
                 match child.try_wait() {
@@ -243,11 +281,9 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
             }
             match cmd.spawn() {
-                Ok(mut child) => {
-                    wait_with_timeout(&mut child, std::time::Duration::from_secs(3))
-                        .map(|s| s.success())
-                        .unwrap_or(false)
-                }
+                Ok(mut child) => wait_with_timeout(&mut child, std::time::Duration::from_secs(3))
+                    .map(|s| s.success())
+                    .unwrap_or(false),
                 Err(_) => false,
             }
         }
@@ -255,7 +291,10 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
         /// Run a command and capture output with a timeout.
         /// Reads stdout/stderr in separate threads to prevent pipe-buffer deadlock
         /// (child blocks writing to a full pipe while we wait for it to exit).
-        fn output_with_timeout(cmd: &mut Command, timeout: std::time::Duration) -> Option<std::process::Output> {
+        fn output_with_timeout(
+            cmd: &mut Command,
+            timeout: std::time::Duration,
+        ) -> Option<std::process::Output> {
             use std::io::Read;
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
@@ -268,12 +307,16 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
 
             let stdout_thread = std::thread::spawn(move || {
                 let mut buf = Vec::new();
-                if let Some(mut r) = stdout_handle { let _ = r.read_to_end(&mut buf); }
+                if let Some(mut r) = stdout_handle {
+                    let _ = r.read_to_end(&mut buf);
+                }
                 buf
             });
             let stderr_thread = std::thread::spawn(move || {
                 let mut buf = Vec::new();
-                if let Some(mut r) = stderr_handle { let _ = r.read_to_end(&mut buf); }
+                if let Some(mut r) = stderr_handle {
+                    let _ = r.read_to_end(&mut buf);
+                }
                 buf
             });
 
@@ -283,17 +326,25 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
             let stdout = stdout_thread.join().unwrap_or_default();
             let stderr = stderr_thread.join().unwrap_or_default();
 
-            status.map(|s| std::process::Output { status: s, stdout, stderr })
+            status.map(|s| std::process::Output {
+                status: s,
+                stdout,
+                stderr,
+            })
         }
 
         /// Detect Visual Studio Developer shells via vswhere.exe.
         fn detect_vs_shells() -> Vec<ShellInfo> {
             let mut result = Vec::new();
             let vswhere = std::path::PathBuf::from(
-                std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".to_string())
-            ).join(r"Microsoft Visual Studio\Installer\vswhere.exe");
+                std::env::var("ProgramFiles(x86)")
+                    .unwrap_or_else(|_| r"C:\Program Files (x86)".to_string()),
+            )
+            .join(r"Microsoft Visual Studio\Installer\vswhere.exe");
 
-            if !vswhere.exists() { return result; }
+            if !vswhere.exists() {
+                return result;
+            }
 
             let mut cmd = Command::new(&vswhere);
             cmd.args(&["-all", "-prerelease", "-format", "json"]);
@@ -305,15 +356,27 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
             if let Some(out) = output_with_timeout(&mut cmd, std::time::Duration::from_secs(5)) {
                 if out.status.success() {
                     if let Ok(text) = String::from_utf8(out.stdout) {
-                        if let Ok(instances) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
+                        if let Ok(instances) = serde_json::from_str::<Vec<serde_json::Value>>(&text)
+                        {
                             for inst in &instances {
-                                let Some(path) = inst.get("installationPath").and_then(|v| v.as_str()) else { continue };
-                                let display = inst.get("displayName").and_then(|v| v.as_str()).unwrap_or("Visual Studio");
+                                let Some(path) =
+                                    inst.get("installationPath").and_then(|v| v.as_str())
+                                else {
+                                    continue;
+                                };
+                                let display = inst
+                                    .get("displayName")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Visual Studio");
 
-                                let vsdevcmd = std::path::Path::new(path).join(r"Common7\Tools\VsDevCmd.bat");
+                                let vsdevcmd =
+                                    std::path::Path::new(path).join(r"Common7\Tools\VsDevCmd.bat");
                                 if vsdevcmd.exists() {
                                     result.push(ShellInfo {
-                                        path: format!(r#"cmd.exe /k "{}""#, vsdevcmd.to_string_lossy()),
+                                        path: format!(
+                                            r#"cmd.exe /k "{}""#,
+                                            vsdevcmd.to_string_lossy()
+                                        ),
                                         name: format!("Developer CMD - {}", display),
                                         is_default: false,
                                     });
@@ -402,7 +465,9 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
                 use std::os::windows::process::CommandExt;
                 where_cmd.creation_flags(0x08000000);
             }
-            if let Some(out) = output_with_timeout(&mut where_cmd, std::time::Duration::from_secs(3)) {
+            if let Some(out) =
+                output_with_timeout(&mut where_cmd, std::time::Duration::from_secs(3))
+            {
                 if out.status.success() {
                     if let Ok(text) = String::from_utf8(out.stdout) {
                         if let Some(git_path) = text.lines().next() {
@@ -426,7 +491,8 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
                 use std::os::windows::process::CommandExt;
                 reg_cmd.creation_flags(0x08000000);
             }
-            if let Some(out) = output_with_timeout(&mut reg_cmd, std::time::Duration::from_secs(3)) {
+            if let Some(out) = output_with_timeout(&mut reg_cmd, std::time::Duration::from_secs(3))
+            {
                 if out.status.success() {
                     if let Ok(text) = String::from_utf8(out.stdout) {
                         for line in text.lines() {
@@ -450,22 +516,23 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
 
         // Run all subprocess-based shell detection in parallel to minimize total latency.
         // Sequential: ~15s worst case (sum of all timeouts). Parallel: ~5s (max single timeout).
-        let (has_pwsh, has_powershell, has_cmd, git_bash, vs_shells, wsl_shells) = std::thread::scope(|s| {
-            let t_pwsh = s.spawn(|| try_shell("pwsh.exe", &["--version"]));
-            let t_ps   = s.spawn(|| try_shell("powershell.exe", &["-Command", "echo ok"]));
-            let t_cmd  = s.spawn(|| try_shell("cmd.exe", &["/C", "echo ok"]));
-            let t_git  = s.spawn(|| detect_git_bash());
-            let t_vs   = s.spawn(detect_vs_shells);
-            let t_wsl  = s.spawn(detect_wsl_distros);
-            (
-                t_pwsh.join().unwrap_or(false),
-                t_ps.join().unwrap_or(false),
-                t_cmd.join().unwrap_or(false),
-                t_git.join().unwrap_or(None),
-                t_vs.join().unwrap_or_default(),
-                t_wsl.join().unwrap_or_default(),
-            )
-        });
+        let (has_pwsh, has_powershell, has_cmd, git_bash, vs_shells, wsl_shells) =
+            std::thread::scope(|s| {
+                let t_pwsh = s.spawn(|| try_shell("pwsh.exe", &["--version"]));
+                let t_ps = s.spawn(|| try_shell("powershell.exe", &["-Command", "echo ok"]));
+                let t_cmd = s.spawn(|| try_shell("cmd.exe", &["/C", "echo ok"]));
+                let t_git = s.spawn(|| detect_git_bash());
+                let t_vs = s.spawn(detect_vs_shells);
+                let t_wsl = s.spawn(detect_wsl_distros);
+                (
+                    t_pwsh.join().unwrap_or(false),
+                    t_ps.join().unwrap_or(false),
+                    t_cmd.join().unwrap_or(false),
+                    t_git.join().unwrap_or(None),
+                    t_vs.join().unwrap_or_default(),
+                    t_wsl.join().unwrap_or_default(),
+                )
+            });
 
         // PowerShell 7 (pwsh) — preferred default
         if has_pwsh {
@@ -510,51 +577,89 @@ pub fn list_available_shells() -> Vec<ShellInfo> {
         // Discover additional shells from Windows Terminal profile fragments.
         // This is filesystem-only (fast), so no need to parallelize.
         {
-            let known_names: std::collections::HashSet<String> = shells.iter()
-                .map(|s| s.name.to_lowercase())
-                .collect();
-            let known_cmds: std::collections::HashSet<String> = shells.iter()
-                .map(|s| s.path.to_lowercase())
-                .collect();
+            let known_names: std::collections::HashSet<String> =
+                shells.iter().map(|s| s.name.to_lowercase()).collect();
+            let known_cmds: std::collections::HashSet<String> =
+                shells.iter().map(|s| s.path.to_lowercase()).collect();
 
             let mut frag_dirs = Vec::new();
             if let Ok(local) = std::env::var("LOCALAPPDATA") {
-                frag_dirs.push(std::path::PathBuf::from(&local).join(r"Microsoft\Windows Terminal\Fragments"));
+                frag_dirs.push(
+                    std::path::PathBuf::from(&local).join(r"Microsoft\Windows Terminal\Fragments"),
+                );
             }
             if let Ok(pdata) = std::env::var("ProgramData") {
-                frag_dirs.push(std::path::PathBuf::from(&pdata).join(r"Microsoft\Windows Terminal\Fragments"));
+                frag_dirs.push(
+                    std::path::PathBuf::from(&pdata).join(r"Microsoft\Windows Terminal\Fragments"),
+                );
             }
 
             for frag_dir in &frag_dirs {
-                let Ok(apps) = std::fs::read_dir(frag_dir) else { continue };
+                let Ok(apps) = std::fs::read_dir(frag_dir) else {
+                    continue;
+                };
                 for app_entry in apps.flatten() {
                     let app_path = app_entry.path();
-                    if !app_path.is_dir() { continue; }
-                    let Ok(files) = std::fs::read_dir(&app_path) else { continue };
+                    if !app_path.is_dir() {
+                        continue;
+                    }
+                    let Ok(files) = std::fs::read_dir(&app_path) else {
+                        continue;
+                    };
                     for file_entry in files.flatten() {
                         let fp = file_entry.path();
-                        if fp.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
-                        let Ok(content) = std::fs::read_to_string(&fp) else { continue };
-                        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
-                        let Some(profiles) = json.get("profiles").and_then(|p| p.as_array()) else { continue };
+                        if fp.extension().and_then(|e| e.to_str()) != Some("json") {
+                            continue;
+                        }
+                        let Ok(content) = std::fs::read_to_string(&fp) else {
+                            continue;
+                        };
+                        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+                            continue;
+                        };
+                        let Some(profiles) = json.get("profiles").and_then(|p| p.as_array()) else {
+                            continue;
+                        };
                         for profile in profiles {
-                            let Some(name) = profile.get("name").and_then(|n| n.as_str()) else { continue };
-                            let Some(cmdline) = profile.get("commandline").and_then(|c| c.as_str()) else { continue };
+                            let Some(name) = profile.get("name").and_then(|n| n.as_str()) else {
+                                continue;
+                            };
+                            let Some(cmdline) = profile.get("commandline").and_then(|c| c.as_str())
+                            else {
+                                continue;
+                            };
                             let cmdline = cmdline.trim();
-                            if cmdline.is_empty() { continue; }
-                            if known_names.contains(&name.to_lowercase()) { continue; }
+                            if cmdline.is_empty() {
+                                continue;
+                            }
+                            if known_names.contains(&name.to_lowercase()) {
+                                continue;
+                            }
                             // Skip if this is a WSL distro already detected (fragments use bare
                             // name like "Ubuntu-22.04" while detect_wsl_distros uses "WSL: Ubuntu-22.04")
-                            if known_names.contains(&format!("wsl: {}", name.to_lowercase())) { continue; }
+                            if known_names.contains(&format!("wsl: {}", name.to_lowercase())) {
+                                continue;
+                            }
                             let cmdline_lower = cmdline.to_lowercase();
-                            if known_cmds.contains(&cmdline_lower) { continue; }
-                            let first_token = cmdline.split_whitespace().next().unwrap_or(cmdline)
-                                .trim_matches('"').to_lowercase();
-                            if known_cmds.contains(&first_token) { continue; }
+                            if known_cmds.contains(&cmdline_lower) {
+                                continue;
+                            }
+                            let first_token = cmdline
+                                .split_whitespace()
+                                .next()
+                                .unwrap_or(cmdline)
+                                .trim_matches('"')
+                                .to_lowercase();
+                            if known_cmds.contains(&first_token) {
+                                continue;
+                            }
                             let exe_path = first_token.replace('/', r"\");
                             let exe_exists = std::path::Path::new(&exe_path).exists()
-                                || first_token.ends_with("cmd.exe") || first_token == "cmd";
-                            if !exe_exists { continue; }
+                                || first_token.ends_with("cmd.exe")
+                                || first_token == "cmd";
+                            if !exe_exists {
+                                continue;
+                            }
                             shells.push(ShellInfo {
                                 path: cmdline.to_string(),
                                 name: name.to_string(),

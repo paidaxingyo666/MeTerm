@@ -16,6 +16,8 @@ import {
   type JumpServerNode,
   type JumpServerAccount,
   addJumpServerConfig,
+  jumpServerCredentialStatus,
+  stripJumpServerCredentialFields,
   getAssets,
   getNodes,
   getAccounts,
@@ -28,6 +30,20 @@ import {
   removeConnectionGroup,
   jumpserverKey,
 } from './connection-groups';
+
+function normalizeJumpServerBaseUrl(value: string): string | null {
+  if (!value || /[\s\u0000-\u001f\u007f]/.test(value)) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.search || url.hash) {
+      return null;
+    }
+    url.pathname = url.pathname.replace(/\/+$/, '');
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
 
 // ── Config Dialog ──
 
@@ -265,6 +281,17 @@ export function showJumpServerConfigDialog(
     jsProxyPassGroup.appendChild(jsProxyPassLabel);
     jsProxyPassGroup.appendChild(jsProxyPassInput);
 
+    if (prefill) {
+      void jumpServerCredentialStatus(prefill).then((status) => {
+        if (!status.bindingMatches) return;
+        if (status.hasPassword) passwordInput.placeholder = t('jsCredentialStoredHint');
+        if (status.hasApiToken) tokenInput.placeholder = t('jsCredentialStoredHint');
+        if (status.hasProxyPassword) jsProxyPassInput.placeholder = t('jsCredentialStoredHint');
+      }).catch((error) => {
+        console.warn('[jumpserver] credential status unavailable:', error);
+      });
+    }
+
     jsProxyAuthRow.appendChild(jsProxyUserGroup);
     jsProxyAuthRow.appendChild(jsProxyPassGroup);
     proxyDetails.appendChild(jsProxyAuthRow);
@@ -327,8 +354,11 @@ export function showJumpServerConfigDialog(
     testBtn.className = 'ssh-btn ssh-btn-test';
     testBtn.textContent = t('jsTestConnection');
     testBtn.onclick = async () => {
-      const url = urlInput.value.trim();
-      if (!url) return;
+      const url = normalizeJumpServerBaseUrl(urlInput.value.trim());
+      if (!url) {
+        setStatus(t('jsInvalidUrl'), 'error');
+        return;
+      }
       setStatus(t('jsTesting'), 'info');
       try {
         const result = await testConnection(url);
@@ -348,9 +378,10 @@ export function showJumpServerConfigDialog(
     cancelBtn.onclick = () => { overlay.remove(); resolve(null); };
 
     const buildConfig = (): JumpServerConfig | null => {
+      const normalizedBaseUrl = normalizeJumpServerBaseUrl(urlInput.value.trim());
       const config: JumpServerConfig = {
         name: nameInput.value.trim(),
-        baseUrl: urlInput.value.trim().replace(/\/+$/, ''),
+        baseUrl: normalizedBaseUrl || '',
         sshHost: sshHostInput.value.trim(),
         sshPort: parseInt(sshPortInput.value) || 2222,
         username: usernameInput.value.trim(),
@@ -366,7 +397,10 @@ export function showJumpServerConfigDialog(
         proxyPassword: jsProxyPassInput.value || undefined,
       };
       if (!config.name || !config.baseUrl || !config.username) {
-        setStatus(t('jsFieldsRequired'), 'error');
+        setStatus(
+          !normalizedBaseUrl && urlInput.value.trim() ? t('jsInvalidUrl') : t('jsFieldsRequired'),
+          'error',
+        );
         return null;
       }
       if (!config.sshHost) {
@@ -386,12 +420,21 @@ export function showJumpServerConfigDialog(
     saveBtn.onclick = async () => {
       const config = buildConfig();
       if (!config) return;
-      await addJumpServerConfig(config);
-      const selGrp = groupSelect.value;
-      if (selGrp) setConnectionGroup(jumpserverKey(config.name), selGrp);
-      else removeConnectionGroup(jumpserverKey(config.name));
-      overlay.remove();
-      resolve({ config, connect: false });
+      try {
+        await addJumpServerConfig(config, prefill?.name);
+        const selGrp = groupSelect.value;
+        if (selGrp) setConnectionGroup(jumpserverKey(config.name), selGrp);
+        else removeConnectionGroup(jumpserverKey(config.name));
+        overlay.remove();
+        resolve({ config: stripJumpServerCredentialFields(config), connect: false });
+      } catch (error) {
+        setStatus(
+          String(error).includes('jumpserver_credential_authority_changed')
+            ? t('jsCredentialAuthorityChanged')
+            : String(error),
+          'error',
+        );
+      }
     };
 
     const saveConnectBtn = document.createElement('button');
@@ -419,12 +462,21 @@ export function showJumpServerConfigDialog(
         saveBtn.disabled = false;
       }
 
-      await addJumpServerConfig(config);
-      const selGrp2 = groupSelect.value;
-      if (selGrp2) setConnectionGroup(jumpserverKey(config.name), selGrp2);
-      else removeConnectionGroup(jumpserverKey(config.name));
-      overlay.remove();
-      resolve({ config, connect: true });
+      try {
+        await addJumpServerConfig(config, prefill?.name);
+        const selGrp2 = groupSelect.value;
+        if (selGrp2) setConnectionGroup(jumpserverKey(config.name), selGrp2);
+        else removeConnectionGroup(jumpserverKey(config.name));
+        overlay.remove();
+        resolve({ config: stripJumpServerCredentialFields(config), connect: true });
+      } catch (error) {
+        setStatus(
+          String(error).includes('jumpserver_credential_authority_changed')
+            ? t('jsCredentialAuthorityChanged')
+            : String(error),
+          'error',
+        );
+      }
     };
 
     const spacer = document.createElement('div');

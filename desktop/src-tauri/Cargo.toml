@@ -1,6 +1,6 @@
 [package]
 name = "meterm"
-version = "0.2.11"
+version = "0.2.12"
 edition = "2021"
 license = "MIT"
 
@@ -8,38 +8,72 @@ license = "MIT"
 name = "meterm_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[features]
+# Development-only mobile control plane. Documented dev entrypoints enable it
+# explicitly; distributable builds must never carry these bearer-authorized
+# desktop capabilities until the independent control Broker release gate is complete.
+development-mobile-control = []
+# Explicitly permits the signed, isolated MeTerm Dev bundle to perform a
+# one-way, owner-confirmed recovery from the production SSH Keychain namespace.
+development-credential-recovery = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "tray-icon", "macos-private-api", "devtools"] }
+# Web inspector is available automatically in debug builds. Do not enable the
+# `devtools` feature here: that would compile it into production builds too.
+tauri = { version = "2.11.1", features = ["protocol-asset", "tray-icon", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.12", features = ["json", "cookies"] }
+time = { version = "0.3", features = ["formatting"] }
+reqwest = { version = "0.12", features = ["json", "cookies", "rustls-tls-native-roots"] }
 tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
+# compat:把 yamux::Stream / WsByteStream(futures-io)转成 tokio-io 走 TLS/hyper(中继隧道用)。
+tokio-util = { version = "0.7", features = ["compat", "io"] }
 tokio-socks = "0.5"
 base64 = "0.22"
 libc = "0.2"
+zeroize = "1"
 
 # In-process HTTP/WebSocket server (replaces Go sidecar)
 axum = { version = "0.8", features = ["ws"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "timeout"] }
 futures-util = "0.3"
+# 同端口 peek 双协议(HTTP/TLS):把 axum Router 手动跑在 hyper 连接上
+hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
+
+# 自签 TLS(E2E 加密基石,设计稿 §4):证书生成 + 同端口 rustls + 指纹发布。
+# 用 ring 后端与依赖树里既有的 rustls 保持一致,不引入 aws-lc-rs。
+rcgen = "0.14"
+x509-parser = "0.18"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+sha2 = "0.10"
+hmac = "0.12"
+p256 = { version = "0.13", features = ["ecdsa"] }
+
+# 中继隧道客户端(出站注册 → yamux Server 收子流 → 喂 TLS Router)。
+# 版本与 relay/ crate 对齐:tokio-tungstenite 0.26(仅 handshake,TLS 自己挂)、yamux 0.13。
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
+yamux = "0.13"
+futures = "0.3"
+bytes = "1"
 
 # Cross-platform PTY
 xpty = "0.3"
 
-# SSH
-russh = "0.46"
+# SSH. Keep the ring backend used by the existing builds, retain compression
+# and RSA key support, and avoid the aws-lc default backend.
+russh = { version = "0.61.1", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = { path = "crates/russh-sftp" }
-russh-keys = "0.46"
 ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 
 # mDNS service discovery
@@ -85,13 +119,21 @@ walkdir = "2"
 globset = "0.4"
 regex = "1"
 
+# 终端通知 Phase 3:后台 APNs 加密推送(E2E,中继/Apple 只见密文)。
+# 纯 Rust 实现,与手机端 CryptoKit 互操作:X25519(ECDH) + HKDF-SHA256 + ChaCha20-Poly1305(IETF 96-bit nonce)。
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+
 [target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2", features = [
     "NSWindow", "NSResponder", "NSGraphics", "NSColor",
     "NSButton", "NSControl", "NSView",
 ] }
 objc2-foundation = { version = "0.2", features = ["NSNotification", "NSString", "NSThread", "NSOperation", "block2"] }
+objc2-local-authentication = { version = "0.2", features = ["LAContext", "block2"] }
 block2 = "0.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -100,6 +142,16 @@ gdk = "0.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55"
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Security_Credentials_UI",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_WinRT",
+] }
+windows-future = "0.3"
 
 [profile.release]
 strip = true

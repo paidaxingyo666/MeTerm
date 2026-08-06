@@ -82,7 +82,7 @@ export function renderNetChart(instance: SysInfoFields): string {
   const history = instance.netHistory.get(nic) || [];
 
   const nicOptions = ifaces.map(i =>
-    `<option value="${i.name}"${i.name === nic ? ' selected' : ''}>${i.name}</option>`
+    `<option value="${escapeHtml(i.name)}"${i.name === nic ? ' selected' : ''}>${escapeHtml(i.name)}</option>`
   ).join('');
 
   let lastRx = 0, lastTx = 0;

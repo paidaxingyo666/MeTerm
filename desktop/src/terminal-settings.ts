@@ -5,10 +5,11 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { AppSettings, getTheme, getColorSchemeBg, hexToRgba, hexToOscRgb } from './themes';
 import { getFontFamily, getEffectiveFontWeight } from './fonts';
 import { encodeMessage, encodeResize, MsgInput } from './protocol';
-import { isWindowsPlatform } from './app-state';
+import { isMacPlatform, isWindowsPlatform } from './app-state';
 import { patchCanvasBgOpacity, patchCanvasSharpness } from './terminal-patches';
 import { sendToTerminal } from './terminal-transport';
 import type { ManagedTerminal } from './terminal-types';
+import { registerWebglContextLossFallback } from './terminal-render-recovery';
 
 export function applySettingsToTerminal(mt: ManagedTerminal, settings: AppSettings): void {
   const theme = getTheme(settings.theme);
@@ -72,6 +73,7 @@ export function applySettingsToTerminal(mt: ManagedTerminal, settings: AppSettin
       const webglAddon = new WebglAddon();
       mt.terminal.loadAddon(webglAddon);
       mt.webglAddon = webglAddon;
+      if (isMacPlatform) registerWebglContextLossFallback(mt, webglAddon);
     } catch {
       // WebGL not available
     }

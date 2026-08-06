@@ -40,6 +40,15 @@ pub const MSG_SET_ENCODING: u8 = 0x17;
 // Terminal control
 pub const MSG_NUDGE: u8 = 0x18;
 
+// Desktop presence event (桌面事件总线经 `/ws-events` 转发给手机的帧,JSON 负载,见 `events.rs`)
+pub const MSG_NOTIFY_EVENT: u8 = 0x41;
+
+// agent 聊天(方案 B):桌面用 AcpClient 托管外部 agent,归一 AgentEvent 经此下行;
+// 上行输入/控制见 P1-T4。0x50/0x51/0x52 三个常量都在本段定义,便于协议一览。
+pub const MSG_AGENT_EVENT: u8 = 0x50; // ↓ JSON: AgentEvent(下行,T2 使用)
+pub const MSG_AGENT_INPUT: u8 = 0x51; // ↑ JSON: {prompt}(dispatch 处理在 T4)
+pub const MSG_AGENT_CONTROL: u8 = 0x52; // ↑ JSON: {action,requestId?,optionId?,mode?}(T4)
+
 // Master role management
 pub const MSG_MASTER_REQUEST: u8 = 0x19;
 pub const MSG_MASTER_REQUEST_NOTIFY: u8 = 0x1A;
@@ -49,6 +58,9 @@ pub const MSG_MASTER_RECLAIM: u8 = 0x1C;
 // Device pairing
 pub const MSG_PAIR_NOTIFY: u8 = 0x1D;
 pub const MSG_PAIR_APPROVAL: u8 = 0x1E;
+/// master 主动让出主控(手机端"停止接管"):服务端把 master 移交给
+/// 下一个合适客户端(优先桌面 ipc/loopback)。payload 为空。
+pub const MSG_MASTER_RELEASE: u8 = 0x1F;
 
 // Download flow control
 pub const MSG_FILE_DOWNLOAD_PAUSE: u8 = 0x20;
@@ -117,14 +129,22 @@ pub fn encode_error(code: u8, message: &str) -> Vec<u8> {
 
 /// Encode a Hello message (JSON payload).
 ///
-/// Matches Go: `{"client_id":"...","role":"...","protocol_version":1,"cols":80,"rows":24}`
-pub fn encode_hello(client_id: &str, role: &str, protocol_version: u32, cols: u16, rows: u16) -> Vec<u8> {
+/// `conn_gen` binds privileged follow-up requests to this exact WebSocket incarnation.
+pub fn encode_hello(
+    client_id: &str,
+    role: &str,
+    protocol_version: u32,
+    cols: u16,
+    rows: u16,
+    conn_gen: u64,
+) -> Vec<u8> {
     let json = serde_json::json!({
         "client_id": client_id,
         "role": role,
         "protocol_version": protocol_version,
         "cols": cols,
         "rows": rows,
+        "conn_gen": conn_gen,
     });
     encode_message(MSG_HELLO, json.to_string().as_bytes())
 }
@@ -135,19 +155,33 @@ pub fn encode_role_change(role: u8) -> Vec<u8> {
 }
 
 /// Encode a master-request notification (JSON).
-pub fn encode_master_request_notify(requester_id: &str, session_id: &str) -> Vec<u8> {
+///
+/// `requester_conn_gen` prevents an approval for H0 from promoting a later H1
+/// that reused the same stable requester ID.
+pub fn encode_master_request_notify(
+    requester_id: &str,
+    session_id: &str,
+    requester_conn_gen: u64,
+) -> Vec<u8> {
     let json = serde_json::json!({
         "requester_id": requester_id,
         "session_id": session_id,
+        "conn_gen": requester_conn_gen,
     });
     encode_message(MSG_MASTER_REQUEST_NOTIFY, json.to_string().as_bytes())
 }
 
-/// Encode a master-approval message: `[0x1B][approved: u8][requester_id UTF-8]`.
-pub fn encode_master_approval(approved: bool, requester_id: &str) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(2 + requester_id.len());
+/// Encode a master-approval message:
+/// `[0x1B][approved: u8][requester_conn_gen: u64 BE][requester_id UTF-8]`.
+pub fn encode_master_approval(
+    approved: bool,
+    requester_id: &str,
+    requester_conn_gen: u64,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(10 + requester_id.len());
     buf.push(MSG_MASTER_APPROVAL);
     buf.push(if approved { 1 } else { 0 });
+    buf.extend_from_slice(&requester_conn_gen.to_be_bytes());
     buf.extend_from_slice(requester_id.as_bytes());
     buf
 }
@@ -187,6 +221,14 @@ pub fn encode_pong(rtt_ms: Option<u32>) -> Vec<u8> {
 /// Encode session-end message.
 pub fn encode_session_end() -> Vec<u8> {
     vec![MSG_SESSION_END]
+}
+
+/// Encode session-end with "deleted" reason: `[0x06][0x01]`。
+/// 会话被显式删除(手机端关闭/REST DELETE)时用:客户端据此**移除**
+/// 标签,而自然退出(shell exit,无 payload)保留"已结束"标签供回看。
+/// 旧客户端不读 payload,向后兼容。
+pub fn encode_session_end_deleted() -> Vec<u8> {
+    vec![MSG_SESSION_END, 1]
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +325,34 @@ mod tests {
         assert_eq!(msg[0], MSG_ERROR);
         assert_eq!(msg[1], ERR_NOT_MASTER);
         assert_eq!(&msg[2..], b"not master");
+    }
+
+    #[test]
+    fn hello_and_master_messages_bind_connection_generation() {
+        let hello = encode_hello("phone", "viewer", 1, 80, 24, 42);
+        let hello_json: serde_json::Value = serde_json::from_slice(&hello[1..]).unwrap();
+        assert_eq!(hello_json["conn_gen"], 42);
+
+        let request = encode_master_request_notify("phone", "session", 42);
+        let request_json: serde_json::Value = serde_json::from_slice(&request[1..]).unwrap();
+        assert_eq!(request_json["conn_gen"], 42);
+
+        let approval = encode_master_approval(true, "phone", 42);
+        assert_eq!(approval[0], MSG_MASTER_APPROVAL);
+        assert_eq!(approval[1], 1);
+        assert_eq!(u64::from_be_bytes(approval[2..10].try_into().unwrap()), 42);
+        assert_eq!(&approval[10..], b"phone");
+    }
+
+    /// presence 事件帧(`/ws-events`,终端通知 Phase 1)首字节必须是 `MSG_NOTIFY_EVENT`(0x41),
+    /// payload 原样跟在后面(JSON 字节)。
+    #[test]
+    fn test_encode_message_notify_event() {
+        let json = br#"{"t":"sessions"}"#;
+        let msg = encode_message(MSG_NOTIFY_EVENT, json);
+        assert_eq!(msg[0], MSG_NOTIFY_EVENT);
+        assert_eq!(msg[0], 0x41);
+        assert_eq!(&msg[1..], json);
     }
 
     #[test]

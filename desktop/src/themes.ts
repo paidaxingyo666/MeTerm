@@ -1,4 +1,15 @@
 import type { AIProviderEntry } from './ai-provider';
+import {
+  SETTINGS_STORAGE_KEY,
+  applySettingsSecrets,
+  stripSettingsSecretsForStorage,
+  updateSettingsSecrets,
+} from './settings-secrets';
+
+export {
+  flushSettingsSecrets,
+  initializeSettingsSecrets,
+} from './settings-secrets';
 
 export type ThemeType = 'dark' | 'light';
 
@@ -335,6 +346,10 @@ export interface AppSettings {
   searxngUrl: string;
   searxngUsername: string;
   searxngPassword: string;
+  /** Native credential presence only; the password remains outside WebView. */
+  searxngHasPassword: boolean;
+  /** Transient settings UI request to delete the native password. */
+  searxngClearPassword?: boolean;
   searxngEnabled: boolean;
   fileLinkSkipConfirm: boolean;
   enableVibrancy: boolean;
@@ -365,7 +380,7 @@ export interface AppSettings {
   nbCustomColors?: Record<string, string>;
 }
 
-const SETTINGS_KEY = 'meterm-settings';
+const SETTINGS_KEY = SETTINGS_STORAGE_KEY;
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'default',
@@ -394,9 +409,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultShell: '',
   enableTerminalNotifications: true,
   aiProviders: [
-    { id: 'openai',    type: 'openai',    label: 'OpenAI',    apiKey: '', baseUrl: 'https://api.openai.com',                    models: [], enabledModels: [] },
-    { id: 'anthropic', type: 'anthropic', label: 'Anthropic', apiKey: '', baseUrl: 'https://api.anthropic.com',                 models: [], enabledModels: [] },
-    { id: 'gemini',    type: 'gemini',    label: 'Gemini',    apiKey: '', baseUrl: 'https://generativelanguage.googleapis.com', models: [], enabledModels: [] },
+    { id: 'openai',    type: 'openai',    label: 'OpenAI',    apiKey: '', hasApiKey: false, baseUrl: 'https://api.openai.com',                    models: [], enabledModels: [] },
+    { id: 'anthropic', type: 'anthropic', label: 'Anthropic', apiKey: '', hasApiKey: false, baseUrl: 'https://api.anthropic.com',                 models: [], enabledModels: [] },
+    { id: 'gemini',    type: 'gemini',    label: 'Gemini',    apiKey: '', hasApiKey: false, baseUrl: 'https://generativelanguage.googleapis.com', models: [], enabledModels: [] },
   ],
   aiActiveModel: 'auto',
   aiBarOpacity: 80,
@@ -409,6 +424,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   searxngUrl: '',
   searxngUsername: '',
   searxngPassword: '',
+  searxngHasPassword: false,
   searxngEnabled: false,
   fileLinkSkipConfirm: false,
   enableVibrancy: false,
@@ -431,18 +447,18 @@ export function loadSettings(): AppSettings {
     const stored = localStorage.getItem(SETTINGS_KEY);
     if (stored) {
       const parsed = JSON.parse(stored);
-      let settings = { ...DEFAULT_SETTINGS, ...parsed };
+      let settings = { ...DEFAULT_SETTINGS, ...parsed } as AppSettings;
+      let needsSave = false;
 
       // Migration: old single-provider format → new multi-provider format
       if (!parsed.aiProviders && parsed.aiProviderType) {
         const oldType = parsed.aiProviderType as string;
-        const oldKey = (parsed.aiApiKey as string) || '';
         const oldUrl = (parsed.aiBaseUrl as string) || '';
         const oldModel = (parsed.aiModel as string) || '';
 
         settings.aiProviders = DEFAULT_SETTINGS.aiProviders.map((p) => {
           if (p.type === oldType) {
-            return { ...p, apiKey: oldKey, baseUrl: oldUrl || p.baseUrl, enabledModels: oldModel && oldModel !== 'auto' ? [oldModel] : [] };
+            return { ...p, apiKey: '', baseUrl: oldUrl || p.baseUrl, enabledModels: oldModel && oldModel !== 'auto' ? [oldModel] : [] };
           }
           return { ...p };
         });
@@ -451,30 +467,40 @@ export function loadSettings(): AppSettings {
           : `${settings.aiProviders.find((p: AIProviderEntry) => p.type === oldType)?.id || 'openai'}:${oldModel}`;
 
         // Clean up old fields and save migrated settings
-        delete (settings as Record<string, unknown>).aiProviderType;
-        delete (settings as Record<string, unknown>).aiApiKey;
-        delete (settings as Record<string, unknown>).aiBaseUrl;
-        delete (settings as Record<string, unknown>).aiModel;
-        saveSettings(settings);
+        const legacySettings = settings as unknown as Record<string, unknown>;
+        delete legacySettings.aiProviderType;
+        delete legacySettings.aiApiKey;
+        delete legacySettings.aiBaseUrl;
+        delete legacySettings.aiModel;
+        needsSave = true;
       }
 
       // Migration: old enableBoldFont boolean → new fontWeight number
       if ('enableBoldFont' in parsed && !('fontWeight' in parsed)) {
         settings.fontWeight = parsed.enableBoldFont ? 700 : 400;
-        delete (settings as Record<string, unknown>).enableBoldFont;
-        saveSettings(settings);
+        delete (settings as unknown as Record<string, unknown>).enableBoldFont;
+        needsSave = true;
       }
 
+      settings = applySettingsSecrets(settings);
+      if (needsSave) saveSettings(settings);
       return settings;
     }
   } catch {
-    return DEFAULT_SETTINGS;
+    return applySettingsSecrets({
+      ...DEFAULT_SETTINGS,
+      aiProviders: DEFAULT_SETTINGS.aiProviders.map(provider => ({ ...provider })),
+    });
   }
-  return DEFAULT_SETTINGS;
+  return applySettingsSecrets({
+    ...DEFAULT_SETTINGS,
+    aiProviders: DEFAULT_SETTINGS.aiProviders.map(provider => ({ ...provider })),
+  });
 }
 
 export function saveSettings(settings: AppSettings): void {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  updateSettingsSecrets(settings);
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(stripSettingsSecretsForStorage(settings)));
 }
 
 export function getTheme(name: string): TerminalTheme {

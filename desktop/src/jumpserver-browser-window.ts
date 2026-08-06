@@ -12,56 +12,53 @@ import { escapeHtml } from './status-bar';
 import { createOverlayScrollbar } from './overlay-scrollbar';
 import { getCurrentWindow, LogicalSize, LogicalPosition } from '@tauri-apps/api/window';
 import { revealAfterPaint } from './window-utils';
-import { emit, listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { applyNbPalette } from './nb-palette';
 import {
-  type JumpServerConfig,
+  type AccountsResult,
+  type AssetsResult,
   type JumpServerAsset,
   type JumpServerNode,
   type JumpServerAccount,
+  type NodesResult,
 } from './jumpserver-api';
-import { parseJumpServerError, isJumpServerSessionExpired } from './jumpserver-errors';
+import { isJumpServerSessionExpired } from './jumpserver-errors';
+import {
+  type JumpServerBrowserConfig,
+  requestJumpServerBrowserContext,
+  requestJumpServerBrowserRpc,
+} from './jumpserver-browser-context';
 
 const ua = navigator.userAgent.toLowerCase();
 const isWindowsPlatform = ua.includes('windows');
 const isMacPlatform = ua.includes('macintosh') || ua.includes('mac os');
 const needsCustomControls = isWindowsPlatform || (!isMacPlatform && !isWindowsPlatform);
 
-// ── API helpers (use port/token from localStorage) ──
+const JUMP_SERVER_BROWSER_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' asset: https://asset.localhost http://asset.localhost data:",
+  "font-src 'self' data:",
+  "connect-src ipc://localhost http://ipc.localhost http://tauri.localhost",
+  "frame-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join('; ');
 
-function getApiBase(): { port: number; token: string } {
-  return {
-    port: Number(localStorage.getItem('meterm-js-browser-port') || '0'),
-    token: localStorage.getItem('meterm-js-browser-token') || '',
-  };
+function installJumpServerBrowserCsp(): void {
+  const meta = document.createElement('meta');
+  meta.httpEquiv = 'Content-Security-Policy';
+  meta.content = JUMP_SERVER_BROWSER_CSP;
+  document.head.prepend(meta);
 }
 
-async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
-  const { port, token } = getApiBase();
-  const url = `http://127.0.0.1:${port}${path}`;
-  const resp = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-      ...options?.headers,
-    },
-  });
+// ── API helpers (the child can invoke only owner-approved read RPCs) ──
 
-  if (!resp.ok) {
-    const text = await resp.text();
-    const typed = parseJumpServerError(text);
-    if (typed) throw typed;
-    throw new Error(`HTTP ${resp.status}: ${text}`);
-  }
-
-  const json = await resp.json() as T;
-  const maybeErr = (json as unknown as { error?: string }).error;
-  if (maybeErr && typeof maybeErr === 'string') {
-    const typed = parseJumpServerError(maybeErr);
-    if (typed) throw typed;
-  }
-  return json;
+function forwardBrowserEvent(event: string, payload: Record<string, unknown>): Promise<void> {
+  return invoke('forward_jumpserver_browser_event', { event, payload });
 }
 
 /**
@@ -81,47 +78,24 @@ function renderExpiredInBrowserWindow(container: HTMLElement, configName: string
     </div>
   `;
   banner.querySelector('[data-action="return"]')!.addEventListener('click', async () => {
-    await emit('jumpserver-session-expired-reopen', { configName });
+    await forwardBrowserEvent('jumpserver-session-expired-reopen', { configName });
     await getCurrentWindow().close();
   });
   container.appendChild(banner);
 }
 
-interface AssetsResult {
-  ok: boolean;
-  assets?: JumpServerAsset[];
-  total?: number;
-  error?: string;
-}
-interface NodesResult {
-  ok: boolean;
-  nodes?: JumpServerNode[];
-  error?: string;
-}
-interface AccountsResult {
-  ok: boolean;
-  accounts?: JumpServerAccount[];
-  error?: string;
-}
-
-async function getAssets(baseUrl: string, options?: {
+async function getAssets(configName: string, options?: {
   search?: string; nodeId?: string; page?: number; pageSize?: number;
 }): Promise<AssetsResult> {
-  const params = new URLSearchParams({ base_url: baseUrl });
-  if (options?.search) params.set('search', options.search);
-  if (options?.nodeId) params.set('node_id', options.nodeId);
-  if (options?.page) params.set('page', String(options.page));
-  if (options?.pageSize) params.set('page_size', String(options.pageSize));
-  return fetchJSON<AssetsResult>(`/api/jumpserver/assets?${params.toString()}`);
+  return requestJumpServerBrowserRpc<AssetsResult>(configName, 'assets', options ?? {});
 }
 
-async function getNodes(baseUrl: string): Promise<NodesResult> {
-  return fetchJSON<NodesResult>(`/api/jumpserver/nodes?base_url=${encodeURIComponent(baseUrl)}`);
+async function getNodes(configName: string): Promise<NodesResult> {
+  return requestJumpServerBrowserRpc<NodesResult>(configName, 'nodes', {});
 }
 
-async function getAccounts(baseUrl: string, assetId: string): Promise<AccountsResult> {
-  const params = new URLSearchParams({ base_url: baseUrl, asset_id: assetId });
-  return fetchJSON<AccountsResult>(`/api/jumpserver/accounts?${params.toString()}`);
+async function getAccounts(configName: string, assetId: string): Promise<AccountsResult> {
+  return requestJumpServerBrowserRpc<AccountsResult>(configName, 'accounts', { assetId });
 }
 
 // ── SVG icons ──
@@ -239,6 +213,10 @@ function createCustomTitleBar(titleText: string): HTMLElement {
 // ── Main initialization ──
 
 export function initJumpServerBrowserWindow(): void {
+  // The shared app CSP permits arbitrary connect-src for the main terminal.
+  // This utility window does not perform network I/O itself, so install a
+  // second, stricter policy before rendering any untrusted asset metadata.
+  installJumpServerBrowserCsp();
   initLanguage();
   const settings = loadSettings();
   setLanguage(settings.language);
@@ -283,17 +261,21 @@ export function initJumpServerBrowserWindow(): void {
     appendTarget.appendChild(dragRegion);
   }
 
-  // Read config from localStorage
-  const configJson = localStorage.getItem('meterm-js-browser-config');
-  if (!configJson) {
-    document.body.innerHTML += '<p style="padding:20px;color:var(--text-secondary);">No JumpServer config found.</p>';
-    return;
-  }
-  const config: JumpServerConfig = JSON.parse(configJson);
+  const contextStatus = document.createElement('p');
+  contextStatus.style.padding = '20px';
+  contextStatus.style.color = 'var(--text-secondary)';
+  contextStatus.textContent = t('jsLoading');
+  appendTarget.appendChild(contextStatus);
 
-  renderAssetBrowser(config);
-
-  void revealAfterPaint(getCurrentWindow().label);
+  void requestJumpServerBrowserContext().then((context) => {
+    contextStatus.remove();
+    renderAssetBrowser(context.config);
+    void revealAfterPaint(getCurrentWindow().label);
+  }).catch((error) => {
+    console.error('[jumpserver] Browser context handshake failed:', error);
+    contextStatus.textContent = 'Unable to initialize JumpServer browser context.';
+    void revealAfterPaint(getCurrentWindow().label);
+  });
 
   // Listen for theme/opacity changes from settings window
   void listen('settings-changed', () => {
@@ -311,7 +293,7 @@ export function initJumpServerBrowserWindow(): void {
 
 // ── Asset browser rendering ──
 
-function renderAssetBrowser(config: JumpServerConfig): void {
+function renderAssetBrowser(config: JumpServerBrowserConfig): void {
   const container = document.createElement('div');
   container.className = 'js-browser-container';
 
@@ -435,7 +417,7 @@ function renderAssetBrowser(config: JumpServerConfig): void {
   snapDockBtn.style.display = 'flex';
   snapDockBtn.addEventListener('click', () => {
     if (animating) return;
-    void emit('jumpserver-snap-dock', { configName: config.name });
+    void forwardBrowserEvent('jumpserver-snap-dock', { configName: config.name });
   });
   searchBar.appendChild(snapDockBtn);
 
@@ -473,7 +455,7 @@ function renderAssetBrowser(config: JumpServerConfig): void {
   dockInBtn.style.display = 'flex';
   dockInBtn.addEventListener('click', () => {
     if (animating || closeAnimating) return;
-    void emit('jumpserver-dock-to-panel', { configName: config.name });
+    void forwardBrowserEvent('jumpserver-dock-to-panel', { configName: config.name });
     animateShrinkAndClose(getCurrentWindow());
   });
   searchBar.appendChild(dockInBtn);
@@ -604,7 +586,7 @@ function renderAssetBrowser(config: JumpServerConfig): void {
   // Load nodes
   const loadNodeTree = async () => {
     try {
-      const result = await getNodes(config.baseUrl);
+      const result = await getNodes(config.name);
       if (!result.ok || !result.nodes) {
         sidebar.innerHTML = `<div class="js-error">${escapeHtml(result.error || 'Failed')}</div>`;
         return;
@@ -665,6 +647,11 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       const key = node.key || '';
       const depth = key.split(':').length - 1;
       const isParent = hasChildren(key);
+      const assetCount = typeof node.assets_amount === 'number'
+        && Number.isSafeInteger(node.assets_amount)
+        && node.assets_amount >= 0
+        ? String(node.assets_amount)
+        : '';
 
       const item = document.createElement('div');
       item.className = 'js-node-item';
@@ -679,7 +666,7 @@ function renderAssetBrowser(config: JumpServerConfig): void {
         ${chevron}
         <span class="js-node-icon">${SVG_FOLDER}</span>
         <span class="js-node-name">${escapeHtml(node.name)}</span>
-        ${node.assets_amount ? `<span class="js-node-count">${node.assets_amount}</span>` : ''}
+        ${assetCount ? `<span class="js-node-count">${assetCount}</span>` : ''}
       `;
 
       if (depth > 0) item.style.display = 'none';
@@ -769,6 +756,11 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       const key = node.key || '';
       const depth = key.split(':').length - 1;
       const isParent = hasChildren(key);
+      const assetCount = typeof node.assets_amount === 'number'
+        && Number.isSafeInteger(node.assets_amount)
+        && node.assets_amount >= 0
+        ? String(node.assets_amount)
+        : '';
 
       const item = document.createElement('div');
       item.className = 'js-node-item';
@@ -778,7 +770,7 @@ function renderAssetBrowser(config: JumpServerConfig): void {
         ? `<span class="js-node-chevron">${SVG_CHEVRON_RIGHT}</span>`
         : `<span class="js-node-chevron-spacer"></span>`;
 
-      item.innerHTML = `${chevron}<span class="js-node-icon">${SVG_FOLDER}</span><span class="js-node-name">${escapeHtml(node.name)}</span>${node.assets_amount ? `<span class="js-node-count">${node.assets_amount}</span>` : ''}`;
+      item.innerHTML = `${chevron}<span class="js-node-icon">${SVG_FOLDER}</span><span class="js-node-name">${escapeHtml(node.name)}</span>${assetCount ? `<span class="js-node-count">${assetCount}</span>` : ''}`;
 
       if (depth > 0) item.style.display = 'none';
 
@@ -831,7 +823,7 @@ function renderAssetBrowser(config: JumpServerConfig): void {
   const loadAssetList = async () => {
     main.innerHTML = `<div class="js-loading">${t('jsLoading')}</div>`;
     try {
-      const result = await getAssets(config.baseUrl, {
+      const result = await getAssets(config.name, {
         search: searchInput.value.trim() || undefined,
         nodeId: selectedNodeId || undefined,
         page: currentPage,
@@ -1019,7 +1011,7 @@ function renderAssetBrowser(config: JumpServerConfig): void {
   const handleAssetConnect = async (asset: JumpServerAsset) => {
     statusBar.textContent = t('jsLoadingAccounts');
     try {
-      const result = await getAccounts(config.baseUrl, asset.id);
+      const result = await getAccounts(config.name, asset.id);
       if (!result.ok || !result.accounts || result.accounts.length === 0) {
         statusBar.textContent = result.error || t('jsNoAccounts');
         statusBar.style.color = 'var(--status-red)';
@@ -1038,7 +1030,7 @@ function renderAssetBrowser(config: JumpServerConfig): void {
       statusBar.textContent = `Connecting to ${asset.name || asset.address}...`;
 
       // Emit event to main window for SSH connection
-      await emit('jumpserver-connect-asset', {
+      await forwardBrowserEvent('jumpserver-connect-asset', {
         configName: config.name,
         asset: { id: asset.id, name: asset.name, address: asset.address, platform: asset.platform, protocols: asset.protocols },
         account: { id: account.id, name: account.name, username: account.username, privileged: account.privileged },

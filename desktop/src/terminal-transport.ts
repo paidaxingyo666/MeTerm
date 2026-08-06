@@ -106,6 +106,82 @@ export class IpcTransport implements TerminalTransport {
   }
 }
 
+interface RemoteBrokerEvent {
+  kind: 'message' | 'closed';
+  data?: number[];
+  reason?: string | null;
+}
+
+/**
+ * Native remote-desktop transport. Rust owns the saved bearer token and the
+ * authenticated WebSocket; the WebView sees only terminal protocol frames.
+ */
+export class RemoteBrokerTransport implements TerminalTransport {
+  private _connected = false;
+  private _handle: string | null = null;
+  private _cancelled = false;
+  private _sendQueue: Promise<void> = Promise.resolve();
+  onmessage: ((data: ArrayBuffer) => void) | null = null;
+  onclose: (() => void) | null = null;
+
+  constructor(
+    private readonly host: string,
+    private readonly port: number,
+    private readonly sessionId: string,
+    private readonly reconnectClientId: string | null,
+  ) {}
+
+  get connected(): boolean { return this._connected; }
+
+  async connect(): Promise<void> {
+    this._cancelled = false;
+    const channel = new Channel<RemoteBrokerEvent>();
+    let closedBeforeReady = false;
+    channel.onmessage = (event) => {
+      if (event.kind === 'message' && event.data) {
+        this.onmessage?.(new Uint8Array(event.data).buffer);
+      } else if (event.kind === 'closed') {
+        closedBeforeReady = !this._connected;
+        this._connected = false;
+        this._handle = null;
+        this.onclose?.();
+      }
+    };
+    const handle = await invoke<string>('remote_connect_session', {
+      host: this.host,
+      port: this.port,
+      sessionId: this.sessionId,
+      clientId: this.reconnectClientId,
+      onEvent: channel,
+    });
+    if (closedBeforeReady || this._cancelled) {
+      void invoke('remote_close_session', { handle });
+      throw new Error('remote broker connection closed during setup');
+    }
+    this._handle = handle;
+    this._connected = true;
+  }
+
+  send(data: Uint8Array): void {
+    if (!this._connected || !this._handle) return;
+    const handle = this._handle;
+    const bytes = Array.from(data);
+    this._sendQueue = this._sendQueue
+      .then(() => invoke('remote_send_frame', { handle, data: bytes }) as Promise<void>)
+      .catch((error) => {
+        console.error('Remote broker send error:', error);
+      });
+  }
+
+  close(): void {
+    this._cancelled = true;
+    const handle = this._handle;
+    this._connected = false;
+    this._handle = null;
+    if (handle) void invoke('remote_close_session', { handle });
+  }
+}
+
 export function sendToTerminal(mt: ManagedTerminal, data: Uint8Array): void {
   if (mt.transport && mt.transport.connected) {
     mt.transport.send(data);

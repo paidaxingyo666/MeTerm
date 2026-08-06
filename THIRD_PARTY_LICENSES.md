@@ -34,7 +34,7 @@ MeTerm 使用了以下开源项目，感谢它们的作者和贡献者。
 - **Project**: https://github.com/microsoft/terminal
 - **Integration**: Bundled binaries (`conpty.dll`, `OpenConsole.exe`) in Windows builds
 - **License**: [MIT License](https://github.com/microsoft/terminal/blob/main/LICENSE)
-- **Usage**: MeTerm bundles ConPTY DLL and OpenConsole.exe from Microsoft's Windows Terminal project to provide native pseudo-console support on Windows. The DLL is loaded at runtime by the Go sidecar process.
+- **Usage**: MeTerm bundles ConPTY DLL and OpenConsole.exe from Microsoft's Windows Terminal project to provide native pseudo-console support on Windows. The DLL is loaded by the in-process Rust terminal backend.
 
 > Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT License.
 

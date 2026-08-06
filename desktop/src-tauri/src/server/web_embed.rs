@@ -21,6 +21,18 @@ pub fn has_content() -> bool {
 pub async fn serve_static(uri: axum::http::Uri) -> impl IntoResponse {
     let path = uri.path().trim_start_matches('/');
 
+    // API and WebSocket namespaces must never fall through to the SPA. Apart
+    // from making missing endpoints unambiguous, this keeps removed sensitive
+    // routes verifiably absent instead of returning a misleading HTTP 200.
+    if path == "api"
+        || path.starts_with("api/")
+        || path == "ws"
+        || path.starts_with("ws/")
+        || path == "ws-events"
+    {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+
     // Try exact path first
     if let Some(file) = WebAssets::get(path) {
         return serve_file(path, &file.data);
@@ -56,5 +68,22 @@ fn mime_from_path(path: &str) -> &'static str {
         Some("woff2") => "font/woff2",
         Some("json") => "application/json",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn removed_api_routes_never_receive_spa_fallback() {
+        let response = serve_static(
+            "/api/ssh/connections/id/secrets"
+                .parse::<axum::http::Uri>()
+                .unwrap(),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

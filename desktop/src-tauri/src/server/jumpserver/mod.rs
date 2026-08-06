@@ -9,12 +9,90 @@
 //! - Connection token creation (v4/v3/v2 format differences)
 //! - Health check
 
+mod client_pool;
+pub(crate) mod credential_broker;
 pub mod handler;
+mod parsers;
+mod resources;
+pub mod ssh_session;
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, COOKIE};
+pub use client_pool::clear_client_pool;
+use client_pool::{get_or_create_client, reset_client};
+pub(crate) use client_pool::{remove_device_generation, remove_owner_generation};
+use parsers::*;
+
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+const MAX_JUMPSERVER_JSON_BYTES: usize = 8 * 1024 * 1024;
+const MAX_JUMPSERVER_ASSETS_PER_PAGE: usize = 100;
+const MAX_JUMPSERVER_NODES: usize = 5_000;
+const MAX_JUMPSERVER_NODE_DEPTH: usize = 32;
+const MAX_JUMPSERVER_NODE_REQUESTS: usize = 256;
+const MAX_JUMPSERVER_ACCOUNTS: usize = 1_000;
+
+pub(crate) fn valid_resource_id(value: &str) -> bool {
+    (1..=256).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+pub(crate) fn valid_display_text(value: &str, max_bytes: usize) -> bool {
+    value.len() <= max_bytes && !value.chars().any(char::is_control)
+}
+
+pub(crate) fn valid_bearer_token(value: &str) -> bool {
+    !value.is_empty()
+        && valid_display_text(value, 64 * 1024)
+        && !value.chars().any(char::is_whitespace)
+}
+
+fn valid_secret_value(value: &str) -> bool {
+    value.len() <= 64 * 1024 && !value.contains('\0')
+}
+
+fn normalized_auth_keyword(value: Option<&str>) -> Option<&'static str> {
+    match value {
+        Some("Bearer") | Some("bearer") => Some("Bearer"),
+        Some("Token") | Some("token") => Some("Token"),
+        _ => None,
+    }
+}
+
+/// Read an upstream JSON response without allowing a compromised/misconfigured
+/// JumpServer to make reqwest aggregate an unbounded body first.
+async fn read_json_response(mut response: reqwest::Response) -> Result<serde_json::Value, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_JUMPSERVER_JSON_BYTES as u64)
+    {
+        return Err("JumpServer response exceeded the size limit".to_string());
+    }
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or(0)
+            .min(MAX_JUMPSERVER_JSON_BYTES as u64) as usize,
+    );
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "failed to read JumpServer response".to_string())?
+    {
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| "JumpServer response exceeded the size limit".to_string())?;
+        if next_len > MAX_JUMPSERVER_JSON_BYTES {
+            return Err("JumpServer response exceeded the size limit".to_string());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|_| "invalid JumpServer JSON response".to_string())
+}
 
 /// JumpServer client.
 pub struct JumpServerClient {
@@ -23,14 +101,13 @@ pub struct JumpServerClient {
     token: Option<String>,
     /// "Bearer" or "Token" — determines Authorization header format (default "Bearer")
     keyword: String,
-    cookies: Option<String>,
     csrf_token: Option<String>,
     org_id: Option<String>,
     saved_username: Option<String>,
     saved_password: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AuthRequest {
     pub base_url: String,
     pub username: String,
@@ -39,7 +116,7 @@ pub struct AuthRequest {
     pub org_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TokenAuthRequest {
     pub base_url: String,
     pub token: String,
@@ -47,7 +124,7 @@ pub struct TokenAuthRequest {
     pub org_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MfaRequest {
     pub base_url: String,
     #[serde(rename = "type")]
@@ -55,7 +132,7 @@ pub struct MfaRequest {
     pub code: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,7 +154,7 @@ pub struct Asset {
     #[serde(default)]
     pub address: String,
     #[serde(default)]
-    pub platform: serde_json::Value,  // v2: string "Linux", v4: {"id":1,"name":"Linux"} — pass through to frontend
+    pub platform: serde_json::Value, // v2: string "Linux", v4: {"id":1,"name":"Linux"} — pass through to frontend
     #[serde(default)]
     pub protocols: Vec<serde_json::Value>,
     #[serde(default)]
@@ -96,9 +173,11 @@ fn deserialize_platform<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String
     let val = serde_json::Value::deserialize(d)?;
     match val {
         serde_json::Value::String(s) => Ok(s),
-        serde_json::Value::Object(map) => Ok(
-            map.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        ),
+        serde_json::Value::Object(map) => Ok(map
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()),
         serde_json::Value::Null => Ok(String::new()),
         _ => Ok(val.to_string()),
     }
@@ -127,83 +206,103 @@ pub struct Account {
     pub alias: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Short-lived Koko credential. This type is deliberately not serializable:
+/// it may only be consumed by the fixed Rust SSH/SFTP broker.
+#[derive(Clone)]
 pub struct ConnectionToken {
     pub id: String,
-    #[serde(default)]
     pub token: String,
-    #[serde(default)]
     pub secret: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct ConnectionTokenRequest {
     pub base_url: String,
     pub asset_id: String,
     pub account: String,
-    #[serde(default)]
     pub account_name: String,
-    #[serde(default)]
     pub account_alias: String,
-    #[serde(default)]
     pub account_id: String,
-    #[serde(default)]
     pub protocol: String,
 }
 
 /// Global proxy bypass flag — when true, all JumpServer HTTP requests bypass system proxy.
 pub static BYPASS_PROXY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-/// Build a reqwest Client respecting the global proxy bypass setting.
-fn build_http_client(timeout_secs: u64) -> reqwest::Client {
+/// Validate and canonicalize the JumpServer API base URL before any credential-bearing request.
+/// Credentials must never be sent over plaintext HTTP or to a URL containing userinfo/query data.
+fn normalize_base_url(base_url: &str) -> Result<String, String> {
+    let value = base_url.trim();
+    if value.is_empty()
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    {
+        return Err("JumpServer URL is invalid".to_string());
+    }
+    let mut url =
+        reqwest::Url::parse(value).map_err(|_| "JumpServer URL is invalid".to_string())?;
+    if url.scheme() != "https" {
+        return Err("JumpServer URL must use HTTPS".to_string());
+    }
+    if url.host_str().is_none_or(str::is_empty)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("JumpServer URL must not contain credentials, query, or fragment".to_string());
+    }
+    // Preserve an optional deployment subpath, but remove only trailing slashes because all API
+    // calls append an absolute-looking path fragment to this base.
+    let trimmed_path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&trimmed_path);
+    Ok(url.to_string().trim_end_matches('/').to_string())
+}
+
+/// Build a reqwest Client respecting the global proxy bypass setting. Certificate validation is
+/// deliberately left at reqwest/rustls system-root defaults; accepting invalid certificates here
+/// would expose JumpServer passwords, API tokens, session cookies, and connection credentials.
+fn build_http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(std::time::Duration::from_secs(timeout_secs));
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        // Credential-bearing POST bodies must never be replayed to a different
+        // origin via a 307/308 redirect. JumpServer API paths are explicit, so
+        // treat every redirect as an error and let the caller fix base_url.
+        .redirect(reqwest::redirect::Policy::none());
     if BYPASS_PROXY.load(std::sync::atomic::Ordering::Relaxed) {
         builder = builder.no_proxy();
     }
-    builder.build().unwrap_or_default()
-}
-
-/// Client pool — caches JumpServerClient instances by base_url.
-static CLIENT_POOL: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<JumpServerClient>>>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
-
-/// Clear all cached clients (called when proxy mode changes).
-pub fn clear_client_pool() {
-    CLIENT_POOL.lock().unwrap().clear();
-}
-
-/// Get or create a cached JumpServer client for the given base URL.
-pub fn get_or_create_client(base_url: &str) -> Arc<tokio::sync::Mutex<JumpServerClient>> {
-    let key = base_url.trim_end_matches('/').to_string();
-    let mut pool = CLIENT_POOL.lock().unwrap();
-    pool.entry(key.clone())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(JumpServerClient::new(&key))))
-        .clone()
+    builder
+        .build()
+        .map_err(|_| "failed to initialize secure JumpServer HTTP client".to_string())
 }
 
 impl JumpServerClient {
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str) -> Result<Self, String> {
+        let base_url = normalize_base_url(base_url)?;
         let mut builder = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
             .timeout(std::time::Duration::from_secs(30))
-            .cookie_store(true);
+            .cookie_store(true)
+            // See build_http_client: do not let redirects replay credentials
+            // or authenticated requests to another origin.
+            .redirect(reqwest::redirect::Policy::none());
         if BYPASS_PROXY.load(std::sync::atomic::Ordering::Relaxed) {
             builder = builder.no_proxy();
         }
-        let http = builder.build().unwrap_or_default();
-        Self {
+        let http = builder
+            .build()
+            .map_err(|_| "failed to initialize secure JumpServer HTTP client".to_string())?;
+        Ok(Self {
             http,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url,
             token: None,
             keyword: "Bearer".to_string(),
-            cookies: None,
             csrf_token: None,
             org_id: None,
             saved_username: None,
             saved_password: None,
-        }
+        })
     }
 
     /// Whether we're in session-cookie-only auth mode (no token).
@@ -225,7 +324,12 @@ impl JumpServerClient {
                 }
             }
         }
-        self.http.get(&url).headers(headers).send().await.map_err(|e| e.to_string())
+        self.http
+            .get(&url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Try multiple API paths in order (matches Go doGetMulti).
@@ -233,7 +337,7 @@ impl JumpServerClient {
     /// Returns SESSION_EXPIRED:<base_url> if every response was 401/403 (no network errors).
     async fn do_get_multi(&self, paths: &[&str]) -> Result<(String, serde_json::Value), String> {
         let session_auth = self.is_session_auth();
-        eprintln!("[jumpserver] do_get_multi: session_auth={} token={:?}", session_auth, self.token.as_deref().map(|t| &t[..t.len().min(20)]));
+        eprintln!("[jumpserver] do_get_multi: session_auth={}", session_auth);
 
         let mut saw_any_request = false;
         let mut all_auth_failed = true;
@@ -245,7 +349,12 @@ impl JumpServerClient {
             let resp = if session_auth {
                 self.do_get_cookie_only(path).await
             } else {
-                self.http.get(&url).headers(self.auth_headers()).send().await.map_err(|e| e.to_string())
+                self.http
+                    .get(&url)
+                    .headers(self.auth_headers())
+                    .send()
+                    .await
+                    .map_err(|e| e.to_string())
             };
 
             let r = match resp {
@@ -262,7 +371,7 @@ impl JumpServerClient {
             eprintln!("[jumpserver] GET {} → {}", path, status);
 
             if r.status().is_success() {
-                if let Ok(data) = r.json::<serde_json::Value>().await {
+                if let Ok(data) = read_json_response(r).await {
                     return Ok((path.to_string(), data));
                 }
                 all_auth_failed = false;
@@ -274,7 +383,7 @@ impl JumpServerClient {
                     eprintln!("[jumpserver] 401/403, retrying with cookie-only...");
                     if let Ok(r2) = self.do_get_cookie_only(path).await {
                         if r2.status().is_success() {
-                            if let Ok(data) = r2.json::<serde_json::Value>().await {
+                            if let Ok(data) = read_json_response(r2).await {
                                 return Ok((path.to_string(), data));
                             }
                         }
@@ -303,7 +412,11 @@ impl JumpServerClient {
         if let Some(ref token) = self.token {
             // __session__ = cookie-only auth, skip Authorization header
             if token != "__session__" {
-                let kw = if self.keyword.is_empty() { "Bearer" } else { &self.keyword };
+                let kw = if self.keyword.is_empty() {
+                    "Bearer"
+                } else {
+                    &self.keyword
+                };
                 if let Ok(val) = HeaderValue::from_str(&format!("{} {}", kw, token)) {
                     headers.insert(AUTHORIZATION, val);
                 }
@@ -322,14 +435,6 @@ impl JumpServerClient {
 
     /// Authenticate with username/password.
     pub async fn authenticate(&mut self, req: &AuthRequest) -> AuthResponse {
-        self.base_url = req.base_url.trim_end_matches('/').to_string();
-        if !req.org_id.is_empty() {
-            self.org_id = Some(req.org_id.clone());
-        }
-        // Save credentials for re-auth after MFA (matches Go)
-        self.saved_username = Some(req.username.clone());
-        self.saved_password = Some(req.password.clone());
-
         let url = format!("{}/api/v1/authentication/auth/", self.base_url);
         let body = serde_json::json!({
             "username": req.username,
@@ -344,68 +449,148 @@ impl JumpServerClient {
                 // Extract cookies from response
                 self.extract_cookies(&resp);
 
-                match resp.json::<serde_json::Value>().await {
+                match read_json_response(resp).await {
                     Ok(data) => {
-                        eprintln!("[jumpserver] auth response body: {}", data);
+                        eprintln!("[jumpserver] authentication response received");
 
                         // MFA required: {"error": "mfa_required", "data": {"choices": [...]}}
                         // Matches Go: rawResp["error"] == "mfa_required"
                         if data.get("error").and_then(|e| e.as_str()) == Some("mfa_required") {
-                            let choices = data.get("data")
+                            self.org_id = (!req.org_id.is_empty()).then(|| req.org_id.clone());
+                            // Retain only while the MFA flow needs a re-auth.
+                            self.saved_username = Some(req.username.clone());
+                            self.saved_password = Some(req.password.clone());
+                            let choices = data
+                                .get("data")
                                 .and_then(|d| d.get("choices"))
                                 .and_then(|c| c.as_array())
-                                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
-                            return AuthResponse { ok: true, token: None, mfa_required: Some(true), mfa_choices: choices, error: None };
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str())
+                                        .filter(|value| valid_display_text(value, 64))
+                                        .take(16)
+                                        .map(String::from)
+                                        .collect()
+                                });
+                            return AuthResponse {
+                                ok: true,
+                                token: None,
+                                mfa_required: Some(true),
+                                mfa_choices: choices,
+                                error: None,
+                            };
                         }
 
                         // Success: {"token": "xxx"}
                         if let Some(token) = data.get("token").and_then(|t| t.as_str()) {
-                            if !token.is_empty() {
+                            if valid_bearer_token(token) {
                                 self.token = Some(token.to_string());
-                                if let Some(kw) = data.get("keyword").and_then(|k| k.as_str()) {
-                                    if !kw.is_empty() { self.keyword = kw.to_string(); }
+                                self.org_id = (!req.org_id.is_empty()).then(|| req.org_id.clone());
+                                if let Some(keyword) = normalized_auth_keyword(
+                                    data.get("keyword").and_then(|value| value.as_str()),
+                                ) {
+                                    self.keyword = keyword.to_string();
                                 }
-                                eprintln!("[jumpserver] auth token set: keyword={} token={}...", self.keyword, &token[..token.len().min(16)]);
-                                return AuthResponse { ok: true, token: Some(token.to_string()), mfa_required: None, mfa_choices: None, error: None };
+                                self.clear_saved_credentials();
+                                eprintln!("[jumpserver] authentication credential stored");
+                                return AuthResponse {
+                                    ok: true,
+                                    token: Some(token.to_string()),
+                                    mfa_required: None,
+                                    mfa_choices: None,
+                                    error: None,
+                                };
                             }
                         }
 
                         // Error
-                        let error = data.get("msg")
-                            .or(data.get("detail"))
-                            .or(data.get("error"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("authentication failed");
-                        AuthResponse { ok: false, token: None, mfa_required: None, mfa_choices: None, error: Some(error.to_string()) }
+                        self.clear_saved_credentials();
+                        AuthResponse {
+                            ok: false,
+                            token: None,
+                            mfa_required: None,
+                            mfa_choices: None,
+                            // Upstream error bodies may echo submitted fields.
+                            // Never reflect them into the browser or logs.
+                            error: Some("authentication failed".to_string()),
+                        }
                     }
-                    Err(e) => AuthResponse { ok: false, token: None, mfa_required: None, mfa_choices: None, error: Some(e.to_string()) },
+                    Err(e) => AuthResponse {
+                        ok: false,
+                        token: None,
+                        mfa_required: None,
+                        mfa_choices: None,
+                        error: Some(e.to_string()),
+                    },
                 }
             }
-            Err(e) => AuthResponse { ok: false, token: None, mfa_required: None, mfa_choices: None, error: Some(e.to_string()) },
+            Err(e) => AuthResponse {
+                ok: false,
+                token: None,
+                mfa_required: None,
+                mfa_choices: None,
+                error: Some(e.to_string()),
+            },
         }
     }
 
     /// Authenticate with API token.
     pub async fn token_auth(&mut self, req: &TokenAuthRequest) -> AuthResponse {
-        self.base_url = req.base_url.trim_end_matches('/').to_string();
-        self.token = Some(req.token.clone());
-        if !req.org_id.is_empty() {
-            self.org_id = Some(req.org_id.clone());
-        }
-
         // Verify the token by calling a simple endpoint
         let url = format!("{}/api/v1/users/profile/", self.base_url);
-        let headers = self.auth_headers();
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert("Accept", HeaderValue::from_static("application/json"));
+        let keyword = if self.keyword == "Token" {
+            "Token"
+        } else {
+            "Bearer"
+        };
+        let Ok(authorization) = HeaderValue::from_str(&format!("{} {}", keyword, req.token)) else {
+            return AuthResponse {
+                ok: false,
+                token: None,
+                mfa_required: None,
+                mfa_choices: None,
+                error: Some("invalid JumpServer token".to_string()),
+            };
+        };
+        headers.insert(AUTHORIZATION, authorization);
+        if !req.org_id.is_empty() {
+            if let Ok(org_id) = HeaderValue::from_str(&req.org_id) {
+                headers.insert("X-JMS-ORG", org_id);
+            }
+        }
 
         match self.http.get(&url).headers(headers).send().await {
             Ok(resp) if resp.status().is_success() => {
-                AuthResponse { ok: true, token: Some(req.token.clone()), mfa_required: None, mfa_choices: None, error: None }
+                self.token = Some(req.token.clone());
+                self.org_id = (!req.org_id.is_empty()).then(|| req.org_id.clone());
+                AuthResponse {
+                    ok: true,
+                    token: Some(req.token.clone()),
+                    mfa_required: None,
+                    mfa_choices: None,
+                    error: None,
+                }
             }
             Ok(resp) => {
                 let status = resp.status();
-                AuthResponse { ok: false, token: None, mfa_required: None, mfa_choices: None, error: Some(format!("token auth failed: {}", status)) }
+                AuthResponse {
+                    ok: false,
+                    token: None,
+                    mfa_required: None,
+                    mfa_choices: None,
+                    error: Some(format!("token auth failed: {}", status)),
+                }
             }
-            Err(e) => AuthResponse { ok: false, token: None, mfa_required: None, mfa_choices: None, error: Some(e.to_string()) },
+            Err(e) => AuthResponse {
+                ok: false,
+                token: None,
+                mfa_required: None,
+                mfa_choices: None,
+                error: Some(e.to_string()),
+            },
         }
     }
 
@@ -413,8 +598,6 @@ impl JumpServerClient {
     /// After MFA, tries to extract token from response. If no token, re-authenticates
     /// with saved credentials (session should now skip MFA). Falls back to session auth.
     pub async fn submit_mfa(&mut self, req: &MfaRequest) -> AuthResponse {
-        self.base_url = req.base_url.trim_end_matches('/').to_string();
-
         let url = format!("{}/api/v1/authentication/mfa/challenge/", self.base_url);
         let body = serde_json::json!({
             "type": req.mfa_type,
@@ -428,63 +611,133 @@ impl JumpServerClient {
             }
         }
 
-        match self.http.post(&url).headers(headers).json(&body).send().await {
+        match self
+            .http
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await
+        {
             Ok(resp) => {
                 let status = resp.status();
                 self.extract_cookies(&resp);
 
                 if status.as_u16() >= 400 {
-                    let text = resp.text().await.unwrap_or_default();
-                    eprintln!("[jumpserver] MFA failed HTTP {}: {}", status, text);
-                    return AuthResponse { ok: false, token: None, mfa_required: None, mfa_choices: None, error: Some(format!("MFA verification failed (HTTP {}): {}", status, text)) };
+                    // 上游错误 body 可能回显认证字段，不写日志也不透传。
+                    eprintln!("[jumpserver] MFA failed: HTTP {}", status);
+                    return AuthResponse {
+                        ok: false,
+                        token: None,
+                        mfa_required: None,
+                        mfa_choices: None,
+                        error: Some(format!("MFA verification failed (HTTP {})", status)),
+                    };
                 }
 
-                match resp.json::<serde_json::Value>().await {
+                match read_json_response(resp).await {
                     Ok(data) => {
-                        eprintln!("[jumpserver] MFA response: {}", data);
-                        let mut token = data.get("token").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                        eprintln!("[jumpserver] MFA response received");
+                        let mut token = data
+                            .get("token")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("")
+                            .to_string();
 
                         // Try nested data.token (matches Go)
                         if token.is_empty() {
-                            if let Some(nested) = data.get("data").and_then(|d| d.get("token")).and_then(|t| t.as_str()) {
+                            if let Some(nested) = data
+                                .get("data")
+                                .and_then(|d| d.get("token"))
+                                .and_then(|t| t.as_str())
+                            {
                                 token = nested.to_string();
                             }
                         }
 
-                        if !token.is_empty() {
+                        if valid_bearer_token(&token) {
                             self.token = Some(token.clone());
                             // Extract keyword from MFA response too
-                            let kw = data.get("keyword").and_then(|k| k.as_str())
-                                .or_else(|| data.get("data").and_then(|d| d.get("keyword")).and_then(|k| k.as_str()));
-                            if let Some(kw) = kw { if !kw.is_empty() { self.keyword = kw.to_string(); } }
-                            eprintln!("[jumpserver] MFA token set: keyword={} token={}...", self.keyword, &token[..token.len().min(16)]);
-                            return AuthResponse { ok: true, token: Some(token), mfa_required: None, mfa_choices: None, error: None };
+                            let kw = data.get("keyword").and_then(|k| k.as_str()).or_else(|| {
+                                data.get("data")
+                                    .and_then(|d| d.get("keyword"))
+                                    .and_then(|k| k.as_str())
+                            });
+                            if let Some(keyword) = normalized_auth_keyword(kw) {
+                                self.keyword = keyword.to_string();
+                            }
+                            self.clear_saved_credentials();
+                            eprintln!("[jumpserver] MFA credential stored");
+                            return AuthResponse {
+                                ok: true,
+                                token: Some(token),
+                                mfa_required: None,
+                                mfa_choices: None,
+                                error: None,
+                            };
                         }
 
                         // No token in MFA response — re-auth with saved credentials
                         // After MFA confirmation, the session should now return a token
                         eprintln!("[jumpserver] no token in MFA response, re-authenticating...");
-                        if let (Some(user), Some(pass)) = (self.saved_username.clone(), self.saved_password.clone()) {
+                        if let (Some(user), Some(pass)) =
+                            (self.saved_username.clone(), self.saved_password.clone())
+                        {
                             match self.re_authenticate(&user, &pass).await {
-                                Ok(re_token) if !re_token.is_empty() => {
+                                Ok(re_token) if valid_bearer_token(&re_token) => {
                                     self.token = Some(re_token.clone());
-                                    return AuthResponse { ok: true, token: Some(re_token), mfa_required: None, mfa_choices: None, error: None };
+                                    self.clear_saved_credentials();
+                                    return AuthResponse {
+                                        ok: true,
+                                        token: Some(re_token),
+                                        mfa_required: None,
+                                        mfa_choices: None,
+                                        error: None,
+                                    };
                                 }
                                 _ => {
-                                    eprintln!("[jumpserver] re-auth failed, falling back to session auth");
+                                    eprintln!(
+                                        "[jumpserver] re-auth failed, falling back to session auth"
+                                    );
                                     self.activate_session_auth("MFA-fallback");
-                                    return AuthResponse { ok: true, token: None, mfa_required: None, mfa_choices: None, error: None };
+                                    self.clear_saved_credentials();
+                                    return AuthResponse {
+                                        ok: true,
+                                        token: None,
+                                        mfa_required: None,
+                                        mfa_choices: None,
+                                        error: None,
+                                    };
                                 }
                             }
                         } else {
                             self.activate_session_auth("MFA-fallback");
-                            return AuthResponse { ok: true, token: None, mfa_required: None, mfa_choices: None, error: None };
+                            self.clear_saved_credentials();
+                            return AuthResponse {
+                                ok: true,
+                                token: None,
+                                mfa_required: None,
+                                mfa_choices: None,
+                                error: None,
+                            };
                         }
                     }
-                    Err(e) => AuthResponse { ok: false, token: None, mfa_required: None, mfa_choices: None, error: Some(e.to_string()) },
+                    Err(e) => AuthResponse {
+                        ok: false,
+                        token: None,
+                        mfa_required: None,
+                        mfa_choices: None,
+                        error: Some(e.to_string()),
+                    },
                 }
             }
-            Err(e) => AuthResponse { ok: false, token: None, mfa_required: None, mfa_choices: None, error: Some(e.to_string()) },
+            Err(e) => AuthResponse {
+                ok: false,
+                token: None,
+                mfa_required: None,
+                mfa_choices: None,
+                error: Some(e.to_string()),
+            },
         }
     }
 
@@ -492,6 +745,11 @@ impl JumpServerClient {
     fn activate_session_auth(&mut self, source: &str) {
         eprintln!("[jumpserver] activating session auth (source: {})", source);
         self.token = Some("__session__".to_string());
+    }
+
+    fn clear_saved_credentials(&mut self) {
+        self.saved_username = None;
+        self.saved_password = None;
     }
 
     /// Re-authenticate using existing session cookies (matches Go ReAuthenticate).
@@ -504,352 +762,57 @@ impl JumpServerClient {
         });
 
         // Use existing cookies (session should now have MFA satisfied)
-        let resp = self.http.post(&url)
+        let resp = self
+            .http
+            .post(&url)
             .headers(self.auth_headers())
             .json(&body)
             .send()
             .await
             .map_err(|e| e.to_string())?;
 
-        let data = resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())?;
-        eprintln!("[jumpserver] re-auth response: {}", data);
+        let data = read_json_response(resp).await?;
+        eprintln!("[jumpserver] re-authentication response received");
 
         // Extract token and keyword from various formats
-        let token = data.get("token").and_then(|t| t.as_str()).filter(|t| !t.is_empty())
-            .or_else(|| data.get("data").and_then(|d| d.get("token")).and_then(|t| t.as_str()).filter(|t| !t.is_empty()));
-        let keyword = data.get("keyword").and_then(|k| k.as_str()).filter(|k| !k.is_empty())
-            .or_else(|| data.get("data").and_then(|d| d.get("keyword")).and_then(|k| k.as_str()).filter(|k| !k.is_empty()));
+        let token = data
+            .get("token")
+            .and_then(|t| t.as_str())
+            .filter(|token| valid_bearer_token(token))
+            .or_else(|| {
+                data.get("data")
+                    .and_then(|d| d.get("token"))
+                    .and_then(|t| t.as_str())
+                    .filter(|token| valid_bearer_token(token))
+            });
+        let keyword = data
+            .get("keyword")
+            .and_then(|k| k.as_str())
+            .and_then(|keyword| normalized_auth_keyword(Some(keyword)))
+            .or_else(|| {
+                data.get("data")
+                    .and_then(|d| d.get("keyword"))
+                    .and_then(|k| k.as_str())
+                    .and_then(|keyword| normalized_auth_keyword(Some(keyword)))
+            });
 
         if let Some(token) = token {
-            if let Some(kw) = keyword {
-                self.keyword = kw.to_string();
+            if let Some(keyword) = keyword {
+                self.keyword = keyword.to_string();
             }
-            eprintln!("[jumpserver] re-auth token set: keyword={} token={}...", self.keyword, &token[..token.len().min(16)]);
+            eprintln!("[jumpserver] re-authentication credential stored");
             return Ok(token.to_string());
         }
         Err("no token in re-auth response".to_string())
     }
+}
 
-    /// Get user assets with pagination and search. Matches Go GetUserAssets/GetNodeAssets.
-    pub async fn get_assets(
-        &self,
-        search: &str,
-        node_id: &str,
-        page: u32,
-        page_size: u32,
-    ) -> Result<(Vec<Asset>, u32), String> {
-        let offset = if page > 0 { (page - 1) * page_size } else { 0 };
-        let mut query = format!("?offset={}&limit={}", offset, page_size);
-        if !search.is_empty() {
-            query.push_str(&format!("&search={}", urlencoding::encode(search)));
-        }
-
-        // Favorite is a virtual node — fetch favorite IDs then filter (matches Go getFavoriteAssets)
-        if node_id == "favorite" {
-            return self.get_favorite_assets(search, page, page_size).await;
-        }
-
-        let paths = if !node_id.is_empty() {
-            // Node-specific: ALL paths get node_id in query (matches Go: q.Set("node_id", nodeID))
-            let q = format!("{}&node_id={}", query, urlencoding::encode(node_id));
-            vec![
-                format!("/api/v1/perms/users/self/nodes/{}/assets/{}", node_id, q),
-                format!("/api/v1/perms/users/nodes/{}/assets/{}", node_id, q),
-                format!("/api/v1/perms/users/self/assets/{}", q),
-            ]
-        } else {
-            // All assets
-            vec![
-                format!("/api/v1/perms/users/self/assets/{}", query),
-                format!("/api/v1/perms/users/assets/{}", query),
-            ]
-        };
-        let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-
-        match self.do_get_multi(&path_refs).await {
-            Ok((path, data)) => {
-                eprintln!("[jumpserver] get_assets response from {}: keys={:?} is_array={}",
-                    path,
-                    data.as_object().map(|o| o.keys().collect::<Vec<_>>()),
-                    data.is_array());
-                if let Some(results) = data.get("results") {
-                    if let Some(first) = results.as_array().and_then(|a| a.first()) {
-                        eprintln!("[jumpserver] first asset keys: {:?}", first.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-                        eprintln!("[jumpserver] first asset platform: {:?}", first.get("platform"));
-                    }
-                }
-                parse_asset_response(data)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Get node tree. Matches Go GetNodes — fetches /children/tree/ then recursively loads children.
-    pub async fn get_nodes(&self) -> Result<Vec<Node>, String> {
-        let paths = [
-            "/api/v1/perms/users/self/nodes/children/tree/?limit=1000",
-            "/api/v1/perms/users/nodes/children/tree/?limit=1000",
-            "/api/v1/perms/users/self/nodes/?limit=1000",
-            "/api/v1/perms/users/nodes/?limit=1000",
-        ];
-
-        match self.do_get_multi(&paths).await {
-            Ok((_, data)) => {
-                if let Some(arr) = data.as_array() {
-                    if !arr.is_empty() {
-                        let is_ztree = arr[0].get("pId").is_some()
-                            || arr[0].get("title").is_some()
-                            || arr[0].get("isParent").is_some();
-                        if is_ztree {
-                            // Recursive fetch children (matches Go fetchTreeNodesRecursive)
-                            let mut all_nodes = parse_ztree_nodes(arr);
-                            let mut seen: std::collections::HashSet<String> = arr.iter()
-                                .filter_map(|n| n.get("id").and_then(|v| v.as_str()).map(String::from))
-                                .collect();
-
-                            for item in arr {
-                                let is_parent = item.get("isParent").and_then(|v| v.as_bool()).unwrap_or(false);
-                                let tree_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                                if is_parent && !tree_id.is_empty() {
-                                    let children = self.fetch_child_nodes(tree_id, &mut seen).await;
-                                    all_nodes.extend(children);
-                                }
-                            }
-                            return Ok(all_nodes);
-                        }
-                    }
-                }
-                parse_node_response(data)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Fetch favorite assets. Matches Go getFavoriteAssets.
-    async fn get_favorite_assets(&self, search: &str, _page: u32, _page_size: u32) -> Result<(Vec<Asset>, u32), String> {
-        // Get favorite asset IDs
-        let fav_paths = ["/api/v1/assets/favorite-assets/", "/api/v1/assets/favorites/"];
-        let fav_ids: Vec<String> = match self.do_get_multi(&fav_paths).await {
-            Ok((_, data)) => {
-                if let Some(arr) = data.as_array() {
-                    arr.iter().filter_map(|v| v.get("asset").and_then(|a| a.as_str()).map(String::from)).collect()
-                } else { Vec::new() }
-            }
-            Err(_) => Vec::new(),
-        };
-        if fav_ids.is_empty() { return Ok((Vec::new(), 0)); }
-
-        // Fetch all assets and filter by favorite IDs (avoid recursion by calling do_get_multi directly)
-        let query = format!("?offset=0&limit=1000{}", if !search.is_empty() { format!("&search={}", urlencoding::encode(search)) } else { String::new() });
-        let asset_paths = [
-            format!("/api/v1/perms/users/self/assets/{}", query),
-            format!("/api/v1/perms/users/assets/{}", query),
-        ];
-        let ap: Vec<&str> = asset_paths.iter().map(|s| s.as_str()).collect();
-        let (all_assets, _) = match self.do_get_multi(&ap).await {
-            Ok((_, data)) => parse_asset_response(data)?,
-            Err(e) => return Err(e),
-        };
-        let fav_set: std::collections::HashSet<&str> = fav_ids.iter().map(|s| s.as_str()).collect();
-        let matched: Vec<Asset> = all_assets.into_iter().filter(|a| fav_set.contains(a.id.as_str())).collect();
-        let total = matched.len() as u32;
-        Ok((matched, total))
-    }
-
-    /// Recursively fetch child nodes. Matches Go fetchChildNodes.
-    async fn fetch_child_nodes(&self, tree_id: &str, seen: &mut std::collections::HashSet<String>) -> Vec<Node> {
-        let paths = [
-            format!("/api/v1/perms/users/self/nodes/children/tree/?key={}", urlencoding::encode(tree_id)),
-            format!("/api/v1/perms/users/nodes/children/tree/?key={}", urlencoding::encode(tree_id)),
-        ];
-        let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-
-        let data = match self.do_get_multi(&path_refs).await {
-            Ok((_, d)) => d,
-            Err(_) => return Vec::new(),
-        };
-
-        let arr = match data.as_array() {
-            Some(a) => a,
-            None => return Vec::new(),
-        };
-
-        // Filter already-seen nodes
-        let new_items: Vec<&serde_json::Value> = arr.iter().filter(|item| {
-            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            !id.is_empty() && seen.insert(id.to_string())
-        }).collect();
-
-        if new_items.is_empty() { return Vec::new(); }
-
-        let new_arr: Vec<serde_json::Value> = new_items.iter().map(|v| (*v).clone()).collect();
-        let mut result = parse_ztree_nodes(&new_arr);
-
-        // Recurse for children with isParent=true
-        for item in &new_items {
-            let is_parent = item.get("isParent").and_then(|v| v.as_bool()).unwrap_or(false);
-            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if is_parent && !id.is_empty() {
-                let grandchildren = Box::pin(self.fetch_child_nodes(id, seen)).await;
-                result.extend(grandchildren);
-            }
-        }
-
-        result
-    }
-
-    /// Get accounts for an asset. Matches Go GetAssetAccounts:
-    /// Strategy 1: dedicated accounts endpoints (v2/v3)
-    /// Strategy 2: v4 asset detail → permed_accounts field
-    pub async fn get_accounts(&self, asset_id: &str) -> Result<Vec<Account>, String> {
-        // Strategy 1: accounts sub-endpoints
-        let paths = [
-            format!("/api/v1/perms/users/self/assets/{}/accounts/", asset_id),
-            format!("/api/v1/perms/users/assets/{}/system-users/", asset_id),
-            format!("/api/v1/perms/users/assets/{}/accounts/", asset_id),
-        ];
-        let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-
-        if let Ok((_, data)) = self.do_get_multi(&path_refs).await {
-            // Direct array
-            if let Ok(accounts) = serde_json::from_value::<Vec<Account>>(data.clone()) {
-                if !accounts.is_empty() { return Ok(accounts); }
-            }
-            // Paginated {results: [...]}
-            if let Some(results) = data.get("results") {
-                if let Ok(accounts) = serde_json::from_value::<Vec<Account>>(results.clone()) {
-                    if !accounts.is_empty() { return Ok(accounts); }
-                }
-            }
-        }
-
-        // Strategy 2: v4 asset detail → permed_accounts (matches Go getAccountsFromAssetDetail)
-        eprintln!("[jumpserver] accounts sub-endpoint failed, trying v4 asset detail for {}", asset_id);
-        let detail_paths = [
-            format!("/api/v1/perms/users/self/assets/{}/", asset_id),
-            format!("/api/v1/perms/users/my/assets/{}/", asset_id),
-        ];
-        let dp: Vec<&str> = detail_paths.iter().map(|s| s.as_str()).collect();
-
-        match self.do_get_multi(&dp).await {
-            Ok((_, data)) => {
-                eprintln!("[jumpserver] asset detail keys: {:?}", data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-                // Extract permed_accounts
-                if let Some(permed) = data.get("permed_accounts").and_then(|v| v.as_array()) {
-                    let accounts: Vec<Account> = permed.iter().filter_map(|v| {
-                        serde_json::from_value::<Account>(v.clone()).ok()
-                    }).collect();
-                    if !accounts.is_empty() { return Ok(accounts); }
-                }
-                // Try accounts field
-                if let Some(accts) = data.get("accounts").and_then(|v| v.as_array()) {
-                    let accounts: Vec<Account> = accts.iter().filter_map(|v| {
-                        serde_json::from_value::<Account>(v.clone()).ok()
-                    }).collect();
-                    if !accounts.is_empty() { return Ok(accounts); }
-                }
-                Err("no accounts found in asset detail".to_string())
-            }
-            Err(e) => Err(format!("asset detail failed: {}", e)),
-        }
-    }
-
-    /// Create a connection token. Matches Go CreateConnectionToken exactly:
-    /// tries multiple account identifiers × multiple body formats.
-    pub async fn create_connection_token(&self, req: &ConnectionTokenRequest) -> Result<ConnectionToken, String> {
-        let protocol = if req.protocol.is_empty() { "ssh" } else { &req.protocol };
-
-        // Collect unique account identifiers (matches Go priority order)
-        let mut seen = std::collections::HashSet::new();
-        let mut account_names = Vec::new();
-        for name in [&req.account_alias, &req.account_name, &req.account, &req.account_id] {
-            if !name.is_empty() && seen.insert(name.clone()) {
-                account_names.push(name.clone());
-            }
-        }
-
-        // Build request bodies: v4 (with connect_method), v3 (without), v2 (system_user)
-        let mut bodies = Vec::new();
-        for acct in &account_names {
-            bodies.push(serde_json::json!({"asset": req.asset_id, "account": acct, "protocol": protocol, "connect_method": "web_cli"}));
-        }
-        for acct in &account_names {
-            bodies.push(serde_json::json!({"asset": req.asset_id, "account": acct, "protocol": protocol}));
-        }
-        if !req.account_id.is_empty() {
-            bodies.push(serde_json::json!({"asset": req.asset_id, "system_user": req.account_id, "protocol": protocol}));
-        }
-
-        let url = format!("{}/api/v1/authentication/connection-token/", self.base_url);
-        let mut last_err = String::from("no account identifiers");
-        // 区分认证类失败（401/403）与其它失败：仅在「所有候选响应都是 401/403
-        // 且没有任何其它失败」时才发出 SESSION_EXPIRED 信号，避免误把 5xx/网络
-        // 错误/空 token 当成会话过期。
-        let mut had_auth_failure = false;
-        let mut had_other_failure = false;
-
-        for body in &bodies {
-            eprintln!("[jumpserver] creating connection token: {}", body);
-            match self.http.post(&url).headers(self.auth_headers()).json(body).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(data) => {
-                            eprintln!("[jumpserver] connection token response: {}", data);
-                            // Extract token from various field names (v2/v3/v4)
-                            let id = data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let mut token = data.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            if token.is_empty() {
-                                token = data.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            }
-                            if token.is_empty() && !id.is_empty() {
-                                token = id.clone();
-                            }
-                            let secret = data.get("secret").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-                            if !token.is_empty() {
-                                return Ok(ConnectionToken { id, token, secret });
-                            }
-                            had_other_failure = true;
-                            last_err = "empty connection token".to_string();
-                        }
-                        Err(e) => {
-                            had_other_failure = true;
-                            last_err = e.to_string();
-                        }
-                    }
-                }
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status == reqwest::StatusCode::UNAUTHORIZED
-                        || status == reqwest::StatusCode::FORBIDDEN
-                    {
-                        had_auth_failure = true;
-                    } else {
-                        had_other_failure = true;
-                    }
-                    let text = resp.text().await.unwrap_or_default();
-                    eprintln!("[jumpserver] connection token {} {}: {}", status, url, &text[..text.len().min(200)]);
-                    last_err = format!("HTTP {}: {}", status, &text[..text.len().min(100)]);
-                }
-                Err(e) => {
-                    had_other_failure = true;
-                    last_err = e.to_string();
-                }
-            }
-        }
-
-        if had_auth_failure && !had_other_failure {
-            // 所有候选 body 都是 401/403 — 会话过期，前端按此识别走 ensureJSAuthenticated。
-            Err(format!("SESSION_EXPIRED: {}", self.base_url))
-        } else {
-            Err(format!("Failed to create connection token: {}", last_err))
-        }
-    }
-
+impl JumpServerClient {
     /// Health check.
     pub async fn test_connection(base_url: &str) -> Result<(), String> {
-        let url = format!("{}/api/health/", base_url.trim_end_matches('/'));
-        let client = build_http_client(10);
+        let base_url = normalize_base_url(base_url)?;
+        let url = format!("{base_url}/api/health/");
+        let client = build_http_client(10)?;
 
         let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
         if resp.status().is_success() {
@@ -860,129 +823,107 @@ impl JumpServerClient {
     }
 
     fn extract_cookies(&mut self, resp: &reqwest::Response) {
-        let mut cookies = Vec::new();
         for cookie in resp.cookies() {
-            cookies.push(format!("{}={}", cookie.name(), cookie.value()));
-            if cookie.name() == "csrftoken" {
+            if cookie.name() == "csrftoken"
+                && !cookie.value().is_empty()
+                && cookie.value().len() <= 4_096
+                && HeaderValue::from_str(cookie.value()).is_ok()
+            {
                 self.csrf_token = Some(cookie.value().to_string());
             }
         }
-        if !cookies.is_empty() {
-            self.cookies = Some(cookies.join("; "));
-        }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Response parsers (handle v2/v3/v4 format differences)
-// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod security_tests {
+    use super::{
+        normalize_assets, normalize_base_url, valid_bearer_token, valid_resource_id,
+        validate_accounts, validate_ztree_input, Account, Asset,
+    };
 
-fn parse_asset_response(data: serde_json::Value) -> Result<(Vec<Asset>, u32), String> {
-    eprintln!("[jumpserver] parse_asset_response: keys={:?}", data.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-
-    // Paginated: { results: [...], count: N }
-    if let Some(results) = data.get("results") {
-        let total = data.get("count").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-        match serde_json::from_value::<Vec<Asset>>(results.clone()) {
-            Ok(assets) => return Ok((normalize_assets(assets), total)),
-            Err(e) => {
-                eprintln!("[jumpserver] parse results array failed: {}", e);
-                // Try parsing first element to see what fields exist
-                if let Some(first) = results.as_array().and_then(|a| a.first()) {
-                    eprintln!("[jumpserver] first asset keys: {:?}", first.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-                }
-                // Fallback: return empty with total
-                return Ok((Vec::new(), total));
-            }
+    #[test]
+    fn jumpserver_base_url_requires_clean_https() {
+        assert_eq!(
+            normalize_base_url(" https://jump.example.com/root/ ").unwrap(),
+            "https://jump.example.com/root"
+        );
+        for value in [
+            "http://jump.example.com",
+            "https://user:pass@jump.example.com",
+            "https://jump.example.com/?token=secret",
+            "https://jump.example.com/#fragment",
+            "https://jump.example.com/ bad",
+            "file:///etc/passwd",
+            "",
+        ] {
+            assert!(normalize_base_url(value).is_err(), "{value}");
         }
     }
-    // Direct array
-    if data.is_array() {
-        match serde_json::from_value::<Vec<Asset>>(data.clone()) {
-            Ok(assets) => {
-                let total = assets.len() as u32;
-                return Ok((normalize_assets(assets), total));
-            }
-            Err(e) => eprintln!("[jumpserver] parse direct array failed: {}", e),
+
+    #[test]
+    fn resource_ids_and_bearer_tokens_are_bounded() {
+        for value in ["asset-1", "node.example:22", "abc_DEF"] {
+            assert!(valid_resource_id(value));
         }
-    }
-    // Nested { data: [...] }
-    if let Some(data_inner) = data.get("data") {
-        let assets: Vec<Asset> = serde_json::from_value(data_inner.clone()).unwrap_or_default();
-        let total = assets.len() as u32;
-        return Ok((normalize_assets(assets), total));
-    }
-    eprintln!("[jumpserver] unexpected format, raw: {}", &data.to_string()[..data.to_string().len().min(500)]);
-    Err("unexpected asset response format".to_string())
-}
-
-/// Parse zTree format nodes. Matches Go parseZTreeNodes exactly:
-/// - meta.data.id (UUID) → Node.id (for asset queries)
-/// - pId → Node.parent_id (for tree building by frontend)
-/// - title "(N)" → assets_amount
-fn parse_ztree_nodes(arr: &[serde_json::Value]) -> Vec<Node> {
-    arr.iter().filter_map(|item| {
-        let tree_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let pid = item.get("pId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let mut name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if name.is_empty() { name = title.clone(); }
-
-        let mut assets_amount = 0u32;
-        if let Some(idx) = title.rfind(" (") {
-            if let Some(end) = title[idx+2..].find(')') {
-                if let Ok(n) = title[idx+2..idx+2+end].parse::<u32>() {
-                    assets_amount = n;
-                    if name == title { name = title[..idx].to_string(); }
-                }
-            }
+        for value in ["", "../asset", "asset/id", "asset?id", "line\nbreak"] {
+            assert!(!valid_resource_id(value), "{value:?}");
         }
+        assert!(!valid_resource_id(&"a".repeat(257)));
 
-        // meta.data.id = UUID for asset queries, meta.data.key/value for tree
-        let meta_data = item.get("meta").and_then(|m| m.get("data"));
-        let node_id = meta_data.and_then(|d| d.get("id")).and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty()).unwrap_or(&tree_id).to_string();
-        let key = meta_data.and_then(|d| d.get("key")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let value = meta_data.and_then(|d| d.get("value")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-        if node_id.is_empty() && name.is_empty() { return None; }
-
-        Some(Node { id: node_id, name, key, value, parent_id: pid, assets_amount })
-    }).collect()
-}
-
-fn normalize_assets(mut assets: Vec<Asset>) -> Vec<Asset> {
-    for asset in &mut assets {
-        // v2 compatibility: hostname → name, ip → address
-        if asset.name.is_empty() && !asset.hostname.is_empty() {
-            asset.name = asset.hostname.clone();
+        assert!(valid_bearer_token("opaque-token_value.1"));
+        for value in ["", "two words", "line\nbreak", "tab\tvalue"] {
+            assert!(!valid_bearer_token(value), "{value:?}");
         }
-        if asset.address.is_empty() && !asset.ip.is_empty() {
-            asset.address = asset.ip.clone();
-        }
-        // v2 compatibility: platform is string "Linux" → normalize to {"name": "Linux"}
-        if let Some(s) = asset.platform.as_str() {
-            asset.platform = serde_json::json!({"name": s});
-        }
+        assert!(!valid_bearer_token(&"x".repeat(64 * 1024 + 1)));
     }
-    assets
-}
 
-/// Parse standard node response. Returns flat list with parent_id (frontend builds tree).
-fn parse_node_response(data: serde_json::Value) -> Result<Vec<Node>, String> {
-    // Standard array
-    if let Ok(nodes) = serde_json::from_value::<Vec<Node>>(data.clone()) {
-        if !nodes.is_empty() { return Ok(nodes); }
+    #[test]
+    fn upstream_asset_and_account_fields_are_validated() {
+        let asset = Asset {
+            id: "asset-1".to_string(),
+            name: "server".to_string(),
+            address: "10.0.0.1".to_string(),
+            platform: serde_json::json!("Linux"),
+            protocols: vec![serde_json::json!({"name": "ssh"})],
+            is_active: true,
+            comment: String::new(),
+            hostname: String::new(),
+            ip: String::new(),
+        };
+        assert!(normalize_assets(vec![asset.clone()]).is_ok());
+        let mut invalid_asset = asset;
+        invalid_asset.id = "../../etc/passwd".to_string();
+        assert!(normalize_assets(vec![invalid_asset]).is_err());
+
+        let account = Account {
+            id: "account-1".to_string(),
+            name: "root".to_string(),
+            username: "root".to_string(),
+            alias: String::new(),
+        };
+        assert!(validate_accounts(vec![account.clone()]).is_ok());
+        let mut invalid_account = account;
+        invalid_account.username = "root\nforged".to_string();
+        assert!(validate_accounts(vec![invalid_account]).is_err());
     }
-    // Paginated { results: [...] }
-    if let Some(results) = data.get("results") {
-        if let Ok(nodes) = serde_json::from_value::<Vec<Node>>(results.clone()) {
-            return Ok(nodes);
-        }
+
+    #[test]
+    fn ztree_input_is_bounded_before_recursive_fetches() {
+        let valid = serde_json::json!([{
+            "id": "node-1",
+            "name": "Production",
+            "title": "Production (2)",
+            "pId": "",
+            "isParent": true,
+            "meta": {"data": {"id": "node-1", "key": "prod", "value": "prod"}}
+        }]);
+        assert!(validate_ztree_input(valid.as_array().unwrap()).is_ok());
+
+        let invalid = serde_json::json!([{
+            "id": "../../internal",
+            "isParent": true
+        }]);
+        assert!(validate_ztree_input(invalid.as_array().unwrap()).is_err());
     }
-    // zTree fallback
-    if let Some(arr) = data.as_array() {
-        return Ok(parse_ztree_nodes(arr));
-    }
-    Err("unexpected node response format".to_string())
 }

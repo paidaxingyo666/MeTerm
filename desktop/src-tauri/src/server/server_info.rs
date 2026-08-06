@@ -48,43 +48,62 @@ pub async fn handle_server_info(session: &Session, payload: &[u8]) -> Vec<u8> {
         Some(h) => h,
         None => {
             let err = serde_json::json!({"type": "error", "code": "SSH_NOT_AVAILABLE", "message": "SSH exec not available"});
-            return protocol::encode_message(protocol::MSG_SERVER_INFO, serde_json::to_vec(&err).unwrap_or_default().as_slice());
+            return protocol::encode_message(
+                protocol::MSG_SERVER_INFO,
+                serde_json::to_vec(&err).unwrap_or_default().as_slice(),
+            );
         }
     };
 
     // Downcast to the actual type
-    let ssh_handle = match handle.downcast_ref::<Arc<tokio::sync::Mutex<Option<russh::client::Handle<ssh::SshHandler>>>>>() {
+    let ssh_handle = match handle
+        .downcast_ref::<Arc<tokio::sync::Mutex<Option<russh::client::Handle<ssh::SshHandler>>>>>()
+    {
         Some(h) => h,
         None => {
             let err = serde_json::json!({"type": "error", "code": "INTERNAL", "message": "invalid SSH handle type"});
-            return protocol::encode_message(protocol::MSG_SERVER_INFO, serde_json::to_vec(&err).unwrap_or_default().as_slice());
+            return protocol::encode_message(
+                protocol::MSG_SERVER_INFO,
+                serde_json::to_vec(&err).unwrap_or_default().as_slice(),
+            );
         }
     };
 
     match req_type.as_str() {
-        "processes" => {
-            match ssh::ssh_exec(ssh_handle, PROCESS_LIST_CMD, 5).await {
-                Ok(output) => {
-                    let processes = parse_process_output(&output);
-                    let resp = serde_json::json!({"type": "processes", "processes": processes});
-                    protocol::encode_message(protocol::MSG_SERVER_INFO, serde_json::to_vec(&resp).unwrap_or_default().as_slice())
-                }
-                Err(e) => {
-                    let err = serde_json::json!({"type": "error", "code": "EXEC_FAILED", "message": e});
-                    protocol::encode_message(protocol::MSG_SERVER_INFO, serde_json::to_vec(&err).unwrap_or_default().as_slice())
-                }
+        "processes" => match ssh::ssh_exec(ssh_handle, PROCESS_LIST_CMD, 5).await {
+            Ok(output) => {
+                let processes = parse_process_output(&output);
+                let resp = serde_json::json!({"type": "processes", "processes": processes});
+                protocol::encode_message(
+                    protocol::MSG_SERVER_INFO,
+                    serde_json::to_vec(&resp).unwrap_or_default().as_slice(),
+                )
             }
-        }
+            Err(e) => {
+                let err = serde_json::json!({"type": "error", "code": "EXEC_FAILED", "message": e});
+                protocol::encode_message(
+                    protocol::MSG_SERVER_INFO,
+                    serde_json::to_vec(&err).unwrap_or_default().as_slice(),
+                )
+            }
+        },
         _ => {
             // sysinfo
             match ssh::ssh_exec(ssh_handle, SYSINFO_SCRIPT, 10).await {
                 Ok(output) => {
                     let info = parse_sysinfo_output(&output);
-                    protocol::encode_message(protocol::MSG_SERVER_INFO, serde_json::to_vec(&info).unwrap_or_default().as_slice())
+                    protocol::encode_message(
+                        protocol::MSG_SERVER_INFO,
+                        serde_json::to_vec(&info).unwrap_or_default().as_slice(),
+                    )
                 }
                 Err(e) => {
-                    let err = serde_json::json!({"type": "error", "code": "EXEC_FAILED", "message": e});
-                    protocol::encode_message(protocol::MSG_SERVER_INFO, serde_json::to_vec(&err).unwrap_or_default().as_slice())
+                    let err =
+                        serde_json::json!({"type": "error", "code": "EXEC_FAILED", "message": e});
+                    protocol::encode_message(
+                        protocol::MSG_SERVER_INFO,
+                        serde_json::to_vec(&err).unwrap_or_default().as_slice(),
+                    )
                 }
             }
         }
@@ -98,7 +117,10 @@ fn handle_local_server_info(req_type: &str) -> Vec<u8> {
         "os_type": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
     });
-    protocol::encode_message(protocol::MSG_SERVER_INFO, serde_json::to_vec(&resp).unwrap_or_default().as_slice())
+    protocol::encode_message(
+        protocol::MSG_SERVER_INFO,
+        serde_json::to_vec(&resp).unwrap_or_default().as_slice(),
+    )
 }
 
 /// Parse sysinfo script output (key=value lines) — matches Go parseSysinfoOutput.
@@ -113,17 +135,39 @@ fn parse_sysinfo_output(output: &str) -> serde_json::Value {
         let key = &line[..idx];
         let val = &line[idx + 1..];
         match key {
-            "HOSTNAME" => { info["hostname"] = val.into(); }
-            "OS_TYPE" => { info["os_type"] = val.into(); }
-            "OS_NAME" => { info["os_name"] = val.into(); }
-            "KERNEL" => { info["kernel"] = val.into(); }
-            "ARCH" => { info["arch"] = val.into(); }
-            "CPU_CORES" => { info["cpu_cores"] = val.parse::<i64>().unwrap_or(1).into(); }
-            "CPU_MODEL" => { info["cpu_model"] = val.into(); }
-            "CPU_USAGE" => { info["cpu_usage"] = val.parse::<f64>().unwrap_or(0.0).into(); }
-            "MEM_TOTAL" => { info["mem_total"] = val.parse::<i64>().unwrap_or(0).into(); }
-            "MEM_USED" => { info["mem_used"] = val.parse::<i64>().unwrap_or(0).into(); }
-            "UPTIME_SECS" => { info["uptime_seconds"] = val.parse::<i64>().unwrap_or(0).into(); }
+            "HOSTNAME" => {
+                info["hostname"] = val.into();
+            }
+            "OS_TYPE" => {
+                info["os_type"] = val.into();
+            }
+            "OS_NAME" => {
+                info["os_name"] = val.into();
+            }
+            "KERNEL" => {
+                info["kernel"] = val.into();
+            }
+            "ARCH" => {
+                info["arch"] = val.into();
+            }
+            "CPU_CORES" => {
+                info["cpu_cores"] = val.parse::<i64>().unwrap_or(1).into();
+            }
+            "CPU_MODEL" => {
+                info["cpu_model"] = val.into();
+            }
+            "CPU_USAGE" => {
+                info["cpu_usage"] = val.parse::<f64>().unwrap_or(0.0).into();
+            }
+            "MEM_TOTAL" => {
+                info["mem_total"] = val.parse::<i64>().unwrap_or(0).into();
+            }
+            "MEM_USED" => {
+                info["mem_used"] = val.parse::<i64>().unwrap_or(0).into();
+            }
+            "UPTIME_SECS" => {
+                info["uptime_seconds"] = val.parse::<i64>().unwrap_or(0).into();
+            }
             "DISK" => {
                 let parts: Vec<&str> = val.splitn(4, '|').collect();
                 if parts.len() == 4 {
@@ -160,7 +204,9 @@ fn parse_process_output(output: &str) -> Vec<serde_json::Value> {
         .lines()
         .filter_map(|line| {
             let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 6 { return None; }
+            if fields.len() < 6 {
+                return None;
+            }
             Some(serde_json::json!({
                 "pid": fields[0].parse::<i32>().unwrap_or(0),
                 "user": fields[1],

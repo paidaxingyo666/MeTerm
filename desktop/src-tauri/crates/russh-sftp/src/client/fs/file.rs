@@ -110,7 +110,10 @@ impl File {
             let chunk = remaining[..len].to_vec();
             remaining = &remaining[len..];
 
-            match self.session.write_no_wait(self.handle.as_str(), offset, chunk) {
+            match self
+                .session
+                .write_no_wait(self.handle.as_str(), offset, chunk)
+            {
                 Ok(pw) => {
                     pending.push(pw);
                     offset += len as u64;
@@ -156,7 +159,10 @@ impl File {
         // Phase 1: Send all read requests without waiting
         let mut pending = Vec::with_capacity(count);
         for _ in 0..count {
-            match self.session.read_no_wait(self.handle.as_str(), self.pos, max_read_len) {
+            match self
+                .session
+                .read_no_wait(self.handle.as_str(), self.pos, max_read_len)
+            {
                 Ok(pr) => {
                     pending.push(pr);
                     self.pos += max_read_len as u64;
@@ -201,7 +207,11 @@ impl File {
     ///
     /// This preserves pipelined throughput while avoiding the "whole batch
     /// returns at once" behavior of [`read_pipelined`].
-    pub async fn read_pipelined_each<F, Fut>(&mut self, count: usize, mut on_chunk: F) -> io::Result<usize>
+    pub async fn read_pipelined_each<F, Fut>(
+        &mut self,
+        count: usize,
+        mut on_chunk: F,
+    ) -> io::Result<usize>
     where
         F: FnMut(Vec<u8>) -> Fut,
         Fut: Future<Output = io::Result<()>> + Send,
@@ -219,7 +229,10 @@ impl File {
 
         let mut pending = Vec::with_capacity(count);
         for _ in 0..count {
-            match self.session.read_no_wait(self.handle.as_str(), self.pos, max_read_len) {
+            match self
+                .session
+                .read_no_wait(self.handle.as_str(), self.pos, max_read_len)
+            {
                 Ok(pr) => {
                     pending.push(pr);
                     self.pos += max_read_len as u64;
@@ -295,7 +308,10 @@ impl File {
         let mut saw_eof = false;
 
         while pending.len() < window {
-            match self.session.read_no_wait(self.handle.as_str(), self.pos, max_read_len) {
+            match self
+                .session
+                .read_no_wait(self.handle.as_str(), self.pos, max_read_len)
+            {
                 Ok(pr) => {
                     pending.push_back(pr);
                     self.pos += max_read_len as u64;
@@ -346,7 +362,10 @@ impl File {
             }
 
             if !saw_eof {
-                match self.session.read_no_wait(self.handle.as_str(), self.pos, max_read_len) {
+                match self
+                    .session
+                    .read_no_wait(self.handle.as_str(), self.pos, max_read_len)
+                {
                     Ok(next) => {
                         pending.push_back(next);
                         self.pos += max_read_len as u64;
@@ -378,7 +397,10 @@ impl File {
     /// Returns a [`PendingWrite`] token and the number of bytes submitted.
     /// The caller must collect the token later. At most `max_write_len` bytes
     /// are sent per call; the caller should loop for larger buffers.
-    pub fn write_no_wait(&mut self, data: &[u8]) -> io::Result<(crate::client::rawsession::PendingWrite, usize)> {
+    pub fn write_no_wait(
+        &mut self,
+        data: &[u8],
+    ) -> io::Result<(crate::client::rawsession::PendingWrite, usize)> {
         let max_write_len = self
             .extensions
             .limits

@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use super::protocol;
 
+mod read_limits;
+mod sftp_read;
+pub use sftp_read::{handle_sftp_file_read, handle_sftp_file_save};
+
 // ---------------------------------------------------------------------------
 // SFTP auth-failure classification helpers
 // ---------------------------------------------------------------------------
@@ -116,13 +120,22 @@ fn find_error_field(v: &serde_json::Value) -> Option<&str> {
 
 /// 向客户端发送 SFTP 错误响应，若错误内容表明认证失败则自动升级为
 /// `SFTP_AUTH_FAILED` MSG_ERROR，以便前端透明刷新 JumpServer 凭据。
-pub(crate) fn send_sftp_error(
-    session: &super::session::Session,
-    client_id: &str,
-    resp: Vec<u8>,
-) {
+pub(crate) fn send_sftp_error(session: &super::session::Session, client_id: &str, resp: Vec<u8>) {
     let resp = maybe_upgrade_sftp_auth_error(resp);
     session.send_to_client(client_id, resp);
+}
+
+/// Generation-bound variant for asynchronous request/response work. This
+/// prevents a response admitted by an old transport from reaching a newer
+/// connection that reused the same stable client ID.
+pub(crate) fn send_sftp_error_for_generation(
+    session: &super::session::Session,
+    client_id: &str,
+    expected_conn_gen: u64,
+    resp: Vec<u8>,
+) -> bool {
+    let resp = maybe_upgrade_sftp_auth_error(resp);
+    session.send_to_client_generation(client_id, expected_conn_gen, resp)
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +191,9 @@ pub struct FileListResponse {
     pub total: Option<usize>,
 }
 
-fn is_false(b: &bool) -> bool { !*b }
+fn is_false(b: &bool) -> bool {
+    !*b
+}
 
 #[derive(Debug, Serialize)]
 pub struct FileListProgressResponse {
@@ -199,7 +214,7 @@ pub struct FileOperationRequest {
 
 #[derive(Debug, Serialize)]
 pub struct FileOperationResponse {
-    pub success: bool,  // Go uses "success" not "ok"
+    pub success: bool, // Go uses "success" not "ok"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -213,6 +228,21 @@ pub struct FileOperationResponse {
 // ---------------------------------------------------------------------------
 
 /// Handle MsgFileList — list directory contents.
+/// `~`/`~/...` 展开为 home 绝对路径(list/read/save 共用;
+/// 此前只有 list 支持,read/save 直传 std::fs 导致 "~/.zsh_history"
+/// 读取失败——手机命令抽屉取证)。
+pub(crate) fn expand_tilde(path: &str) -> String {
+    if path == "~" || path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            if path == "~" {
+                return home.display().to_string();
+            }
+            return format!("{}{}", home.display(), &path[1..]);
+        }
+    }
+    path.to_string()
+}
+
 pub fn handle_file_list(payload: &[u8]) -> Vec<u8> {
     let req: FileListRequest = match serde_json::from_slice(payload) {
         Ok(r) => r,
@@ -231,19 +261,7 @@ pub fn handle_file_list(payload: &[u8]) -> Vec<u8> {
     };
 
     // Expand ~ to home directory for local file listing
-    let resolved = if req.path == "~" || req.path.starts_with("~/") {
-        if let Some(home) = dirs::home_dir() {
-            if req.path == "~" {
-                home.display().to_string()
-            } else {
-                format!("{}{}", home.display(), &req.path[1..])
-            }
-        } else {
-            req.path.clone()
-        }
-    } else {
-        req.path.clone()
-    };
+    let resolved = expand_tilde(&req.path);
     let path = std::path::Path::new(&resolved);
     let mut files = Vec::new();
     let mut error = None;
@@ -331,9 +349,7 @@ pub fn handle_file_operation(payload: &[u8]) -> Vec<u8> {
     };
 
     let result = match req.operation.as_str() {
-        "mkdir" => {
-            std::fs::create_dir_all(&req.path).map(|_| None)
-        }
+        "mkdir" => std::fs::create_dir_all(&req.path).map(|_| None),
         "delete" => {
             let path = std::path::Path::new(&req.path);
             if path.is_dir() {
@@ -343,9 +359,7 @@ pub fn handle_file_operation(payload: &[u8]) -> Vec<u8> {
             }
         }
         "rename" => std::fs::rename(&req.path, &req.new_path).map(|_| None),
-        "copy" => {
-            std::fs::copy(&req.path, &req.new_path).map(|_| None)
-        }
+        "copy" => std::fs::copy(&req.path, &req.new_path).map(|_| None),
         "symlink" => {
             #[cfg(unix)]
             {
@@ -353,15 +367,15 @@ pub fn handle_file_operation(payload: &[u8]) -> Vec<u8> {
             }
             #[cfg(not(unix))]
             {
-                Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "symlink not supported on this platform"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "symlink not supported on this platform",
+                ))
             }
         }
         "touch" => {
             if std::path::Path::new(&req.path).exists() {
-                let _ = filetime::set_file_mtime(
-                    &req.path,
-                    filetime::FileTime::now(),
-                );
+                let _ = filetime::set_file_mtime(&req.path, filetime::FileTime::now());
                 Ok(None)
             } else {
                 std::fs::File::create(&req.path).map(|_| None)
@@ -371,11 +385,15 @@ pub fn handle_file_operation(payload: &[u8]) -> Vec<u8> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&req.path, std::fs::Permissions::from_mode(req.mode)).map(|_| None)
+                std::fs::set_permissions(&req.path, std::fs::Permissions::from_mode(req.mode))
+                    .map(|_| None)
             }
             #[cfg(not(unix))]
             {
-                Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "chmod not supported on this platform"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "chmod not supported on this platform",
+                ))
             }
         }
         "stat" => {
@@ -447,7 +465,7 @@ pub fn handle_file_save(payload: &[u8]) -> Vec<u8> {
     if payload.len() < 4 + path_len {
         return protocol::encode_error(protocol::ERR_INTERNAL, "truncated path");
     }
-    let path = String::from_utf8_lossy(&payload[4..4 + path_len]).to_string();
+    let path = expand_tilde(&String::from_utf8_lossy(&payload[4..4 + path_len]));
     let content = &payload[4 + path_len..];
 
     match std::fs::write(&path, content) {
@@ -513,7 +531,14 @@ pub async fn handle_sftp_file_list(payload: &[u8], sftp: &SftpSession) -> Vec<u8
     let req: FileListRequest = match serde_json::from_slice(payload) {
         Ok(r) => r,
         Err(e) => {
-            let resp = FileListResponse { path: String::new(), files: Vec::new(), error: Some(e.to_string()), request_id: None, truncated: false, total: None };
+            let resp = FileListResponse {
+                path: String::new(),
+                files: Vec::new(),
+                error: Some(e.to_string()),
+                request_id: None,
+                truncated: false,
+                total: None,
+            };
             let data = serde_json::to_vec(&resp).unwrap_or_default();
             return protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data);
         }
@@ -522,8 +547,14 @@ pub async fn handle_sftp_file_list(payload: &[u8], sftp: &SftpSession) -> Vec<u8
     // 相对路径（如 "."）解析为绝对路径
     let resolved_path = if !req.path.starts_with('/') {
         match sftp.canonicalize(&req.path).await {
-            Ok(p) => { eprintln!("[sftp] canonicalize '{}' -> '{}'", req.path, p); p }
-            Err(e) => { eprintln!("[sftp] canonicalize '{}' FAILED: {}", req.path, e); req.path.clone() }
+            Ok(p) => {
+                eprintln!("[sftp] canonicalize '{}' -> '{}'", req.path, p);
+                p
+            }
+            Err(e) => {
+                eprintln!("[sftp] canonicalize '{}' FAILED: {}", req.path, e);
+                req.path.clone()
+            }
         }
     } else {
         req.path.clone()
@@ -568,8 +599,14 @@ pub async fn handle_sftp_file_list(payload: &[u8], sftp: &SftpSession) -> Vec<u8
                     mode: format!("{:o}", attrs.permissions.unwrap_or(0) & 0o7777),
                     mtime: attrs.mtime.unwrap_or(0) as i64,
                     is_dir,
-                    owner: attrs.uid.map(|u| u.to_string()).unwrap_or_else(|| attrs.user.clone().unwrap_or_default()),
-                    group: attrs.gid.map(|g| g.to_string()).unwrap_or_else(|| attrs.group.clone().unwrap_or_default()),
+                    owner: attrs
+                        .uid
+                        .map(|u| u.to_string())
+                        .unwrap_or_else(|| attrs.user.clone().unwrap_or_default()),
+                    group: attrs
+                        .gid
+                        .map(|g| g.to_string())
+                        .unwrap_or_else(|| attrs.group.clone().unwrap_or_default()),
                     is_link,
                     link_target,
                 });
@@ -605,13 +642,25 @@ pub async fn handle_sftp_file_list_with_progress(
     sftp: &SftpSession,
     session: &super::session::Session,
     client_id: &str,
+    expected_conn_gen: u64,
 ) {
     let req: FileListRequest = match serde_json::from_slice(payload) {
         Ok(r) => r,
         Err(e) => {
-            let resp = FileListResponse { path: String::new(), files: Vec::new(), error: Some(e.to_string()), request_id: None, truncated: false, total: None };
+            let resp = FileListResponse {
+                path: String::new(),
+                files: Vec::new(),
+                error: Some(e.to_string()),
+                request_id: None,
+                truncated: false,
+                total: None,
+            };
             let data = serde_json::to_vec(&resp).unwrap_or_default();
-            session.send_to_client(client_id, protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data));
+            session.send_to_client_generation(
+                client_id,
+                expected_conn_gen,
+                protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data),
+            );
             return;
         }
     };
@@ -619,8 +668,14 @@ pub async fn handle_sftp_file_list_with_progress(
     // 相对路径（如 "."）解析为绝对路径
     let resolved_path = if !req.path.starts_with('/') {
         match sftp.canonicalize(&req.path).await {
-            Ok(p) => { eprintln!("[sftp] canonicalize '{}' -> '{}'", req.path, p); p }
-            Err(e) => { eprintln!("[sftp] canonicalize '{}' FAILED: {}", req.path, e); req.path.clone() }
+            Ok(p) => {
+                eprintln!("[sftp] canonicalize '{}' -> '{}'", req.path, p);
+                p
+            }
+            Err(e) => {
+                eprintln!("[sftp] canonicalize '{}' FAILED: {}", req.path, e);
+                req.path.clone()
+            }
         }
     } else {
         req.path.clone()
@@ -639,7 +694,14 @@ pub async fn handle_sftp_file_list_with_progress(
 
             if total > MAX_ENTRIES {
                 let err = serde_json::json!({"code": "TOO_MANY_FILES", "message": format!("Directory has {} entries (limit {})", total, MAX_ENTRIES)});
-                session.send_to_client(client_id, protocol::encode_message(protocol::MSG_ERROR, serde_json::to_vec(&err).unwrap_or_default().as_slice()));
+                session.send_to_client_generation(
+                    client_id,
+                    expected_conn_gen,
+                    protocol::encode_message(
+                        protocol::MSG_ERROR,
+                        serde_json::to_vec(&err).unwrap_or_default().as_slice(),
+                    ),
+                );
                 return;
             }
 
@@ -647,12 +709,23 @@ pub async fn handle_sftp_file_list_with_progress(
             if is_large {
                 // Send initial progress
                 let progress = serde_json::json!({"loaded": 0, "total": total});
-                session.send_to_client(client_id, protocol::encode_message(protocol::MSG_FILE_LIST_PROGRESS, serde_json::to_vec(&progress).unwrap_or_default().as_slice()));
+                if !session.send_to_client_generation(
+                    client_id,
+                    expected_conn_gen,
+                    protocol::encode_message(
+                        protocol::MSG_FILE_LIST_PROGRESS,
+                        serde_json::to_vec(&progress).unwrap_or_default().as_slice(),
+                    ),
+                ) {
+                    return;
+                }
             }
 
             for (i, entry) in entries.into_iter().enumerate() {
                 let name = entry.file_name();
-                if !req.show_hidden && name.starts_with('.') { continue; }
+                if !req.show_hidden && name.starts_with('.') {
+                    continue;
+                }
                 let attrs = entry.metadata();
                 let is_link = attrs.is_symlink();
                 let mut is_dir = attrs.is_dir();
@@ -681,19 +754,36 @@ pub async fn handle_sftp_file_list_with_progress(
                     mode: format!("{:o}", attrs.permissions.unwrap_or(0) & 0o7777),
                     mtime: attrs.mtime.unwrap_or(0) as i64,
                     is_dir,
-                    owner: attrs.uid.map(|u| u.to_string()).unwrap_or_else(|| attrs.user.clone().unwrap_or_default()),
-                    group: attrs.gid.map(|g| g.to_string()).unwrap_or_else(|| attrs.group.clone().unwrap_or_default()),
+                    owner: attrs
+                        .uid
+                        .map(|u| u.to_string())
+                        .unwrap_or_else(|| attrs.user.clone().unwrap_or_default()),
+                    group: attrs
+                        .gid
+                        .map(|g| g.to_string())
+                        .unwrap_or_else(|| attrs.group.clone().unwrap_or_default()),
                     is_link,
                     link_target,
                 });
 
                 if is_large && ((i + 1) % BATCH_SIZE == 0 || i == total - 1) {
                     let progress = serde_json::json!({"loaded": i + 1, "total": total});
-                    session.send_to_client(client_id, protocol::encode_message(protocol::MSG_FILE_LIST_PROGRESS, serde_json::to_vec(&progress).unwrap_or_default().as_slice()));
+                    if !session.send_to_client_generation(
+                        client_id,
+                        expected_conn_gen,
+                        protocol::encode_message(
+                            protocol::MSG_FILE_LIST_PROGRESS,
+                            serde_json::to_vec(&progress).unwrap_or_default().as_slice(),
+                        ),
+                    ) {
+                        return;
+                    }
                 }
             }
         }
-        Err(e) => { error = Some(format!("{}", e)); }
+        Err(e) => {
+            error = Some(format!("{}", e));
+        }
     }
 
     let total_count = files.len();
@@ -712,7 +802,12 @@ pub async fn handle_sftp_file_list_with_progress(
     };
     let data = serde_json::to_vec(&resp).unwrap_or_default();
     // send_sftp_error 会检查响应中的 error 字段是否为认证失败，若是则升级为 SFTP_AUTH_FAILED
-    send_sftp_error(session, client_id, protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data));
+    send_sftp_error_for_generation(
+        session,
+        client_id,
+        expected_conn_gen,
+        protocol::encode_message(protocol::MSG_FILE_LIST_RESP, &data),
+    );
 }
 
 /// Recursively remove a file or directory via SFTP.
@@ -722,15 +817,27 @@ async fn sftp_remove_recursive(sftp: &SftpSession, path: &str) -> Result<Option<
         return Ok(None);
     }
     // If it's a directory, recurse into children
-    let entries = sftp.read_dir(path.to_string()).await.map_err(|e| format!("read_dir {}: {}", path, e))?;
+    let entries = sftp
+        .read_dir(path.to_string())
+        .await
+        .map_err(|e| format!("read_dir {}: {}", path, e))?;
     for entry in entries {
         let name = entry.file_name();
-        if name == "." || name == ".." { continue; }
-        let child = if path.ends_with('/') { format!("{}{}", path, name) } else { format!("{}/{}", path, name) };
+        if name == "." || name == ".." {
+            continue;
+        }
+        let child = if path.ends_with('/') {
+            format!("{}{}", path, name)
+        } else {
+            format!("{}/{}", path, name)
+        };
         // Box::pin to allow recursive async
         Box::pin(sftp_remove_recursive(sftp, &child)).await?;
     }
-    sftp.remove_dir(path.to_string()).await.map(|_| None).map_err(|e| format!("rmdir {}: {}", path, e))
+    sftp.remove_dir(path.to_string())
+        .await
+        .map(|_| None)
+        .map_err(|e| format!("rmdir {}: {}", path, e))
 }
 
 /// Handle MsgFileOperation via SFTP.
@@ -741,38 +848,46 @@ pub async fn handle_sftp_file_operation(payload: &[u8], sftp: &SftpSession) -> V
     };
 
     let result: Result<Option<FileInfo>, String> = match req.operation.as_str() {
-        "mkdir" => {
-            sftp.create_dir(req.path.clone()).await.map(|_| None).map_err(|e| format!("{}", e))
-        }
-        "delete" => {
-            sftp_remove_recursive(sftp, &req.path).await
-        }
-        "rename" => {
-            sftp.rename(req.path.clone(), req.new_path.clone()).await.map(|_| None).map_err(|e| format!("{}", e))
-        }
+        "mkdir" => sftp
+            .create_dir(req.path.clone())
+            .await
+            .map(|_| None)
+            .map_err(|e| format!("{}", e)),
+        "delete" => sftp_remove_recursive(sftp, &req.path).await,
+        "rename" => sftp
+            .rename(req.path.clone(), req.new_path.clone())
+            .await
+            .map(|_| None)
+            .map_err(|e| format!("{}", e)),
         "copy" => {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             match sftp.open(req.path.clone()).await {
-                Ok(mut src) => {
-                    match sftp.create(req.new_path.clone()).await {
-                        Ok(mut dst) => {
-                            let mut buf = vec![0u8; 1024 * 1024];
-                            loop {
-                                match src.read(&mut buf).await {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        if let Err(e) = dst.write_all(&buf[..n]).await {
-                                            return encode_file_op_error_with_op(&format!("write: {}", e), "copy");
-                                        }
+                Ok(mut src) => match sftp.create(req.new_path.clone()).await {
+                    Ok(mut dst) => {
+                        let mut buf = vec![0u8; 1024 * 1024];
+                        loop {
+                            match src.read(&mut buf).await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    if let Err(e) = dst.write_all(&buf[..n]).await {
+                                        return encode_file_op_error_with_op(
+                                            &format!("write: {}", e),
+                                            "copy",
+                                        );
                                     }
-                                    Err(e) => return encode_file_op_error_with_op(&format!("read: {}", e), "copy"),
+                                }
+                                Err(e) => {
+                                    return encode_file_op_error_with_op(
+                                        &format!("read: {}", e),
+                                        "copy",
+                                    )
                                 }
                             }
-                            Ok(None)
                         }
-                        Err(e) => Err(format!("create dest: {}", e)),
+                        Ok(None)
                     }
-                }
+                    Err(e) => Err(format!("create dest: {}", e)),
+                },
                 Err(e) => Err(format!("open source: {}", e)),
             }
         }
@@ -780,23 +895,26 @@ pub async fn handle_sftp_file_operation(payload: &[u8], sftp: &SftpSession) -> V
             // OpenSSH reverses SSH_FXP_SYMLINK args vs RFC:
             // RFC: (linkpath, targetpath), OpenSSH: (targetpath, linkpath)
             // russh-sftp follows RFC, so swap args for OpenSSH compatibility
-            sftp.symlink(req.path.clone(), req.new_path.clone()).await
+            sftp.symlink(req.path.clone(), req.new_path.clone())
+                .await
                 .map(|_| None)
                 .map_err(|e| format!("{}", e))
         }
-        "touch" => {
-            match sftp.create(req.path.clone()).await {
-                Ok(file) => { drop(file); Ok(None) }
-                Err(e) => Err(format!("{}", e))
+        "touch" => match sftp.create(req.path.clone()).await {
+            Ok(file) => {
+                drop(file);
+                Ok(None)
             }
-        }
+            Err(e) => Err(format!("{}", e)),
+        },
         "chmod" => {
             use russh_sftp::client::fs::Metadata as SftpMetadata;
             let metadata = SftpMetadata {
                 permissions: Some(req.mode),
                 ..SftpMetadata::empty()
             };
-            sftp.set_metadata(req.path.clone(), metadata).await
+            sftp.set_metadata(req.path.clone(), metadata)
+                .await
                 .map(|_| None)
                 .map_err(|e| format!("{}", e))
         }
@@ -819,7 +937,12 @@ pub async fn handle_sftp_file_operation(payload: &[u8], sftp: &SftpSession) -> V
 
     match result {
         Ok(stat) => {
-            let resp = FileOperationResponse { success: true, error: None, operation: Some(req.operation), stat };
+            let resp = FileOperationResponse {
+                success: true,
+                error: None,
+                operation: Some(req.operation),
+                stat,
+            };
             let data = serde_json::to_vec(&resp).unwrap_or_default();
             protocol::encode_message(protocol::MSG_FILE_OPERATION_RESP, &data)
         }
@@ -830,123 +953,22 @@ pub async fn handle_sftp_file_operation(payload: &[u8], sftp: &SftpSession) -> V
 /// Encode an error response as MsgError + JSON {code, message} (matches Go writeErr pattern).
 fn encode_msg_error(code: &str, message: &str) -> Vec<u8> {
     let err = serde_json::json!({"code": code, "message": message});
-    protocol::encode_message(protocol::MSG_ERROR, serde_json::to_vec(&err).unwrap_or_default().as_slice())
-}
-
-/// Handle MsgFileReadRequest via SFTP.
-/// Request: JSON { "path": "..." }
-/// Response: MsgFileReadResponse + [8B size BE][content]
-pub async fn handle_sftp_file_read(payload: &[u8], sftp: &SftpSession) -> Vec<u8> {
-    // Parse JSON request
-    let path = match serde_json::from_slice::<serde_json::Value>(payload) {
-        Ok(v) => v.get("path").and_then(|p| p.as_str()).unwrap_or("").to_string(),
-        Err(e) => return encode_msg_error("INVALID_REQUEST", &format!("parse: {}", e)),
-    };
-    if path.is_empty() {
-        return encode_msg_error("INVALID_REQUEST", "path is required");
-    }
-
-    // Check file info (size limit, not directory)
-    match sftp.metadata(path.clone()).await {
-        Ok(attrs) => {
-            if attrs.is_dir() {
-                return encode_msg_error("IS_DIRECTORY", "Cannot open a directory in editor");
-            }
-            let size = attrs.size.unwrap_or(0);
-            if size > 50 * 1024 * 1024 {
-                return encode_msg_error("FILE_TOO_LARGE", &format!("File size {} exceeds 50MB limit", size));
-            }
-        }
-        Err(e) => return encode_msg_error("NOT_FOUND", &format!("File not found: {}", e)),
-    }
-
-    // Read file content
-    match sftp.open(path).await {
-        Ok(mut file) => {
-            use tokio::io::AsyncReadExt;
-            let mut content = Vec::new();
-            match file.read_to_end(&mut content).await {
-                Ok(_) => {
-                    // Response: MsgFileReadResponse + [8B size BE][content]
-                    let size = content.len() as u64;
-                    let mut resp = Vec::with_capacity(8 + content.len());
-                    resp.extend_from_slice(&size.to_be_bytes());
-                    resp.extend_from_slice(&content);
-                    protocol::encode_message(protocol::MSG_FILE_READ_RESPONSE, &resp)
-                }
-                Err(e) => encode_msg_error("READ_FAILED", &format!("read: {}", e)),
-            }
-        }
-        Err(e) => encode_msg_error("READ_FAILED", &format!("open: {}", e)),
-    }
-}
-
-/// Handle MsgFileSaveRequest via SFTP.
-/// Request: binary [4B pathLen BE][path UTF-8][content]
-/// Response: MsgFileOperationResp JSON
-pub async fn handle_sftp_file_save(payload: &[u8], sftp: &SftpSession) -> Vec<u8> {
-    if payload.len() < 4 {
-        return encode_msg_error("INVALID_REQUEST", "payload too short");
-    }
-    let path_len = u32::from_be_bytes(payload[0..4].try_into().unwrap_or([0; 4])) as usize;
-    if path_len == 0 || payload.len() < 4 + path_len {
-        return encode_msg_error("INVALID_REQUEST", "invalid path length");
-    }
-    let raw_path = String::from_utf8_lossy(&payload[4..4 + path_len]).to_string();
-    let content = &payload[4 + path_len..];
-
-    // If path is a symlink, resolve to real target so we don't replace the link.
-    // Try read_link directly — if it succeeds, the path is a symlink.
-    // This is more reliable than lstat (which some SFTP proxies like JumpServer may not support).
-    let path = match sftp.read_link(raw_path.clone()).await {
-        Ok(target) => {
-            // read_link may return a relative path — resolve against parent dir
-            if target.starts_with('/') {
-                target
-            } else {
-                let parent = raw_path.rfind('/').map(|i| &raw_path[..i]).unwrap_or(".");
-                format!("{}/{}", parent, target)
-            }
-        }
-        Err(_) => raw_path, // not a symlink or read_link unsupported
-    };
-
-    // Atomic write: write to .meterm.edit.tmp, then rename
-    let tmp_path = format!("{}.meterm.edit.tmp", path);
-    match sftp.create(tmp_path.clone()).await {
-        Ok(mut file) => {
-            use tokio::io::AsyncWriteExt;
-            if let Err(e) = file.write_all(content).await {
-                let _ = sftp.remove_file(tmp_path).await;
-                return encode_msg_error("WRITE_FAILED", &format!("write: {}", e));
-            }
-            drop(file);
-            // Rename tmp → target (atomic)
-            if let Err(_) = sftp.rename(tmp_path.clone(), path.clone()).await {
-                // Fallback: remove target, then rename
-                let _ = sftp.remove_file(path.clone()).await;
-                if let Err(e) = sftp.rename(tmp_path.clone(), path).await {
-                    return encode_msg_error("RENAME_FAILED", &format!("rename: {}", e));
-                }
-            }
-            let resp = serde_json::json!({"success": true, "operation": "save"});
-            protocol::encode_message(protocol::MSG_FILE_OPERATION_RESP, serde_json::to_vec(&resp).unwrap_or_default().as_slice())
-        }
-        Err(e) => encode_msg_error("WRITE_FAILED", &format!("create: {}", e)),
-    }
+    protocol::encode_message(
+        protocol::MSG_ERROR,
+        serde_json::to_vec(&err).unwrap_or_default().as_slice(),
+    )
 }
 
 /// Handle local MsgFileReadRequest (JSON format).
 pub fn handle_file_read_json(payload: &[u8]) -> Vec<u8> {
-    let path = match serde_json::from_slice::<serde_json::Value>(payload) {
-        Ok(v) => v.get("path").and_then(|p| p.as_str()).unwrap_or("").to_string(),
-        Err(e) => return encode_msg_error("INVALID_REQUEST", &format!("parse: {}", e)),
-    };
-    if path.is_empty() {
-        return encode_msg_error("INVALID_REQUEST", "path is required");
-    }
+    let (path, limit) =
+        match read_limits::parse_file_read_request(payload, read_limits::DEFAULT_FILE_READ_LIMIT) {
+            Ok(request) => request,
+            Err(error) => return encode_msg_error("INVALID_REQUEST", &error),
+        };
 
-    match std::fs::read(&path) {
+    let expanded_path = expand_tilde(&path);
+    match read_limits::read_local_bounded(std::path::Path::new(&expanded_path), limit) {
         Ok(content) => {
             let size = content.len() as u64;
             let mut resp = Vec::with_capacity(8 + content.len());
@@ -954,6 +976,12 @@ pub fn handle_file_read_json(payload: &[u8]) -> Vec<u8> {
             resp.extend_from_slice(&content);
             protocol::encode_message(protocol::MSG_FILE_READ_RESPONSE, &resp)
         }
-        Err(e) => encode_msg_error("READ_FAILED", &format!("{}", e)),
+        Err(read_limits::BoundedLocalReadError::TooLarge) => encode_msg_error(
+            "FILE_TOO_LARGE",
+            &format!("File exceeds {limit} byte limit"),
+        ),
+        Err(read_limits::BoundedLocalReadError::Io(error)) => {
+            encode_msg_error("READ_FAILED", &error.to_string())
+        }
     }
 }

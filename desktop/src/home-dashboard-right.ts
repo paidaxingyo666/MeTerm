@@ -34,6 +34,17 @@ let webPerPage = 10;
 let connCurrentPage = 1;
 let connPerPage = 10;
 
+function normalizeExternalWebUrl(value: string): string | null {
+  if (!value || /[\u0000-\u0020\u007f]/.test(value)) return null;
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username || url.password) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Public API ───
 
 export function renderSearchOverlay(overlay: HTMLElement, query: string): void {
@@ -411,8 +422,11 @@ function createSearXNGResultCard(result: SearXNGResult): HTMLDivElement {
   card.className = 'home-search-overlay-web-card';
   card.innerHTML = `<div class="home-search-overlay-web-title">${escapeHtml(result.title)}</div><div class="home-search-overlay-web-url">${escapeHtml(result.url)}</div>` +
     (result.content ? `<div class="home-search-overlay-web-snippet">${escapeHtml(result.content)}</div>` : '');
-  card.onclick = () => {
-    import('@tauri-apps/plugin-opener').then(({ openUrl }) => openUrl(result.url)).catch(() => {});
-  };
+  const safeUrl = normalizeExternalWebUrl(result.url);
+  if (safeUrl) {
+    card.onclick = () => {
+      import('@tauri-apps/plugin-opener').then(({ openUrl }) => openUrl(safeUrl)).catch(() => {});
+    };
+  }
   return card;
 }

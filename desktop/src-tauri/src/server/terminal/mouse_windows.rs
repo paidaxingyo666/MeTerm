@@ -16,11 +16,7 @@ const MOUSE_ENABLE_PATTERNS: &[&[u8]] = &[
 ];
 
 /// DECRST patterns that disable mouse tracking.
-const MOUSE_DISABLE_PATTERNS: &[&[u8]] = &[
-    b"\x1b[?1000l",
-    b"\x1b[?1002l",
-    b"\x1b[?1003l",
-];
+const MOUSE_DISABLE_PATTERNS: &[&[u8]] = &[b"\x1b[?1000l", b"\x1b[?1002l", b"\x1b[?1003l"];
 
 /// Alternate screen exit (may not have explicit mouse disable).
 const ALT_SCREEN_EXIT: &[u8] = b"\x1b[?1049l";

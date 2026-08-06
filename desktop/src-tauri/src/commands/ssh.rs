@@ -57,54 +57,78 @@ pub async fn create_ssh_session(
         proxy_password: proxy_password.unwrap_or_default(),
     };
 
-    let session = state.session_manager.create();
-    *session.executor_type.lock().unwrap() = "ssh".to_string();
-    *session.ssh_config.lock().unwrap() = Some(config.clone());
+    // Keep the session invisible until the SSH terminal is fully usable. This
+    // mirrors the HTTP saved-session path and prevents failed desktop connects
+    // from leaving credential-bearing `created` sessions behind.
+    let terminal = match tokio::time::timeout(
+        crate::server::terminal::ssh_limits::SSH_SESSION_CONNECT_TIMEOUT,
+        SshTerminal::connect(&config, 80, 24),
+    )
+    .await
+    {
+        Ok(Ok(terminal)) => terminal,
+        Ok(Err(e)) => {
+            // Host key errors are JSON-encoded — return as Ok so frontend can parse them
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&e) {
+                if matches!(
+                    parsed.get("error").and_then(|v| v.as_str()),
+                    Some("host_key_unknown" | "host_key_mismatch")
+                ) {
+                    return Ok(parsed.to_string());
+                }
+            }
+            return Err(format!("SSH failed: {}", e));
+        }
+        Err(_) => return Err("SSH failed: ssh_connect_timeout".to_string()),
+    };
 
-    let auth_used = match SshTerminal::connect(&config, 80, 24).await {
-        Ok(terminal) => {
-            let ssh_handle = terminal.session_handle.clone();
-            let sftp_config = config.clone();
-            let auth_used = terminal.auth_used;
-            *session.ssh_exec_handle.lock().await = Some(Box::new(ssh_handle.clone()));
+    let auth_used = terminal.auth_used;
+    let pending_session = state.session_manager.prepare_connected_ssh(config.clone());
+    let session = pending_session.session();
+    {
+        let ssh_handle = terminal.session_handle.clone();
+        let sftp_config = config.clone();
+        *session.ssh_exec_handle.lock().await = Some(Box::new(ssh_handle.clone()));
 
-            crate::server::session::Session::start_terminal(session.clone(), Box::new(terminal))
-                .await;
+        crate::server::session::Session::start_terminal(session.clone(), Box::new(terminal)).await;
 
-            // Initialize SFTP in background. Two strategies:
-            //   • multiplex_sftp = true (JumpServer, "JMS-{token}" sessions):
-            //       sub-channel on the existing authenticated session.
-            //       Required because Koko tokens are protocol-scoped and a
-            //       second SSH auth with the same token is rejected.
-            //   • multiplex_sftp = false (plain OpenSSH default):
-            //       new dedicated SSH session with a wider window, so bulk
-            //       SFTP does not stall the interactive terminal.
-            //
-            // 自动 fallback：如果 dedicated SFTP 失败（最常见的是私钥认证
-            // 在服务端被 rate-limit / MaxAuthTries 限制，导致第二次 publickey
-            // 直接失败），自动 fallback 到 multiplexed SFTP 子通道。后者复用
-            // 已建立的 terminal SSH 连接，根本不需要二次认证，因此对任何拒绝
-            // 二次 publickey 的服务器都能工作；代价仅是和终端 I/O 共享带宽。
-            //
-            // 失败时把组合错误写入 sftp_init_error 供下一次 file-list 请求
-            // 透传到前端，便于诊断（而不是只显示 "未就绪，请重试"）。
-            let session_bg = session.clone();
-            let multiplex = sftp_config.multiplex_sftp;
-            let ssh_handle_for_sftp = ssh_handle.clone();
-            tokio::spawn(async move {
-                let result = if multiplex {
-                    SshTerminal::init_sftp(&ssh_handle_for_sftp).await
-                } else {
-                    match SshTerminal::connect_sftp(&sftp_config).await {
-                        Ok(sftp) => Ok(sftp),
-                        Err(dedicated_err) => {
-                            eprintln!(
-                                "[ssh] dedicated SFTP failed ({}), falling back to multiplexed channel",
-                                dedicated_err
-                            );
-                            // Log config context (no secrets) so users with weird
-                            // server policies (e.g. MaxAuthTries=1) can self-diagnose.
-                            eprintln!(
+        // Publish only after all fallible/async terminal wiring has completed.
+        let session = pending_session.commit();
+
+        // Initialize SFTP in background. Two strategies:
+        //   • multiplex_sftp = true (JumpServer, "JMS-{token}" sessions):
+        //       sub-channel on the existing authenticated session.
+        //       Required because Koko tokens are protocol-scoped and a
+        //       second SSH auth with the same token is rejected.
+        //   • multiplex_sftp = false (plain OpenSSH default):
+        //       new dedicated SSH session with a wider window, so bulk
+        //       SFTP does not stall the interactive terminal.
+        //
+        // 自动 fallback：如果 dedicated SFTP 失败（最常见的是私钥认证
+        // 在服务端被 rate-limit / MaxAuthTries 限制，导致第二次 publickey
+        // 直接失败），自动 fallback 到 multiplexed SFTP 子通道。后者复用
+        // 已建立的 terminal SSH 连接，根本不需要二次认证，因此对任何拒绝
+        // 二次 publickey 的服务器都能工作；代价仅是和终端 I/O 共享带宽。
+        //
+        // 失败时把组合错误写入 sftp_init_error 供下一次 file-list 请求
+        // 透传到前端，便于诊断（而不是只显示 "未就绪，请重试"）。
+        let session_bg = session.clone();
+        let multiplex = sftp_config.multiplex_sftp;
+        let ssh_handle_for_sftp = ssh_handle.clone();
+        tokio::spawn(async move {
+            let result = if multiplex {
+                SshTerminal::init_sftp(&ssh_handle_for_sftp).await
+            } else {
+                match SshTerminal::connect_sftp(&sftp_config).await {
+                    Ok(sftp) => Ok(sftp),
+                    Err(dedicated_err) => {
+                        eprintln!(
+                            "[ssh] dedicated SFTP failed ({}), falling back to multiplexed channel",
+                            dedicated_err
+                        );
+                        // Log config context (no secrets) so users with weird
+                        // server policies (e.g. MaxAuthTries=1) can self-diagnose.
+                        eprintln!(
                                 "[ssh] sftp diag: auth_method={:?} has_private_key={} has_password={} has_passphrase={} trusted_fp={} proxy={}",
                                 sftp_config.auth_method,
                                 !sftp_config.private_key.is_empty(),
@@ -113,41 +137,33 @@ pub async fn create_ssh_session(
                                 !sftp_config.trusted_fingerprint.is_empty(),
                                 if sftp_config.proxy_type.is_empty() { "none" } else { &sftp_config.proxy_type },
                             );
-                            match SshTerminal::init_sftp(&ssh_handle_for_sftp).await {
-                                Ok(sftp) => {
-                                    eprintln!("[ssh] multiplexed SFTP fallback succeeded");
-                                    Ok(sftp)
-                                }
-                                Err(mux_err) => Err(format!(
-                                    "dedicated SFTP failed: {}; multiplex fallback also failed: {}",
-                                    dedicated_err, mux_err
-                                )),
+                        match SshTerminal::init_sftp(&ssh_handle_for_sftp).await {
+                            Ok(sftp) => {
+                                eprintln!("[ssh] multiplexed SFTP fallback succeeded");
+                                Ok(sftp)
                             }
+                            Err(mux_err) => Err(format!(
+                                "dedicated SFTP failed: {}; multiplex fallback also failed: {}",
+                                dedicated_err, mux_err
+                            )),
                         }
                     }
-                };
-                match result {
-                    Ok(sftp_client) => {
-                        *session_bg.sftp.lock().unwrap() = Some(sftp_client);
-                    }
-                    Err(e) => {
-                        eprintln!("[ssh] SFTP setup failed: {}", e);
-                        *session_bg.sftp_init_error.lock().unwrap() = Some(e);
-                    }
                 }
-            });
-            auth_used
-        }
-        Err(e) => {
-            // Host key errors are JSON-encoded — return as Ok so frontend can parse them
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&e) {
-                if parsed.get("error").and_then(|v| v.as_str()) == Some("host_key_unknown") {
-                    return Ok(parsed.to_string());
+            };
+            match result {
+                Ok(sftp_client) => {
+                    *session_bg.sftp.lock().unwrap() = Some(sftp_client);
+                }
+                Err(e) => {
+                    eprintln!("[ssh] SFTP setup failed: {}", e);
+                    // File-policy errors can be forwarded over a paired-device
+                    // WebSocket. Keep paths/proxy diagnostics local-only.
+                    *session_bg.sftp_init_error.lock().unwrap() =
+                        Some("sftp_init_failed".to_string());
                 }
             }
-            return Err(format!("SSH failed: {}", e));
-        }
-    };
+        });
+    }
 
     Ok(serde_json::json!({
         "id": session.id,
@@ -209,7 +225,10 @@ pub async fn test_ssh_connection(
         Err(e) => {
             // Host key errors are JSON-encoded
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&e) {
-                if parsed.get("error").and_then(|v| v.as_str()) == Some("host_key_unknown") {
+                if matches!(
+                    parsed.get("error").and_then(|v| v.as_str()),
+                    Some("host_key_unknown" | "host_key_mismatch")
+                ) {
                     return Ok(parsed.to_string());
                 }
             }

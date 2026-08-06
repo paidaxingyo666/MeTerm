@@ -86,6 +86,20 @@
   color: #e06060;
 }
 
+.sharing-security-hint {
+  margin: 6px 0 0 22px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.sharing-control-error {
+  margin: 8px 0 0 22px;
+  color: #e06060;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 @keyframes fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -417,4 +431,3 @@
   opacity: 1;
   color: var(--accent-color, #4a9eff);
 }
-

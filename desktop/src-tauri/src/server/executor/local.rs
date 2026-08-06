@@ -14,6 +14,9 @@ pub struct LocalShellExecutor {
     pub cwd: String,
     pub cols: u16,
     pub rows: u16,
+    /// 注入 PTY 的额外环境变量(agent 终端镜像 M1:METERM_* hook env)。
+    /// 默认空;创建点用 `with_envs` 填充。SSH/JumpServer executor 不涉及。
+    pub envs: Vec<(String, String)>,
 }
 
 impl LocalShellExecutor {
@@ -23,7 +26,14 @@ impl LocalShellExecutor {
             cwd,
             cols,
             rows,
+            envs: Vec::new(),
         }
+    }
+
+    /// 注入额外环境变量(agent 镜像 hook env)。builder 风格,返回 self 便于链式调用。
+    pub fn with_envs(mut self, envs: Vec<(String, String)>) -> Self {
+        self.envs = envs;
+        self
     }
 }
 
@@ -37,6 +47,7 @@ impl Executor for LocalShellExecutor {
                 &self.cwd,
                 self.cols,
                 self.rows,
+                &self.envs,
             )?;
             Ok(Box::new(term))
         }
@@ -45,7 +56,9 @@ impl Executor for LocalShellExecutor {
         {
             // Check if shell is a WSL distribution
             let shell_lower = self.shell.to_lowercase();
-            if shell_lower.contains("wsl") || shell_lower.ends_with(".exe") && shell_lower.contains("wsl") {
+            if shell_lower.contains("wsl")
+                || shell_lower.ends_with(".exe") && shell_lower.contains("wsl")
+            {
                 // WSL: use Python PTY helper
                 let term = crate::server::terminal::pty_wsl::WslPtyTerminal::new(
                     &self.shell, // distro name or "wsl"
@@ -53,6 +66,7 @@ impl Executor for LocalShellExecutor {
                     &self.cwd,
                     self.cols,
                     self.rows,
+                    &self.envs,
                 )
                 .await?;
                 Ok(Box::new(term))
@@ -63,6 +77,7 @@ impl Executor for LocalShellExecutor {
                     &self.cwd,
                     self.cols,
                     self.rows,
+                    &self.envs,
                 )?;
                 Ok(Box::new(term))
             }

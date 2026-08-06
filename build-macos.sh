@@ -1,12 +1,12 @@
 #!/bin/bash
-# ============================================================================
-# macOS 构建打包脚本 / macOS Build & Package Script
-# 构建 MeTerm 的 macOS DMG 安装包
-# ============================================================================
+# build-macos.sh — build the current in-process Rust/Tauri desktop app.
+#
+# This script intentionally does not export signing identities from Keychain.
+# Developer ID signing uses an existing local Keychain identity and notarization
+# uses an App Store Connect API key path supplied explicitly by the operator.
 
 set -euo pipefail
 
-# ── 颜色输出 ────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -14,282 +14,306 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
-ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
-step()  { echo -e "\n${CYAN}══════════════════════════════════════════${NC}"; echo -e "${CYAN}  $*${NC}"; echo -e "${CYAN}══════════════════════════════════════════${NC}"; }
+info() { echo -e "${BLUE}[INFO]${NC} $*"; }
+ok() { echo -e "${GREEN}[OK]${NC} $*"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+err() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+step() {
+    echo -e "\n${CYAN}══════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  $*${NC}"
+    echo -e "${CYAN}══════════════════════════════════════════${NC}"
+}
 
-# ── 默认参数 ────────────────────────────────────────────────────────────────
-ARCH="$(uname -m)"          # 默认当前机器架构
+ARCH="$(uname -m)"
 SIGN=false
 NOTARIZE=false
 SKIP_FRONTEND=false
 OUTPUT_DIR="dist"
-PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 
-# ── 帮助信息 ────────────────────────────────────────────────────────────────
 usage() {
-    cat <<EOF
-用法 / Usage: $0 [选项]
+    cat <<'EOF'
+用法 / Usage: ./build-macos.sh [选项]
 
 选项 / Options:
-  --arch <arm64|x86_64|both>   目标架构 (默认: 当前架构 $ARCH)
-  --sign                       启用 Apple Developer ID 代码签名
-  --notarize                   启用 Apple 公证 (需要 --sign)
-  --skip-frontend              跳过前端构建 (前端未修改时加速)
-  --output-dir <dir>           输出目录 (默认: dist/)
+  --arch <arm64|x86_64|both>   目标架构（默认：当前架构）
+  --sign                       使用本机 Keychain 中的 Developer ID 签名
+  --notarize                   提交 Apple 公证并 staple（需要 --sign）
+  --skip-frontend              复用已存在的 desktop/dist
+  --output-dir <dir>           输出目录（默认：dist）
   -h, --help                   显示帮助
 
-签名环境变量 / Signing Environment Variables:
-  APPLE_SIGNING_IDENTITY       Developer ID Application 证书名称
-  APPLE_ID                     Apple ID 邮箱
-  APPLE_TEAM_ID                Apple Developer 团队 ID
-  APPLE_PASSWORD               App-specific password (或 @keychain:label)
+签名环境变量：
+  APPLE_SIGNING_IDENTITY       Developer ID Application 完整名称或 SHA-1
 
-示例 / Examples:
-  $0                           # 构建当前架构
-  $0 --arch arm64              # 构建 Apple Silicon 版本
-  $0 --arch x86_64             # 构建 Intel 版本
-  $0 --arch both               # 构建双架构
-  $0 --arch arm64 --sign       # 构建并签名
+公证环境变量：
+  APPLE_API_KEY_ID             App Store Connect API key ID
+  APPLE_API_ISSUER_ID          App Store Connect issuer ID
+  APPLE_API_KEY_PATH           本机 .p8 文件路径
+
+脚本只使用现有 Keychain 身份，不导出私钥。正式发布证据仍必须来自干净、
+不可变 tag 及隔离的 build/sign/verify 流水线；本地输出默认属于开发验收产物。
 EOF
-    exit 0
 }
 
-# ── 参数解析 ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --arch)     ARCH="$2"; shift 2 ;;
-        --sign)     SIGN=true; shift ;;
+        --arch)
+            [[ $# -ge 2 ]] || { err "--arch 缺少参数"; exit 2; }
+            ARCH="$2"
+            shift 2
+            ;;
+        --sign) SIGN=true; shift ;;
         --notarize) NOTARIZE=true; shift ;;
         --skip-frontend) SKIP_FRONTEND=true; shift ;;
-        --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
-        -h|--help)  usage ;;
-        *) err "未知参数: $1"; usage ;;
+        --output-dir)
+            [[ $# -ge 2 ]] || { err "--output-dir 缺少参数"; exit 2; }
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        -h|--help) usage; exit 0 ;;
+        *) err "未知参数：$1"; usage >&2; exit 2 ;;
     esac
 done
 
-# 标准化架构名称
 case "$ARCH" in
     arm64|aarch64) ARCH="arm64" ;;
-    x86_64|amd64)  ARCH="x86_64" ;;
-    both)          ARCH="both" ;;
-    *) err "不支持的架构: $ARCH (支持: arm64, x86_64, both)"; exit 1 ;;
+    x86_64|amd64) ARCH="x86_64" ;;
+    both) ;;
+    *) err "不支持的架构：$ARCH"; exit 2 ;;
 esac
 
 if $NOTARIZE && ! $SIGN; then
-    err "--notarize 需要同时使用 --sign"
-    exit 1
+    err "--notarize 必须与 --sign 一起使用"
+    exit 2
 fi
 
-# ── 环境检查 ────────────────────────────────────────────────────────────────
-step "Step 1/6: 环境检查 / Checking prerequisites"
+case "$OUTPUT_DIR" in
+    ""|/|.|..) err "输出目录不安全：$OUTPUT_DIR"; exit 2 ;;
+esac
 
-check_cmd() {
-    if ! command -v "$1" &>/dev/null; then
-        err "未找到 $1，请先安装"
+if [[ "$OUTPUT_DIR" == /* ]]; then
+    FINAL_OUTPUT_DIR="$OUTPUT_DIR"
+else
+    FINAL_OUTPUT_DIR="$PROJECT_ROOT/$OUTPUT_DIR"
+fi
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || {
+        err "未找到必需命令：$1"
         exit 1
-    fi
-    local ver
-    ver=$("$@" 2>&1 | head -1)
-    ok "$1: $ver"
+    }
 }
 
-check_cmd go version
-check_cmd rustc --version
-check_cmd cargo --version
-check_cmd node --version
-check_cmd npm --version
-
-# 检查 Rust target 是否已安装
 install_rust_target() {
     local target="$1"
-    if ! rustup target list --installed | grep -q "$target"; then
-        info "安装 Rust target: $target"
+    if ! rustup target list --installed | grep -Fx "$target" >/dev/null; then
+        info "安装 Rust target：$target"
         rustup target add "$target"
     fi
-    ok "Rust target $target 已就绪"
 }
 
-if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "both" ]]; then
-    install_rust_target "aarch64-apple-darwin"
-fi
-if [[ "$ARCH" == "x86_64" ]] || [[ "$ARCH" == "both" ]]; then
-    install_rust_target "x86_64-apple-darwin"
-fi
-
-# ── 构建前端 ───────────────────────────────────────────────────────────────
-# Web 前端必须先构建，Go 后端通过 go:embed 嵌入 backend/web/dist/
-step "Step 2/6: 构建前端 / Building frontend"
-
-# 构建 web frontend (嵌入 Go 后端)
-if [[ -d "$PROJECT_ROOT/frontend" ]]; then
-    info "构建 Web 前端 (嵌入 Go 后端)..."
-    (cd "$PROJECT_ROOT/frontend" && npm ci --prefer-offline && npm run build)
-    ok "Web 前端构建完成"
-fi
-
-if $SKIP_FRONTEND && [[ -d "$PROJECT_ROOT/desktop/dist" ]]; then
-    warn "跳过桌面前端构建 (--skip-frontend)"
-else
-    info "安装桌面前端依赖..."
-    (cd "$PROJECT_ROOT/desktop" && npm ci --prefer-offline)
-    info "构建桌面前端..."
-    (cd "$PROJECT_ROOT/desktop" && npm run build)
-    ok "桌面前端构建完成"
-fi
-
-# ── 构建 Go sidecar ────────────────────────────────────────────────────────
-step "Step 3/6: 构建 Go sidecar / Building Go sidecar"
-
-build_go_sidecar() {
-    local goarch="$1"
-    local rust_triple="$2"
-    local output="$PROJECT_ROOT/desktop/src-tauri/binaries/meterm-server-${rust_triple}"
-
-    info "构建 ${rust_triple} ..."
-    GOOS=darwin GOARCH="$goarch" go build -C "$PROJECT_ROOT/backend" \
-        -ldflags="-s -w" \
-        -o "$output" .
-    ok "sidecar 已生成: $(basename "$output") ($(du -h "$output" | cut -f1))"
-}
-
-if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "both" ]]; then
-    build_go_sidecar "arm64" "aarch64-apple-darwin"
-fi
-if [[ "$ARCH" == "x86_64" ]] || [[ "$ARCH" == "both" ]]; then
-    build_go_sidecar "amd64" "x86_64-apple-darwin"
-fi
-
-# ── Tauri 构建 ──────────────────────────────────────────────────────────────
-step "Step 4/6: Tauri 构建 / Building Tauri app"
-
-build_tauri() {
-    local rust_target="$1"
-    local label="$2"
-
-    info "构建 Tauri ($label) → target: $rust_target"
-    (cd "$PROJECT_ROOT/desktop" && npm run tauri build -- --target "$rust_target")
-    ok "Tauri 构建完成 ($label)"
-}
-
-if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "both" ]]; then
-    build_tauri "aarch64-apple-darwin" "Apple Silicon (arm64)"
-fi
-if [[ "$ARCH" == "x86_64" ]] || [[ "$ARCH" == "both" ]]; then
-    build_tauri "x86_64-apple-darwin" "Intel (x86_64)"
-fi
-
-# ── 代码签名 (可选) ─────────────────────────────────────────────────────────
-step "Step 5/6: 代码签名 / Code signing"
-
-sign_app() {
-    local app_path="$1"
-
-    if ! $SIGN; then
-        warn "跳过代码签名 (未指定 --sign)"
-        return
-    fi
-
-    if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-        err "APPLE_SIGNING_IDENTITY 未设置"
-        err "示例: export APPLE_SIGNING_IDENTITY='Developer ID Application: Your Name (TEAMID)'"
+find_unique_app() {
+    local bundle_dir="$1"
+    local matches=()
+    local candidate
+    while IFS= read -r candidate; do
+        matches+=("$candidate")
+    done < <(find "$bundle_dir/macos" -maxdepth 1 -type d -name '*.app' -print)
+    if [[ ${#matches[@]} -ne 1 ]]; then
+        err "期望唯一 .app，实际 ${#matches[@]} 个：$bundle_dir/macos"
         exit 1
     fi
-
-    info "签名: $(basename "$app_path")"
-    codesign --deep --force --options runtime \
-        --sign "$APPLE_SIGNING_IDENTITY" \
-        --timestamp \
-        "$app_path"
-    ok "签名完成: $(basename "$app_path")"
-
-    # 验证签名
-    codesign --verify --verbose=2 "$app_path"
-    ok "签名验证通过"
+    printf '%s\n' "${matches[0]}"
 }
 
-notarize_dmg() {
-    local dmg_path="$1"
+rebuild_dmg() {
+    local app_path="$1"
+    local destination="$2"
+    local app_name="$3"
+    local staging_dir=""
+    local temp_root="${TMPDIR:-/tmp}"
+    temp_root="${temp_root%/}"
 
-    if ! $NOTARIZE; then
-        warn "跳过公证 (未指定 --notarize)"
+    rm -f -- "$destination"
+    if command -v create-dmg >/dev/null 2>&1; then
+        create-dmg \
+            --volname "$app_name" \
+            --window-size 660 400 \
+            --icon-size 80 \
+            --icon "$app_name.app" 180 170 \
+            --app-drop-link 480 170 \
+            "$destination" \
+            "$app_path"
         return
     fi
 
-    for var in APPLE_ID APPLE_TEAM_ID APPLE_PASSWORD; do
-        if [[ -z "${!var:-}" ]]; then
-            err "$var 未设置"
-            exit 1
-        fi
-    done
-
-    info "提交公证: $(basename "$dmg_path")"
-    xcrun notarytool submit "$dmg_path" \
-        --apple-id "$APPLE_ID" \
-        --team-id "$APPLE_TEAM_ID" \
-        --password "$APPLE_PASSWORD" \
-        --wait
-
-    info "装订公证票据..."
-    xcrun stapler staple "$dmg_path"
-    ok "公证完成: $(basename "$dmg_path")"
+    warn "未安装 create-dmg；使用 hdiutil 生成无自定义窗口布局的等价 DMG"
+    staging_dir="$(mktemp -d "$temp_root/meterm-dmg.XXXXXXXX")"
+    chmod 700 "$staging_dir"
+    if ! ditto "$app_path" "$staging_dir/$app_name.app" || \
+       ! ln -s /Applications "$staging_dir/Applications" || \
+       ! hdiutil create -quiet -volname "$app_name" -srcfolder "$staging_dir" \
+            -ov -format UDZO "$destination"; then
+        rm -rf -- "$staging_dir"
+        return 1
+    fi
+    rm -rf -- "$staging_dir"
 }
 
-# ── 收集产物 ────────────────────────────────────────────────────────────────
-step "Step 6/6: 收集产物 / Collecting artifacts"
-
-mkdir -p "$PROJECT_ROOT/$OUTPUT_DIR"
-
-collect_artifacts() {
-    local rust_target="$1"
-    local label="$2"
-    local bundle_dir="$PROJECT_ROOT/desktop/src-tauri/target/${rust_target}/release/bundle"
-
-    # 签名 .app
-    local app_path
-    app_path=$(find "$bundle_dir/macos" -name "*.app" -maxdepth 1 2>/dev/null | head -1)
-    if [[ -n "$app_path" ]]; then
-        sign_app "$app_path"
-    fi
-
-    # 复制 DMG
-    local dmg_path
-    dmg_path=$(find "$bundle_dir/dmg" -name "*.dmg" -maxdepth 1 2>/dev/null | head -1)
-    if [[ -n "$dmg_path" ]]; then
-        local dest="$PROJECT_ROOT/$OUTPUT_DIR/$(basename "$dmg_path" .dmg)-${label}.dmg"
-        cp "$dmg_path" "$dest"
-        notarize_dmg "$dest"
-        ok "DMG: $dest ($(du -h "$dest" | cut -f1))"
-    else
-        warn "未找到 DMG ($label)"
-    fi
-}
-
-if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "both" ]]; then
-    collect_artifacts "aarch64-apple-darwin" "arm64"
+step "1/5 环境检查"
+if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
+    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
-if [[ "$ARCH" == "x86_64" ]] || [[ "$ARCH" == "both" ]]; then
-    collect_artifacts "x86_64-apple-darwin" "x86_64"
-fi
+for command_name in rustc cargo rustup node npm xcrun swiftc codesign security ditto hdiutil; do
+    require_command "$command_name"
+done
+xcrun xcodebuild -version
 
-# ── 构建摘要 ────────────────────────────────────────────────────────────────
-echo ""
-echo -e "${GREEN}════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  构建完成! / Build Complete!${NC}"
-echo -e "${GREEN}════════════════════════════════════════════${NC}"
-echo ""
-info "产物目录: $PROJECT_ROOT/$OUTPUT_DIR/"
-ls -lh "$PROJECT_ROOT/$OUTPUT_DIR/"*.dmg 2>/dev/null || warn "未找到 DMG 文件"
-echo ""
 if $SIGN; then
-    ok "代码签名: 已签名"
-else
-    warn "代码签名: 未签名 (用户安装时需在系统偏好设置中允许)"
+    : "${APPLE_SIGNING_IDENTITY:?--sign 需要 APPLE_SIGNING_IDENTITY}"
+    identity_matches="$(security find-identity -v -p codesigning | grep -F -c "$APPLE_SIGNING_IDENTITY" || true)"
+    if [[ "$identity_matches" -ne 1 ]]; then
+        err "Keychain 中必须恰好存在一个指定签名身份（当前匹配：${identity_matches}）"
+        exit 1
+    fi
 fi
+
 if $NOTARIZE; then
-    ok "Apple 公证: 已完成"
+    : "${APPLE_API_KEY_ID:?--notarize 需要 APPLE_API_KEY_ID}"
+    : "${APPLE_API_ISSUER_ID:?--notarize 需要 APPLE_API_ISSUER_ID}"
+    : "${APPLE_API_KEY_PATH:?--notarize 需要 APPLE_API_KEY_PATH}"
+    [[ -f "$APPLE_API_KEY_PATH" && ! -L "$APPLE_API_KEY_PATH" && -r "$APPLE_API_KEY_PATH" ]] || {
+        err "APPLE_API_KEY_PATH 必须是可读普通文件且不能是符号链接"
+        exit 1
+    }
+fi
+
+if [[ "$ARCH" == "arm64" || "$ARCH" == "both" ]]; then
+    install_rust_target aarch64-apple-darwin
+fi
+if [[ "$ARCH" == "x86_64" || "$ARCH" == "both" ]]; then
+    install_rust_target x86_64-apple-darwin
+fi
+
+step "2/5 安装锁定的桌面依赖"
+(cd "$PROJECT_ROOT/desktop" && npm ci --prefer-offline)
+if $SKIP_FRONTEND; then
+    [[ -f "$PROJECT_ROOT/desktop/dist/index.html" ]] || {
+        err "--skip-frontend 要求 desktop/dist/index.html 已存在"
+        exit 1
+    }
+fi
+
+build_one() {
+    local target="$1"
+    local label="$2"
+    local config_json
+    local bundle_dir
+    local app_path
+    local dmg_path
+    local app_name
+    local dmg_name
+    local app_version
+    local sign_identity="-"
+
+    step "3/5 构建 $label"
+    config_json='{"bundle":{"targets":["app"],"createUpdaterArtifacts":false}}'
+    if $SKIP_FRONTEND; then
+        config_json='{"build":{"beforeBuildCommand":""},"bundle":{"targets":["app"],"createUpdaterArtifacts":false}}'
+    fi
+    (
+        cd "$PROJECT_ROOT/desktop"
+        # Tauri auto-detects these variables and would otherwise sign while it
+        # is still executing the repository build. Keep the build phase free
+        # of signing/notary handles; the fixed operations below sign afterward.
+        unset APPLE_SIGNING_IDENTITY APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
+        unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+        unset APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH
+        unset APPLE_API_KEY_ID APPLE_API_ISSUER_ID
+        CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-false}" \
+            npm run tauri build -- --target "$target" --config "$config_json"
+    )
+
+    bundle_dir="$PROJECT_ROOT/desktop/src-tauri/target/$target/release/bundle"
+    app_path="$(find_unique_app "$bundle_dir")"
+    if $SIGN; then sign_identity="$APPLE_SIGNING_IDENTITY"; fi
+
+    step "4/5 嵌入 Finder 扩展并重建容器（${label}）"
+    bash "$PROJECT_ROOT/desktop/scripts/build-finder-extension.sh" "$app_path" "$sign_identity"
+
+    if $SIGN; then
+        ENTITLEMENTS_PATH="$PROJECT_ROOT/desktop/src-tauri/Entitlements.plist" \
+            APPLE_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY" \
+            bash "$PROJECT_ROOT/desktop/scripts/macos-sign-notarize.sh" sign-app "$app_path"
+    fi
+
+    app_name="$(basename "$app_path" .app)"
+    app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")"
+    [[ "$app_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+        err "App 版本格式无效：$app_version"
+        exit 1
+    }
+    mkdir -p "$bundle_dir/dmg"
+    dmg_name="${app_name}_${app_version}_${label}.dmg"
+    dmg_path="$bundle_dir/dmg/$dmg_name"
+    rebuild_dmg "$app_path" "$bundle_dir/dmg/$dmg_name" "$app_name"
+    dmg_path="$bundle_dir/dmg/$dmg_name"
+    [[ -f "$dmg_path" ]] || { err "DMG 重建失败"; exit 1; }
+
+    if $SIGN; then
+        APPLE_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY" \
+            bash "$PROJECT_ROOT/desktop/scripts/macos-sign-notarize.sh" sign-dmg "$dmg_path"
+        codesign --verify --strict --verbose=2 "$dmg_path"
+    fi
+
+    if $NOTARIZE; then
+        APPLE_API_KEY_ID="$APPLE_API_KEY_ID" \
+            APPLE_API_ISSUER_ID="$APPLE_API_ISSUER_ID" \
+            APPLE_API_KEY_PATH="$APPLE_API_KEY_PATH" \
+            bash "$PROJECT_ROOT/desktop/scripts/macos-sign-notarize.sh" notarize-app "$app_path"
+        APPLE_API_KEY_ID="$APPLE_API_KEY_ID" \
+            APPLE_API_ISSUER_ID="$APPLE_API_ISSUER_ID" \
+            APPLE_API_KEY_PATH="$APPLE_API_KEY_PATH" \
+            bash "$PROJECT_ROOT/desktop/scripts/macos-sign-notarize.sh" notarize-dmg "$dmg_path"
+        xcrun stapler validate "$app_path"
+        xcrun stapler validate "$dmg_path"
+    fi
+
+    step "5/5 收集并复核 $label 产物"
+    mkdir -p "$FINAL_OUTPUT_DIR"
+    local output_app="$FINAL_OUTPUT_DIR/${app_name}-${label}.app"
+    local output_dmg="$FINAL_OUTPUT_DIR/${app_name}-${label}.dmg"
+    if [[ -e "$output_app" || -L "$output_app" || -e "$output_dmg" || -L "$output_dmg" ]]; then
+        err "输出已存在，拒绝覆盖：$output_app 或 $output_dmg"
+        exit 1
+    fi
+    ditto "$app_path" "$output_app"
+    cp "$dmg_path" "$output_dmg"
+    if $SIGN; then
+        codesign --verify --deep --strict --verbose=2 "$output_app"
+        codesign --verify --strict --verbose=2 "$output_dmg"
+    fi
+    shasum -a 256 "$output_dmg"
+    ok "产物：$output_app"
+    ok "产物：$output_dmg"
+}
+
+case "$ARCH" in
+    arm64) build_one aarch64-apple-darwin arm64 ;;
+    x86_64) build_one x86_64-apple-darwin x86_64 ;;
+    both)
+        build_one aarch64-apple-darwin arm64
+        build_one x86_64-apple-darwin x86_64
+        ;;
+esac
+
+echo
+ok "macOS 本地构建完成"
+if $NOTARIZE; then
+    ok "签名与公证已完成并验证"
+elif $SIGN; then
+    warn "已完成 Developer ID 签名，但未提交公证"
 else
-    warn "Apple 公证: 未执行"
+    warn "当前为未签名开发验收产物"
 fi

@@ -49,7 +49,7 @@ export function buildModelDropdown(dropdown: HTMLDivElement, label: HTMLSpanElem
   // Models grouped by provider
   for (const provider of settings.aiProviders) {
     // Skip providers with no API key and no enabled models
-    if (!provider.apiKey && provider.enabledModels.length === 0) continue;
+    if (!provider.hasApiKey && provider.enabledModels.length === 0) continue;
 
     const models = provider.enabledModels.length > 0
       ? provider.enabledModels

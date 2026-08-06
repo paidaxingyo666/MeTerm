@@ -38,8 +38,8 @@ function saveWidth(w: number): void {
 }
 
 interface NewAction {
-  iconName: 'terminal' | 'ssh' | 'remote' | 'jumpserver';
-  labelKey: 'homeNewLocalSession' | 'homeNewSSHSession' | 'homeRemoteConnect' | 'homeNewJumpServer';
+  iconName: 'terminal' | 'ssh' | 'remote' | 'jumpserver' | 'phone';
+  labelKey: 'homeNewLocalSession' | 'homeNewSSHSession' | 'homeRemoteConnect' | 'homeNewJumpServer' | 'homeNewPhonePairing';
   cls: string;
   action: () => void;
   ctxMenu?: boolean;
@@ -60,9 +60,16 @@ const NEW_ACTIONS: NewAction[] = [
       }
     },
   },
+  {
+    iconName: 'phone', labelKey: 'homeNewPhonePairing', cls: 'phone',
+    action: async () => {
+      const { showPairingDialog } = await import('./pairing');
+      await showPairingDialog();
+    },
+  },
 ];
 
-/** Build the 2×2 "new connection" button grid (shared with the empty state). */
+/** Build the "new connection" button grid — 5 buttons, 2 per row (shared with the empty state). */
 export function makeNewButtons(): HTMLElement {
   const row = document.createElement('div');
   row.className = 'home-side-new';

@@ -73,7 +73,7 @@ pub struct AppLifecycleState {
     /// Tracks when each window was created for grace period protection
     window_created_at: Mutex<HashMap<String, Instant>>,
     current_language: Mutex<String>,
-    discoverable: Mutex<bool>,
+    lan_access_menu_checked: Mutex<bool>,
     pending_update: Mutex<Option<String>>,
     /// Path from CLI args — consumed once by frontend on first load.
     initial_open_path: Mutex<Option<String>>,
@@ -90,7 +90,7 @@ impl AppLifecycleState {
             initialized_windows: Mutex::new(HashSet::new()),
             window_created_at: Mutex::new(HashMap::new()),
             current_language: Mutex::new("en".to_string()),
-            discoverable: Mutex::new(false),
+            lan_access_menu_checked: Mutex::new(false),
             pending_update: Mutex::new(None),
         }
     }
@@ -194,14 +194,14 @@ impl AppLifecycleState {
             .unwrap_or_else(|_| "en".to_string())
     }
 
-    pub fn set_discoverable(&self, value: bool) {
-        if let Ok(mut guard) = self.discoverable.lock() {
+    pub fn set_lan_access_menu_checked(&self, value: bool) {
+        if let Ok(mut guard) = self.lan_access_menu_checked.lock() {
             *guard = value;
         }
     }
 
-    pub fn is_discoverable(&self) -> bool {
-        self.discoverable
+    pub fn is_lan_access_menu_checked(&self) -> bool {
+        self.lan_access_menu_checked
             .lock()
             .map(|guard| *guard)
             .unwrap_or(false)
@@ -267,7 +267,10 @@ fn get_target_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     // Utility windows (settings, updater, tray-dialog) are never menu targets —
     // menu actions must be dispatched to a main window so they are actually handled.
     let is_main = |label: &str| {
-        label != "settings" && label != "updater" && label != "about" && label != "tray-dialog"
+        label != "settings"
+            && label != "updater"
+            && label != "about"
+            && label != "tray-dialog"
             && !label.starts_with("drag-preview")
     };
 
@@ -650,16 +653,11 @@ fn dispatch_menu_action(app: &tauri::AppHandle, action: &str) {
             );
         }
         "lan_discover" => {
-            let lifecycle = app.state::<AppLifecycleState>();
-            let new_state = !lifecycle.is_discoverable();
-            lifecycle.set_discoverable(new_state);
-            // Rebuild tray menu with updated checked state
-            let lang = lifecycle.current_language();
-            let _ = commands::set_tray_language(app.clone(), lang);
-            let _ = app.emit(
-                "menu-toggle-lan-discover",
-                serde_json::json!({ "enabled": new_state }),
-            );
+            if let Some(server) = app.try_state::<Arc<server::ServerState>>() {
+                if let Err(error) = commands::lan::toggle_tray_lan_access(app, server.as_ref()) {
+                    eprintln!("[lan] tray transition failed: {error}");
+                }
+            }
         }
         "check_updates" => {
             let _ = window.show();
@@ -734,16 +732,65 @@ fn extract_open_path(args: &[String]) -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Reserve the provisioning flag in every build before APP_START, startup
+    // logging, CLI debug output, or Tauri/WebView initialization. Unsupported
+    // builds reject it instead of ever logging accidentally appended values.
+    const DEV_RELAY_CONFIG_FLAG: &str = "--configure-dev-relay";
+    let early_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let dev_relay_config_requested = early_args
+        .iter()
+        .skip(1)
+        .any(|arg| arg == DEV_RELAY_CONFIG_FLAG);
+    if dev_relay_config_requested {
+        #[cfg(all(
+            debug_assertions,
+            feature = "development-mobile-control",
+            target_os = "macos"
+        ))]
+        let result = server::dev_relay_config::handle_cli(&early_args);
+        #[cfg(not(all(
+            debug_assertions,
+            feature = "development-mobile-control",
+            target_os = "macos"
+        )))]
+        let result: Result<(), String> =
+            Err("development relay provisioning is unavailable in this build".to_string());
+
+        let exit_code = match result {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("[dev-relay-config] {error}");
+                1
+            }
+        };
+        std::process::exit(exit_code);
+    }
+
+    // An unsupported attempt that put a value before the reserved flag is
+    // also rejected before generic CLI processing can record it.
+    if early_args
+        .iter()
+        .skip(1)
+        .any(|arg| arg.to_string_lossy().contains(DEV_RELAY_CONFIG_FLAG))
+    {
+        eprintln!("[dev-relay-config] invalid reserved argument");
+        std::process::exit(1);
+    }
+
     let _ = *APP_START; // initialize timer
     startup_log_reset();
     startup_log("=== App starting ===");
 
     // Parse CLI args for "open in terminal" path
-    let cli_args: Vec<String> = std::env::args().collect();
+    let cli_args: Vec<String> = early_args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     let initial_path = extract_open_path(&cli_args);
     startup_log(&format!(
-        "CLI args: {:?}, initial_path: {:?}",
-        cli_args, initial_path
+        "CLI input parsed: arg_count={}, initial_path_present={}",
+        cli_args.len().saturating_sub(1),
+        initial_path.is_some()
     ));
 
     let lifecycle = AppLifecycleState::new_with_path(initial_path);
@@ -755,7 +802,10 @@ pub fn run() {
     // Only enforce single-instance in release builds, so dev and installed versions can coexist
     #[cfg(not(debug_assertions))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-        startup_log(&format!("Single-instance callback: args={:?}", args));
+        startup_log(&format!(
+            "Single-instance callback: arg_count={}",
+            args.len().saturating_sub(1)
+        ));
         // Another instance was launched — focus the existing main window
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.show();
@@ -764,8 +814,11 @@ pub fn run() {
 
             // If the second instance was launched with a path argument, emit open-path event
             if let Some(path) = extract_open_path(&args) {
-                startup_log(&format!("Single-instance: emitting open-path: {}", path));
-                let _ = app.emit("open-path", path);
+                startup_log("Single-instance: emitting a validated open-path");
+                // Paths may disclose private filenames. Deliver only to the
+                // focused main window instead of every utility webview that is
+                // allowed to register global event listeners.
+                let _ = window.emit("open-path", path);
             }
         }
     }));
@@ -780,6 +833,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(lifecycle)
         .manage(tldr::TldrState::new())
+        .manage(commands::remote_broker::RemoteBrokerState::default())
         .setup(|app| {
             startup_log("Setup: begin");
 
@@ -820,7 +874,18 @@ pub fn run() {
 
             // Start the in-process Rust server
             let server_state: Arc<server::ServerState> = {
-                let config = server::ServerConfig::default();
+                let mut config = server::ServerConfig::default();
+                // token/封禁名单落盘到 app 数据目录:跨重启保持配对(手机 token 不失效)。
+                // 此前 log_dir 恒空,banned-ips.json 的持久化设计从未真正生效,一并接通。
+                if let Ok(data_dir) = app.path().app_data_dir() {
+                    let dir = data_dir.join("server");
+                    let _ = std::fs::create_dir_all(&dir);
+                    // 标准 `make desktop-dev` 使用 com.meterm.dev，与正式版数据目录隔离。
+                    // 文件名仍保留 dev 后缀，防止绕过 Makefile 直接启动 Debug 时互相覆盖。
+                    let token_name = if cfg!(debug_assertions) { "auth-token-dev" } else { "auth-token" };
+                    config.token_file = dir.join(token_name).to_string_lossy().to_string();
+                    config.log_dir = dir.to_string_lossy().to_string();
+                }
                 match tauri::async_runtime::block_on(server::start(config)) {
                     Ok(state) => {
                         startup_log(&format!("Setup: Rust server on port {}", state.port()));
@@ -830,10 +895,19 @@ pub fn run() {
                     Err(e) => {
                         startup_log(&format!("FATAL: Rust server failed: {}", e));
                         eprintln!("[meterm] FATAL: Rust server failed: {}", e);
-                        Arc::new(server::create_dummy_state())
+                        // Do not keep the UI alive with a fabricated server. Besides
+                        // hiding the real startup failure, constructing that state
+                        // after `block_on` has returned can require a Tokio reactor
+                        // that no longer exists. Request a clean fail-closed exit;
+                        // the hidden startup window is never revealed.
+                        app.handle().exit(1);
+                        return Ok(());
                     }
                 }
             };
+            let initial_lan_status = server_state.lan_access_status();
+            app.state::<AppLifecycleState>()
+                .set_lan_access_menu_checked(initial_lan_status.enabled);
             app.manage(server_state);
 
             let quit_item = MenuItem::with_id(app, "quit", "Close Window", true, None::<&str>)?;
@@ -847,7 +921,14 @@ pub fn run() {
             let import_connections_item = MenuItem::with_id(app, "import_connections", "Import Connections", true, None::<&str>)?;
             let export_connections_item = MenuItem::with_id(app, "export_connections", "Export Connections", true, None::<&str>)?;
             let close_all_sessions_item = MenuItem::with_id(app, "close_all_sessions", "Close All Sessions", true, None::<&str>)?;
-            let lan_discover_item = CheckMenuItem::with_id(app, "lan_discover", "LAN Discovery", true, false, None::<&str>)?;
+            let lan_discover_item = CheckMenuItem::with_id(
+                app,
+                "lan_discover",
+                "LAN Access",
+                true,
+                initial_lan_status.enabled,
+                None::<&str>,
+            )?;
             let check_updates_item = MenuItem::with_id(app, "check_updates", "Check for Updates", true, None::<&str>)?;
 
             use tauri::menu::PredefinedMenuItem;
@@ -977,22 +1058,44 @@ pub fn run() {
             commands::window::restart_app_via_open,
             commands::window::reveal_window,
             // lan
-            commands::lan::toggle_lan_sharing,
+            commands::lan::get_lan_access_state,
+            commands::lan::set_lan_access,
+            commands::lan::set_lan_discovery,
             commands::lan::discover_lan,
             commands::lan::get_device_name,
             commands::lan::set_device_name,
             commands::lan::ping_remote,
-            commands::lan::set_discoverable_state,
             commands::lan::list_clients,
             commands::lan::kick_client,
             commands::lan::list_devices,
+            commands::lan::list_paired_credentials,
+            commands::lan::revoke_paired_credential,
             commands::lan::kick_device,
             commands::lan::set_session_private,
+            // Fixed-operation remote desktop broker. Stored tokens stay native.
+            commands::remote_broker::remote_store_token,
+            commands::remote_broker::remote_has_token,
+            commands::remote_broker::remote_delete_token,
+            commands::remote_broker::remote_list_sessions,
+            commands::remote_broker::remote_connect_session,
+            commands::remote_broker::remote_send_frame,
+            commands::remote_broker::remote_close_session,
+            // Identity-confirmed native export; credential bytes never cross WebView IPC.
+            commands::connection_export::export_ssh_connections,
+            // relay tunnel(公网中继隧道配置:出站注册客户端)
+            server::relay_client::get_relay_config,
+            server::relay_client::set_relay_config,
+            // connection sync(桌面前端进程内桥接 ConnectionRegistry/secret_vault)
+            commands::connection_sync::sync_get_connections,
+            commands::connection_sync::sync_import_named_connection,
+            commands::connection_sync::sync_upsert_connection,
+            commands::connection_sync::sync_update_connection_password,
+            commands::connection_sync::sync_delete_connection,
+            commands::connection_sync::sync_migrate_known_secrets,
+            commands::connection_sync::sync_development_credential_recovery_available,
+            commands::connection_sync::sync_import_production_credential_for_development,
             // security
-            commands::security::store_credential,
-            commands::security::get_credential,
-            commands::security::delete_credential,
-            commands::security::read_old_localstorage,
+            commands::security::consume_legacy_ui_preferences,
             commands::security::list_banned_ips,
             commands::security::ban_ip,
             commands::security::unban_ip,
@@ -1000,6 +1103,11 @@ pub fn run() {
             commands::security::set_custom_token,
             commands::security::revoke_all_clients,
             commands::security::set_proxy_mode,
+            // authority-bound JumpServer credential broker (never returns secrets)
+            commands::jumpserver_credentials::jumpserver_migrate_credentials,
+            commands::jumpserver_credentials::jumpserver_store_credentials,
+            commands::jumpserver_credentials::jumpserver_credential_status,
+            commands::jumpserver_credentials::jumpserver_delete_credentials,
             // ipc terminal
             commands::ipc_terminal::ipc_connect_session,
             commands::ipc_terminal::ipc_disconnect_session,
@@ -1007,8 +1115,13 @@ pub fn run() {
             commands::ipc_terminal::ipc_session_resize,
             commands::ipc_terminal::ipc_session_ping,
             commands::ipc_terminal::ipc_session_control,
+            // least-privilege JumpServer utility-window event broker
+            commands::jumpserver_browser::forward_jumpserver_browser_event,
             // ai
+            commands::settings_secrets::initialize_settings_secrets,
+            commands::settings_secrets::update_settings_secrets,
             commands::ai::fetch_ai_models,
+            commands::ai::fetch_searxng_search,
             commands::ai::fetch_ai_stream,
             // fs
             commands::fs::stat_path,
@@ -1172,9 +1285,12 @@ pub fn run() {
                 }
                 RunEvent::Exit => {
                     // Stop Rust server session manager and LAN proxy
-                    let server = app_handle.state::<Arc<server::ServerState>>();
-                    server.stop_lan_proxy();
-                    server.session_manager.stop();
+                    // Startup may have failed before ServerState was managed. In
+                    // that fail-closed path there is nothing to stop.
+                    if let Some(server) = app_handle.try_state::<Arc<server::ServerState>>() {
+                        server.shutdown_lan_access();
+                        server.session_manager.stop();
+                    }
                 }
                 _ => {}
             }

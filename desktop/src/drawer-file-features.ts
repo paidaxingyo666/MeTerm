@@ -6,6 +6,7 @@ import {
   scrollVirtualListToIndex,
   refreshVirtualList,
 } from './file-list-ui';
+import { escapeHtml } from './status-bar';
 
 export function setupBreadcrumb(
   instance: DrawerInstance,
@@ -25,7 +26,7 @@ export function setupBreadcrumb(
       const targetPath = '/' + segments.slice(0, i + 1).join('/');
       const isLast = i === segments.length - 1;
       html += `<span class="breadcrumb-sep">/</span>`;
-      html += `<span class="breadcrumb-item${isLast ? ' active' : ''}" data-path="${targetPath}">${segments[i]}</span>`;
+      html += `<span class="breadcrumb-item${isLast ? ' active' : ''}" data-path="${escapeHtml(targetPath)}">${escapeHtml(segments[i])}</span>`;
     }
     breadcrumb.innerHTML = html;
   };

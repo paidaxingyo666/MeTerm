@@ -18,7 +18,8 @@ import {
 import { activateTab, showHomeView, setViewMode, hideHomeView, hideGalleryView } from './view-manager';
 import { ensureMeTermReady } from './session-actions';
 import { renderTabs } from './tab-renderer';
-import { createSSHSession, consumeLastAuthMethodUsed, addConnection, addRecentConnection, showAuthFailedDialog, updateSavedPassword, type SSHConnectionConfig } from './ssh';
+import { consumeLastAuthMethodUsed, addConnection, addRecentConnection, showAuthFailedDialog, updateSavedPassword, type SSHConnectionConfig } from './ssh';
+import { createSSHSessionForConfig } from './ssh-saved-session';
 import { showToast } from './notify';
 import { loadSettings } from './themes';
 import { message } from '@tauri-apps/plugin-dialog';
@@ -70,7 +71,7 @@ export async function handleSSHConnect(config: SSHConnectionConfig): Promise<voi
     showSSHConnectingPlaceholder(config);
 
     // SSH connection happens in the background while tab is already visible
-    const sessionId = await createSSHSession(config);
+    const sessionId = await createSSHSessionForConfig(config, port, authToken);
     sshConfigMap.set(sessionId, config);
 
     // Surface auto-detected auth path (ssh-agent / default identity)
@@ -82,9 +83,14 @@ export async function handleSSHConnect(config: SSHConnectionConfig): Promise<voi
       showToast({ title: t('sshAuthUsedDefaultTitle'), body: t('sshAuthUsedDefaultBody'), duration: 4000 });
     }
 
-    // Save connection for future use
-    addConnection(config);
-    addRecentConnection(config);
+    // Save only after the complete secret bundle reaches Keychain. A storage
+    // failure must not tear down the already-established SSH session.
+    try {
+      await addConnection(config);
+      addRecentConnection(config);
+    } catch (error) {
+      console.warn('[ssh] Connection established but credentials were not saved:', error);
+    }
 
     // Check if tab was closed while we were connecting
     const existingTab = TabManager.tabs.find((t) => t.id === sshTabId);
@@ -146,8 +152,13 @@ export async function handleSSHConnect(config: SSHConnectionConfig): Promise<voi
       removeSSHConnectingPlaceholder();
       const newPassword = await showAuthFailedDialog(config);
       if (newPassword) {
-        // Update saved password and retry
-        await updateSavedPassword(config.name, newPassword);
+        // Update saved password when possible, but keep the user-entered value
+        // in memory for this retry if Keychain is temporarily unavailable.
+        try {
+          await updateSavedPassword(config.name, newPassword);
+        } catch (storeError) {
+          console.warn('[ssh] Failed to update saved password in Keychain:', storeError);
+        }
         // Clean up the failed tab before retry
         if (sshTabId) {
           const failedTab = TabManager.tabs.find((t) => t.id === sshTabId);

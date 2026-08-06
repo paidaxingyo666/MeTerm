@@ -2,12 +2,22 @@ import { escapeHtml } from './status-bar';
 import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { loadSettings, saveSettings } from './themes';
-import { listen } from '@tauri-apps/api/event';
 import { confirm } from '@tauri-apps/plugin-dialog';
 import { getPairingInfo } from './pairing';
+import {
+  getLanAccessState,
+  listenLanAccessState,
+  setLanAccess,
+  setLanDiscovery,
+  type LanAccessState,
+} from './lan-access';
 import QRCode from 'qrcode';
 
 const ALIAS_KEY = 'meterm-device-aliases';
+// Bootstrap tickets live for 120 seconds on the desktop. Refresh before expiry
+// while retaining a 30-second overlap so a phone that has just scanned the old
+// QR can still redeem it safely.
+const PAIRING_QR_REFRESH_MS = 90_000;
 
 export function getDeviceAlias(ip: string): string {
   try {
@@ -41,8 +51,25 @@ export function createSharingTab(): HTMLDivElement {
   `;
   tabSharing.appendChild(sharingSection);
 
-  // Load pairing data asynchronously
-  getPairingInfo().then((data) => {
+  let pairingRefreshTimer: number | undefined;
+  const showPairingDisabled = (): void => {
+    if (pairingRefreshTimer !== undefined) {
+      window.clearInterval(pairingRefreshTimer);
+      pairingRefreshTimer = undefined;
+    }
+    sharingSection.innerHTML = `<div class="sharing-error">${t('settingsLanPairingDisabled')}</div>`;
+  };
+
+  // A bootstrap ticket is created only after the backend confirms LAN access.
+  const renderPairingInfo = async (): Promise<void> => {
+    if (pairingRefreshTimer !== undefined) {
+      window.clearInterval(pairingRefreshTimer);
+      pairingRefreshTimer = undefined;
+    }
+    sharingSection.innerHTML = `<div class="sharing-loading">${t('connecting')}...</div>`;
+    try {
+      const data = await getPairingInfo();
+    let currentPairingData = data;
     sharingSection.innerHTML = '';
 
     // QR code
@@ -50,7 +77,7 @@ export function createSharingTab(): HTMLDivElement {
     qrRow.className = 'sharing-qr-row';
     const canvas = document.createElement('canvas');
     canvas.className = 'sharing-qr-canvas';
-    QRCode.toCanvas(canvas, JSON.stringify(data), {
+    QRCode.toCanvas(canvas, JSON.stringify(currentPairingData), {
       width: 160,
       margin: 2,
       color: { dark: '#000000', light: '#ffffff' },
@@ -124,38 +151,15 @@ export function createSharingTab(): HTMLDivElement {
     const btns = document.createElement('div');
     btns.className = 'sharing-buttons';
 
-    const shareLinkBtn = document.createElement('button');
-    shareLinkBtn.className = 'settings-btn settings-btn-primary';
-    shareLinkBtn.textContent = t('shareLink');
-    shareLinkBtn.onclick = async () => {
-      const addr = data.addrs[0] || 'localhost';
-      const port = addr.includes(':') ? addr.split(':')[1] : '8080';
-      const host = addr.includes(':') ? addr.split(':')[0] : addr;
-      const shareUrl = `http://${host}:${port}/`;
-      try {
-        await navigator.clipboard.writeText(shareUrl);
-      } catch {
-        const ta = document.createElement('textarea');
-        ta.value = shareUrl;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-      }
-      shareLinkBtn.textContent = t('shareLinkCopied');
-      setTimeout(() => { shareLinkBtn.textContent = t('shareLink'); }, 2000);
-    };
-    btns.appendChild(shareLinkBtn);
-
     const copyDataBtn = document.createElement('button');
-    copyDataBtn.className = 'settings-btn';
+    copyDataBtn.className = 'settings-btn settings-btn-primary';
     copyDataBtn.textContent = t('pairingCopyData');
     copyDataBtn.onclick = async () => {
       try {
-        await navigator.clipboard.writeText(JSON.stringify(data));
+        await navigator.clipboard.writeText(JSON.stringify(currentPairingData));
       } catch {
         const ta = document.createElement('textarea');
-        ta.value = JSON.stringify(data);
+        ta.value = JSON.stringify(currentPairingData);
         document.body.appendChild(ta);
         ta.select();
         document.execCommand('copy');
@@ -181,7 +185,7 @@ export function createSharingTab(): HTMLDivElement {
     dataPreview.className = 'sharing-data-preview';
     dataPreview.style.display = 'none';
     const code = document.createElement('code');
-    code.textContent = JSON.stringify(data, null, 2);
+    code.textContent = JSON.stringify(currentPairingData, null, 2);
     dataPreview.appendChild(code);
     sharingSection.appendChild(dataPreview);
 
@@ -190,40 +194,162 @@ export function createSharingTab(): HTMLDivElement {
       dataPreview.style.display = visible ? 'none' : '';
       toggleDataBtn.innerHTML = visible ? svgDown : svgUp;
     };
-  }).catch(() => {
-    sharingSection.innerHTML = `<div class="sharing-error">${t('sshFailed')}</div>`;
-  });
 
-  // Discoverable toggle (mDNS)
+    let pairingRefreshInFlight = false;
+    const refreshPairingQr = async (): Promise<void> => {
+      if (pairingRefreshInFlight || !tabSharing.isConnected) return;
+      pairingRefreshInFlight = true;
+      try {
+        const refreshed = await getPairingInfo();
+        if (!tabSharing.isConnected) return;
+        currentPairingData = refreshed;
+        code.textContent = JSON.stringify(currentPairingData, null, 2);
+        await QRCode.toCanvas(canvas, JSON.stringify(currentPairingData), {
+          width: 160,
+          margin: 2,
+          color: { dark: '#000000', light: '#ffffff' },
+        });
+      } catch {
+        // Keep the still-valid QR visible and retry on the next interval.
+      } finally {
+        pairingRefreshInFlight = false;
+      }
+    };
+    pairingRefreshTimer = window.setInterval(() => {
+      if (!tabSharing.isConnected) {
+        if (pairingRefreshTimer !== undefined) {
+          window.clearInterval(pairingRefreshTimer);
+          pairingRefreshTimer = undefined;
+        }
+        return;
+      }
+      void refreshPairingQr();
+    }, PAIRING_QR_REFRESH_MS);
+    } catch {
+      showPairingDisabled();
+    }
+  };
+
+  // LAN access is the security boundary. mDNS advertisement is an independent,
+  // subordinate convenience switch. Both display backend-confirmed state only.
+  const accessSection = document.createElement('div');
+  accessSection.className = 'settings-section settings-section-checkbox';
+  const accessLabel = document.createElement('label');
+  const accessToggle = document.createElement('input');
+  accessToggle.type = 'checkbox';
+  accessToggle.id = 'lan-access-toggle';
+  accessToggle.disabled = true;
+  accessLabel.appendChild(accessToggle);
+  accessLabel.appendChild(document.createTextNode(` ${t('settingsLanAccess')}`));
+  accessSection.appendChild(accessLabel);
+  const accessHint = document.createElement('div');
+  accessHint.className = 'sharing-security-hint';
+  accessHint.textContent = t('settingsLanAccessHint');
+  accessSection.appendChild(accessHint);
+  tabSharing.insertBefore(accessSection, sharingSection);
+
   const discoverSection = document.createElement('div');
   discoverSection.className = 'settings-section settings-section-checkbox';
   const discoverLabel = document.createElement('label');
   const discoverToggle = document.createElement('input');
   discoverToggle.type = 'checkbox';
   discoverToggle.id = 'discoverable-toggle';
-  // Restore from localStorage
-  discoverToggle.checked = localStorage.getItem('meterm-discoverable') === '1';
+  discoverToggle.disabled = true;
   discoverLabel.appendChild(discoverToggle);
   discoverLabel.appendChild(document.createTextNode(` ${t('settingsDiscoverable')}`));
   discoverSection.appendChild(discoverLabel);
-  tabSharing.appendChild(discoverSection);
+  const discoverHint = document.createElement('div');
+  discoverHint.className = 'sharing-security-hint';
+  discoverHint.textContent = t('settingsLanDiscoveryHint');
+  discoverSection.appendChild(discoverHint);
+  tabSharing.insertBefore(discoverSection, sharingSection);
 
-  discoverToggle.onchange = async () => {
-    const enabled = discoverToggle.checked;
-    localStorage.setItem('meterm-discoverable', enabled ? '1' : '0');
+  const controlError = document.createElement('div');
+  controlError.className = 'sharing-control-error';
+  controlError.hidden = true;
+  discoverSection.appendChild(controlError);
+
+  let confirmedState: LanAccessState | undefined;
+  let controlBusy = false;
+  let errorTimer: number | undefined;
+  const showControlError = (error: unknown): void => {
+    console.error('LAN access control failed:', error);
+    controlError.textContent = t('settingsLanAccessError');
+    controlError.hidden = false;
+    if (errorTimer !== undefined) window.clearTimeout(errorTimer);
+    errorTimer = window.setTimeout(() => { controlError.hidden = true; }, 5_000);
+  };
+  const applyConfirmedState = (state: LanAccessState): void => {
+    const accessChanged = confirmedState?.enabled !== state.enabled;
+    confirmedState = state;
+    accessToggle.checked = state.enabled;
+    discoverToggle.checked = state.discoverable;
+    accessToggle.disabled = controlBusy;
+    discoverToggle.disabled = controlBusy || !state.enabled;
+    if (accessChanged) {
+      if (state.enabled) void renderPairingInfo();
+      else showPairingDisabled();
+    }
+  };
+  const setControlBusy = (busy: boolean): void => {
+    controlBusy = busy;
+    accessToggle.disabled = busy || confirmedState === undefined;
+    discoverToggle.disabled = busy || !confirmedState?.enabled;
+  };
+
+  void getLanAccessState()
+    .then(applyConfirmedState)
+    .catch((error) => {
+      showPairingDisabled();
+      showControlError(error);
+    });
+
+  void listenLanAccessState(applyConfirmedState);
+
+  accessToggle.onchange = async () => {
+    const requested = accessToggle.checked;
+    accessToggle.checked = confirmedState?.enabled ?? false;
+    if (!requested) {
+      const accepted = await confirm(t('settingsLanAccessDisableConfirm'), {
+        title: t('settingsLanAccess'),
+        kind: 'warning',
+        okLabel: t('settingsLanAccessDisableAction'),
+        cancelLabel: t('hideToTrayTipCancel'),
+      });
+      if (!accepted) return;
+    }
+    setControlBusy(true);
     try {
-      await invoke('toggle_lan_sharing', { enabled });
-      // Sync tray menu checked state
-      await invoke('set_discoverable_state', { checked: enabled });
-    } catch (e) {
-      console.error('toggle_lan_sharing failed:', e);
+      applyConfirmedState(await setLanAccess(requested));
+    } catch (error) {
+      showControlError(error);
+      try {
+        applyConfirmedState(await getLanAccessState());
+      } catch (refreshError) {
+        console.error('failed to refresh LAN state after transition error:', refreshError);
+      }
+    } finally {
+      setControlBusy(false);
     }
   };
 
-  // Listen for tray menu toggle to sync checkbox state
-  void listen<{ enabled: boolean }>('menu-toggle-lan-discover', (event) => {
-    discoverToggle.checked = event.payload.enabled;
-  });
+  discoverToggle.onchange = async () => {
+    const requested = discoverToggle.checked;
+    discoverToggle.checked = confirmedState?.discoverable ?? false;
+    setControlBusy(true);
+    try {
+      applyConfirmedState(await setLanDiscovery(requested));
+    } catch (error) {
+      showControlError(error);
+      try {
+        applyConfirmedState(await getLanAccessState());
+      } catch (refreshError) {
+        console.error('failed to refresh LAN discovery state after transition error:', refreshError);
+      }
+    } finally {
+      setControlBusy(false);
+    }
+  };
 
   // -- Token Management --
   const tokenSection = document.createElement('div');
@@ -290,15 +416,18 @@ export function createSharingTab(): HTMLDivElement {
   const customRow = document.createElement('div');
   customRow.className = 'sharing-custom-token-row';
   const customInput = document.createElement('input');
-  customInput.type = 'text';
+  customInput.type = 'password';
   customInput.className = 'settings-input';
   customInput.placeholder = t('customTokenPlaceholder');
+  customInput.maxLength = 128;
+  customInput.autocomplete = 'new-password';
+  customInput.spellcheck = false;
   const customBtn = document.createElement('button');
   customBtn.className = 'settings-btn';
   customBtn.textContent = t('setToken');
   customBtn.onclick = async () => {
-    const val = customInput.value.trim();
-    if (val.length < 8) {
+    const val = customInput.value;
+    if (val.length < 32 || val.length > 128 || !/^[\x21-\x7e]+$/.test(val)) {
       customInput.style.borderColor = 'var(--danger)';
       customInput.placeholder = t('customTokenTooShort');
       setTimeout(() => {
@@ -348,6 +477,11 @@ export function createSharingTab(): HTMLDivElement {
   revokeBtn.className = 'devices-revoke-btn';
   revokeBtn.textContent = t('revokeAllClients');
   revokeBtn.style.display = 'none';
+  let connectedDeviceCount = 0;
+  let pairedCredentialCount = 0;
+  const updateRevokeAllVisibility = () => {
+    revokeBtn.style.display = connectedDeviceCount > 0 || pairedCredentialCount > 0 ? '' : 'none';
+  };
   revokeBtn.onclick = async () => {
     const confirmed = await confirm(t('confirmRevokeAll'), {
       title: t('revokeAllClients'),
@@ -359,11 +493,16 @@ export function createSharingTab(): HTMLDivElement {
     try {
       const raw = await invoke<string>('revoke_all_clients');
       const data = JSON.parse(raw);
-      revokeBtn.textContent = `${t('revokeSuccess')} (${data.disconnected || 0})`;
       if (data.new_token && tokenRevealed) {
         tokenValue.textContent = data.new_token;
       }
-      setTimeout(() => { loadDevices(); loadBans(); }, 800);
+      if (data.ok) {
+        revokeBtn.textContent = `${t('revokeSuccess')} (${data.disconnected || 0})`;
+      } else {
+        revokeBtn.textContent = t('revokePartialFailure');
+        console.error('revoke_all_clients partially failed:', data.device_error || 'unknown error');
+      }
+      setTimeout(() => { loadDevices(); loadPairedCredentials(); loadBans(); }, 800);
     } catch (e) {
       console.error('revoke_all_clients failed:', e);
     }
@@ -385,12 +524,12 @@ export function createSharingTab(): HTMLDivElement {
     try {
       const raw = await invoke<string>('list_devices');
       const { devices } = JSON.parse(raw);
+      connectedDeviceCount = Array.isArray(devices) ? devices.length : 0;
+      updateRevokeAllVisibility();
       if (!devices || devices.length === 0) {
         devicesTable.innerHTML = `<div class="sharing-empty">${t('noConnectedDevices')}</div>`;
-        revokeBtn.style.display = 'none';
       } else {
         devicesTable.innerHTML = '';
-        revokeBtn.style.display = '';
         for (const device of devices) {
           const card = document.createElement('div');
           card.className = 'device-card';
@@ -533,6 +672,83 @@ export function createSharingTab(): HTMLDivElement {
     } catch { /* ignore */ }
   };
 
+  // -- Persistent paired-device credentials (includes offline phones) --
+  const pairedSection = document.createElement('div');
+  pairedSection.className = 'settings-section';
+  pairedSection.innerHTML = `<div class="settings-section-title">${t('pairedDeviceCredentials')}</div>`;
+  const pairedTable = document.createElement('div');
+  pairedTable.className = 'sharing-devices-table';
+  pairedTable.innerHTML = `<div class="sharing-empty">${t('noPairedDeviceCredentials')}</div>`;
+  pairedSection.appendChild(pairedTable);
+  tabSharing.appendChild(pairedSection);
+
+  type PairedCredential = {
+    device_id: string;
+    device_name: string;
+    created_at: number;
+  };
+
+  const loadPairedCredentials = async () => {
+    try {
+      const raw = await invoke<string>('list_paired_credentials');
+      const parsed = JSON.parse(raw) as { devices?: PairedCredential[] };
+      const credentials = Array.isArray(parsed.devices) ? parsed.devices : [];
+      pairedCredentialCount = credentials.length;
+      updateRevokeAllVisibility();
+      pairedTable.innerHTML = '';
+      if (credentials.length === 0) {
+        pairedTable.innerHTML = `<div class="sharing-empty">${t('noPairedDeviceCredentials')}</div>`;
+        return;
+      }
+      for (const credential of credentials) {
+        const card = document.createElement('div');
+        card.className = 'device-card';
+        const header = document.createElement('div');
+        header.className = 'device-card-header';
+        const info = document.createElement('div');
+        info.className = 'device-card-info';
+        const name = document.createElement('span');
+        name.className = 'device-card-ip';
+        name.textContent = credential.device_name || credential.device_id;
+        const metadata = document.createElement('span');
+        metadata.className = 'device-card-count';
+        const created = Number.isFinite(credential.created_at)
+          ? new Date(credential.created_at * 1000).toLocaleString()
+          : '';
+        metadata.textContent = `${credential.device_id.slice(0, 12)} · ${t('pairedDeviceCreated')} ${created}`;
+        info.appendChild(name);
+        info.appendChild(metadata);
+
+        const revoke = document.createElement('button');
+        revoke.className = 'devices-revoke-btn';
+        revoke.type = 'button';
+        revoke.textContent = t('revokePairedDevice');
+        revoke.onclick = async () => {
+          const confirmed = await confirm(t('confirmRevokePairedDevice'), {
+            title: t('revokePairedDevice'),
+            kind: 'warning',
+            okLabel: t('revokePairedDevice'),
+            cancelLabel: t('hideToTrayTipCancel'),
+          });
+          if (!confirmed) return;
+          try {
+            await invoke('revoke_paired_credential', { deviceId: credential.device_id });
+            await Promise.all([loadPairedCredentials(), loadDevices()]);
+          } catch (error) {
+            console.error('revoke_paired_credential failed:', error);
+          }
+        };
+        header.appendChild(info);
+        header.appendChild(revoke);
+        card.appendChild(header);
+        pairedTable.appendChild(card);
+      }
+    } catch {
+      pairedCredentialCount = 0;
+      updateRevokeAllVisibility();
+    }
+  };
+
   // -- IP Ban List --
   const banSection = document.createElement('div');
   banSection.className = 'settings-section';
@@ -575,10 +791,11 @@ export function createSharingTab(): HTMLDivElement {
   // Auto-refresh when entering sharing tab
   tabSharing.addEventListener('tab-activated', () => {
     loadDevices();
+    loadPairedCredentials();
     loadBans();
   });
   // Initial load (will run after panel visible)
-  setTimeout(() => { loadDevices(); loadBans(); }, 500);
+  setTimeout(() => { loadDevices(); loadPairedCredentials(); loadBans(); }, 500);
 
   return tabSharing;
 }

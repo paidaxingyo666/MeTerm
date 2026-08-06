@@ -74,7 +74,7 @@
 
 - Multi-client sharing — Multiple users on the same terminal in real-time
 - Role-based access control — Master / Viewer / ReadOnly with role transfer
-- mDNS service discovery — Auto-discover devices on LAN
+- mDNS/Bonjour service discovery — System Bonjour publication on macOS, portable discovery on Windows/Linux
 - Auto-reconnection — Ring buffer for missed data
 
 **Other:**
@@ -123,12 +123,11 @@
 > [!NOTE]
 > **Linux**: Only tested on **Ubuntu 24.04**. Other distributions have not been tested yet — feedback and bug reports are welcome.
 
-> [!WARNING]
-> **macOS**: The app is not Apple-signed. macOS may report it as "damaged" or "unverified developer". Run this command in Terminal, then reopen the app:
->
-> ```bash
-> sudo xattr -rd com.apple.quarantine /Applications/MeTerm.app
-> ```
+> [!NOTE]
+> **macOS**: Public v0.2.11 builds use Developer ID signing, notarization, and
+> stapling. Every newer release candidate must independently pass the signing,
+> notarization, and Keychain upgrade checks in `docs/RELEASE_CHECKLIST.md` before
+> distribution; an unsigned local development build is not a release artifact.
 
 ---
 
@@ -156,6 +155,45 @@ cd desktop && npm install && cd ..
 make desktop-dev
 ```
 
+For macOS mobile-control or relay validation, use the isolated, Apple
+Development-signed bundle instead of the unsigned hot-reload executable:
+
+```bash
+make desktop-run-dev              # Builds/signs and opens MeTerm Dev.app (com.meterm.dev)
+```
+
+This target never opens or overwrites an installed production `MeTerm.app`.
+Use the same signing identity on later rebuilds so development Keychain access
+continues to match the app's designated requirement.
+
+`desktop-build-dev` is the only supported target that enables the
+`development-credential-recovery` feature (together with
+`development-mobile-control`). The feature is rejected in Release builds and
+the import command additionally verifies the exact signed `MeTerm Dev.app`
+identity before it can run.
+
+`MeTerm Dev` never scans the production Keychain at startup. To recover one
+missing development credential, right-click that saved SSH connection and use
+the development-only import action. Only that connection's exact authority is
+shown in the native owner-presence prompt. In any macOS Keychain dialog choose
+**Allow**, never **Always Allow**. This action may read only the quarantined
+production `com.meterm.app.ssh.v2` item and can never read the clean production
+v3 vault. A bound v2 item must match the authority; an unbound v2 item is bound
+only after the explicit owner confirmation describing that possibility. The
+source remains unchanged, the copy is written to the isolated Dev service,
+cancellation is not retried on a later launch, and normal Dev runtime never
+falls back to a production vault. Desktop private-key paths are deliberately
+not copied from v2; reselect the file locally so the native confirmation can
+show the exact normalized path. A desktop key-ladder grant copies no production
+secret bytes and writes only a fresh authority marker after owner confirmation.
+
+Normal startup also does not open Keychain for old localStorage/name-keyed SSH,
+Remote, JumpServer, or settings credentials. It only inspects Web Storage and
+records redacted pending/manual/complete states or a non-secret presence cache.
+Re-save the corresponding connection/settings when needed. Until the formal,
+owner-confirmed recovery UI is implemented, old credentials are not claimed as
+recoverable by the distributed app.
+
 Windows development (from WSL):
 
 ```bash
@@ -173,8 +211,14 @@ make release-macos-arm64          # Apple Silicon
 make release-macos-x86_64         # Intel
 make release-macos-all            # Build both architectures
 
-# Code signing (requires Apple Developer ID)
-./build-macos.sh --arch arm64 --sign
+# Code signing uses an existing local Keychain identity; it never exports the private key.
+APPLE_SIGNING_IDENTITY='Developer ID Application: …' \
+  ./build-macos.sh --arch arm64 --sign
+
+# Notarization additionally requires APPLE_API_KEY_ID, APPLE_API_ISSUER_ID,
+# and APPLE_API_KEY_PATH pointing to a local App Store Connect .p8 file.
+APPLE_SIGNING_IDENTITY='Developer ID Application: …' \
+  ./build-macos.sh --arch arm64 --sign --notarize
 ```
 
 #### Windows
@@ -221,6 +265,7 @@ MeTerm/
 │               ├── discover    # mDNS service discovery
 │               └── ...
 ├── frontend/             # Standalone web frontend (xterm.js + Vite)
+├── control-broker/       # Standalone fail-closed control-plane protocol core (Release scopes blocked)
 ├── cloudflare-worker/    # CF Worker auto-update service
 └── scripts/              # Build helper scripts
 ```
@@ -232,6 +277,7 @@ MeTerm/
 | **Backend** | Rust, Axum, Tokio, xpty (cross-platform PTY), russh (SSH/SFTP terminal path), ssh2/libssh2 (desktop SSH file transfer), mdns-sd |
 | **Frontend** | TypeScript, Vite, xterm.js 5.x, CodeMirror 6 |
 | **Desktop** | Tauri v2 (Rust + TypeScript), reqwest, keyring, rusqlite |
+| **Control Broker** | Standalone Rust process/protocol core; platform service adapters are not release-ready |
 | **Update** | Tauri Updater + Cloudflare Worker |
 
 ### Architecture Highlights

@@ -2,6 +2,7 @@ import { AppSettings } from './themes';
 import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { PROVIDER_PRESETS, fetchModels, type ProviderType, type AIProviderEntry } from './ai-provider';
+import { flushSettingsSecrets } from './settings-secrets';
 import { createSettingsSelect } from './custom-select';
 import {
   createPermissionModeRow,
@@ -108,11 +109,14 @@ export function createAITab(
       keyInput.type = 'password';
       keyInput.className = 'settings-input';
       keyInput.style.flex = '1';
-      keyInput.value = entry.apiKey;
-      keyInput.placeholder = 'API Key';
+      keyInput.value = '';
+      keyInput.placeholder = entry.hasApiKey
+        ? (current.language === 'zh' ? 'API Key（已保存，输入新值替换）' : 'API Key (saved; enter to replace)')
+        : 'API Key';
       syncProviderInput(keyInput);
       keyInput.onchange = () => {
         entry.apiKey = keyInput.value.trim();
+        entry.clearApiKey = false;
         update({ aiProviders: [...providers] });
       };
       const keyToggle = document.createElement('button');
@@ -122,6 +126,21 @@ export function createAITab(
       keyToggle.onclick = () => { keyInput.type = keyInput.type === 'password' ? 'text' : 'password'; };
       keyGroup.appendChild(keyInput);
       keyGroup.appendChild(keyToggle);
+      if (entry.hasApiKey) {
+        const clearKeyBtn = document.createElement('button');
+        clearKeyBtn.className = 'settings-toggle-btn';
+        clearKeyBtn.textContent = '×';
+        clearKeyBtn.title = current.language === 'zh' ? '删除已保存的 API Key' : 'Delete saved API Key';
+        clearKeyBtn.onclick = () => {
+          entry.apiKey = '';
+          entry.hasApiKey = false;
+          entry.clearApiKey = true;
+          keyInput.value = '';
+          update({ aiProviders: [...providers] });
+          renderProviderCards();
+        };
+        keyGroup.appendChild(clearKeyBtn);
+      }
       const fetchBtn = document.createElement('button');
       fetchBtn.className = 'settings-select settings-test-btn';
       fetchBtn.textContent = t('aiFetchModels');
@@ -133,11 +152,16 @@ export function createAITab(
       }
       fetchBtn.onclick = async () => {
         entry.apiKey = keyInput.value.trim();
+        entry.clearApiKey = false;
         entry.baseUrl = urlInput.value.trim();
         fetchBtn.disabled = true;
         fetchStatus.textContent = t('aiFetching');
         fetchStatus.className = 'settings-test-result';
         try {
+          // Persist a newly typed replacement before asking the opaque broker
+          // to use it. Existing saved keys never enter this input.
+          update({ aiProviders: [...providers] });
+          await flushSettingsSecrets();
           const models = await fetchModels(entry);
           entry.models = models;
           entry.enabledModels = entry.enabledModels.filter((m) => models.includes(m));
@@ -230,6 +254,7 @@ export function createAITab(
         type: preset.type,
         label: preset.label,
         apiKey: '',
+        hasApiKey: false,
         baseUrl: preset.baseUrl,
         models: [],
         enabledModels: [],
@@ -411,10 +436,15 @@ export function createAITab(
   searxPassInput.type = 'password';
   searxPassInput.className = 'settings-input';
   searxPassInput.style.flex = '1';
-  searxPassInput.value = current.searxngPassword;
-  searxPassInput.placeholder = t('aiSearxngPassword');
+  searxPassInput.value = '';
+  searxPassInput.placeholder = current.searxngHasPassword
+    ? (current.language === 'zh' ? '密码已保存，输入新值替换' : 'Password saved; enter to replace')
+    : t('aiSearxngPassword');
   searxPassInput.autocomplete = 'off';
-  searxPassInput.addEventListener('change', () => update({ searxngPassword: searxPassInput.value }));
+  searxPassInput.addEventListener('change', () => update({
+    searxngPassword: searxPassInput.value,
+    searxngClearPassword: false,
+  }));
   const searxPassToggle = document.createElement('button');
   searxPassToggle.className = 'settings-toggle-btn';
   searxPassToggle.title = 'Show/Hide';
@@ -423,6 +453,21 @@ export function createAITab(
   searxAuthGroup.appendChild(searxUserInput);
   searxAuthGroup.appendChild(searxPassInput);
   searxAuthGroup.appendChild(searxPassToggle);
+  if (current.searxngHasPassword) {
+    const clearSearxPassword = document.createElement('button');
+    clearSearxPassword.className = 'settings-toggle-btn';
+    clearSearxPassword.textContent = '×';
+    clearSearxPassword.title = current.language === 'zh' ? '删除已保存的密码' : 'Delete saved password';
+    clearSearxPassword.onclick = () => {
+      searxPassInput.value = '';
+      update({
+        searxngPassword: '',
+        searxngHasPassword: false,
+        searxngClearPassword: true,
+      });
+    };
+    searxAuthGroup.appendChild(clearSearxPassword);
+  }
   searxAuthRow.appendChild(searxAuthGroup);
   searxngSection.appendChild(searxAuthRow);
 
@@ -442,14 +487,16 @@ export function createAITab(
     searxTestStatus.textContent = t('aiTesting');
     searxTestStatus.className = 'settings-test-result';
     try {
-      const headers: [string, string][] = [];
       const user = searxUserInput.value.trim();
       const pass = searxPassInput.value;
-      if (user && pass) {
-        headers.push(['Authorization', 'Basic ' + btoa(`${user}:${pass}`)]);
-      }
-      const resp = await invoke<{ ok: boolean; status: number; body: string }>('fetch_ai_models', {
-        request: { url: `${url}/search?q=test&format=json`, headers },
+      update({
+        searxngUrl: url,
+        searxngUsername: user,
+        ...(pass ? { searxngPassword: pass, searxngClearPassword: false } : {}),
+      });
+      await flushSettingsSecrets();
+      const resp = await invoke<{ ok: boolean; status: number; body: string }>('fetch_searxng_search', {
+        request: { baseUrl: url, username: user, query: 'test', page: 1 },
       });
       if (!resp.ok) {
         searxTestStatus.textContent = `${t('aiSearxngTestFail')} (HTTP ${resp.status})`;

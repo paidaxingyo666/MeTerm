@@ -1,10 +1,10 @@
+#[cfg(target_os = "macos")]
+use tauri::menu::Submenu;
+use tauri::State;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     AppHandle, Manager,
 };
-#[cfg(target_os = "macos")]
-use tauri::menu::Submenu;
-use tauri::State;
 
 use crate::AppLifecycleState;
 
@@ -20,7 +20,7 @@ pub fn tray_label(language: &str, key: &str) -> &'static str {
         ("zh", "quit_all") => "退出应用",
         ("zh", "import_connections") => "导入连接",
         ("zh", "export_connections") => "导出连接",
-        ("zh", "lan_discover") => "局域网发现",
+        ("zh", "lan_discover") => "局域网连接",
         ("zh", "check_updates") => "检查更新",
         ("zh", "pip_toggle") => "画中画",
         (_, "new_window") => "New Window",
@@ -33,7 +33,7 @@ pub fn tray_label(language: &str, key: &str) -> &'static str {
         (_, "quit_all") => "Quit Application",
         (_, "import_connections") => "Import Connections",
         (_, "export_connections") => "Export Connections",
-        (_, "lan_discover") => "LAN Discovery",
+        (_, "lan_discover") => "LAN Access",
         (_, "check_updates") => "Check for Updates",
         (_, "pip_toggle") => "Picture-in-Picture",
         _ => "",
@@ -130,93 +130,277 @@ pub fn set_app_menu_language(app: &AppHandle, language: &str) -> Result<(), Stri
     let pending_version = app
         .try_state::<crate::AppLifecycleState>()
         .and_then(|s| s.pending_update());
-    let app_settings_item = MenuItem::with_id(app, "settings", app_label(language, "settings"), true, Some("CmdOrCtrl+,"))
-        .map_err(|e| e.to_string())?;
-    let app_quit_item = MenuItem::with_id(app, "quit", app_label(language, "quit"), true, Some("CmdOrCtrl+Q"))
-        .map_err(|e| e.to_string())?;
+    let app_settings_item = MenuItem::with_id(
+        app,
+        "settings",
+        app_label(language, "settings"),
+        true,
+        Some("CmdOrCtrl+,"),
+    )
+    .map_err(|e| e.to_string())?;
+    let app_quit_item = MenuItem::with_id(
+        app,
+        "quit",
+        app_label(language, "quit"),
+        true,
+        Some("CmdOrCtrl+Q"),
+    )
+    .map_err(|e| e.to_string())?;
     let app_sep = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
-    let app_submenu = Submenu::with_items(app, app_label(language, "app"), true, &[&app_settings_item, &app_sep, &app_quit_item])
-        .map_err(|e| e.to_string())?;
+    let app_submenu = Submenu::with_items(
+        app,
+        app_label(language, "app"),
+        true,
+        &[&app_settings_item, &app_sep, &app_quit_item],
+    )
+    .map_err(|e| e.to_string())?;
 
-    let file_new_window_item = MenuItem::with_id(app, "new_window", app_label(language, "new_window"), true, Some("CmdOrCtrl+N"))
-        .map_err(|e| e.to_string())?;
-    let file_new_terminal_item = MenuItem::with_id(app, "new_terminal", app_label(language, "new_terminal"), true, Some("CmdOrCtrl+T"))
-        .map_err(|e| e.to_string())?;
-    let file_show_home_item = MenuItem::with_id(app, "show_home", app_label(language, "show_home"), true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let file_close_all_item = MenuItem::with_id(app, "close_all_sessions", app_label(language, "close_all_sessions"), true, None::<&str>)
-        .map_err(|e| e.to_string())?;
+    let file_new_window_item = MenuItem::with_id(
+        app,
+        "new_window",
+        app_label(language, "new_window"),
+        true,
+        Some("CmdOrCtrl+N"),
+    )
+    .map_err(|e| e.to_string())?;
+    let file_new_terminal_item = MenuItem::with_id(
+        app,
+        "new_terminal",
+        app_label(language, "new_terminal"),
+        true,
+        Some("CmdOrCtrl+T"),
+    )
+    .map_err(|e| e.to_string())?;
+    let file_show_home_item = MenuItem::with_id(
+        app,
+        "show_home",
+        app_label(language, "show_home"),
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let file_close_all_item = MenuItem::with_id(
+        app,
+        "close_all_sessions",
+        app_label(language, "close_all_sessions"),
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
     let file_sep = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
     let file_submenu = Submenu::with_items(
         app,
         app_label(language, "file"),
         true,
-        &[&file_new_window_item, &file_new_terminal_item, &file_show_home_item, &file_sep, &file_close_all_item],
+        &[
+            &file_new_window_item,
+            &file_new_terminal_item,
+            &file_show_home_item,
+            &file_sep,
+            &file_close_all_item,
+        ],
     )
     .map_err(|e| e.to_string())?;
 
-    let edit_undo_item = MenuItem::with_id(app, "undo", app_label(language, "undo"), true, Some("CmdOrCtrl+Z"))
-        .map_err(|e| e.to_string())?;
-    let edit_redo_item = MenuItem::with_id(app, "redo", app_label(language, "redo"), true, Some("CmdOrCtrl+Shift+Z"))
-        .map_err(|e| e.to_string())?;
-    let edit_cut_item = MenuItem::with_id(app, "cut", app_label(language, "cut"), true, Some("CmdOrCtrl+X"))
-        .map_err(|e| e.to_string())?;
-    let edit_copy_item = MenuItem::with_id(app, "copy", app_label(language, "copy"), true, Some("CmdOrCtrl+C"))
-        .map_err(|e| e.to_string())?;
-    let edit_paste_item = MenuItem::with_id(app, "paste", app_label(language, "paste"), true, Some("CmdOrCtrl+V"))
-        .map_err(|e| e.to_string())?;
-    let edit_select_all_item = MenuItem::with_id(app, "select_all", app_label(language, "select_all"), true, Some("CmdOrCtrl+A"))
-        .map_err(|e| e.to_string())?;
+    let edit_undo_item = MenuItem::with_id(
+        app,
+        "undo",
+        app_label(language, "undo"),
+        true,
+        Some("CmdOrCtrl+Z"),
+    )
+    .map_err(|e| e.to_string())?;
+    let edit_redo_item = MenuItem::with_id(
+        app,
+        "redo",
+        app_label(language, "redo"),
+        true,
+        Some("CmdOrCtrl+Shift+Z"),
+    )
+    .map_err(|e| e.to_string())?;
+    let edit_cut_item = MenuItem::with_id(
+        app,
+        "cut",
+        app_label(language, "cut"),
+        true,
+        Some("CmdOrCtrl+X"),
+    )
+    .map_err(|e| e.to_string())?;
+    let edit_copy_item = MenuItem::with_id(
+        app,
+        "copy",
+        app_label(language, "copy"),
+        true,
+        Some("CmdOrCtrl+C"),
+    )
+    .map_err(|e| e.to_string())?;
+    let edit_paste_item = MenuItem::with_id(
+        app,
+        "paste",
+        app_label(language, "paste"),
+        true,
+        Some("CmdOrCtrl+V"),
+    )
+    .map_err(|e| e.to_string())?;
+    let edit_select_all_item = MenuItem::with_id(
+        app,
+        "select_all",
+        app_label(language, "select_all"),
+        true,
+        Some("CmdOrCtrl+A"),
+    )
+    .map_err(|e| e.to_string())?;
     let edit_sep1 = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
     let edit_sep2 = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
     let edit_submenu = Submenu::with_items(
         app,
         app_label(language, "edit"),
         true,
-        &[&edit_undo_item, &edit_redo_item, &edit_sep1, &edit_cut_item, &edit_copy_item, &edit_paste_item, &edit_sep2, &edit_select_all_item],
+        &[
+            &edit_undo_item,
+            &edit_redo_item,
+            &edit_sep1,
+            &edit_cut_item,
+            &edit_copy_item,
+            &edit_paste_item,
+            &edit_sep2,
+            &edit_select_all_item,
+        ],
     )
     .map_err(|e| e.to_string())?;
 
-    let view_show_home_item = MenuItem::with_id(app, "show_home", app_label(language, "show_home"), true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let view_pip_item = MenuItem::with_id(app, "pip_toggle", app_label(language, "pip_toggle"), true, Some("CmdOrCtrl+Shift+P"))
-        .map_err(|e| e.to_string())?;
-    let view_reload_item = MenuItem::with_id(app, "reload", app_label(language, "reload"), true, Some("CmdOrCtrl+R"))
-        .map_err(|e| e.to_string())?;
+    let view_show_home_item = MenuItem::with_id(
+        app,
+        "show_home",
+        app_label(language, "show_home"),
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let view_pip_item = MenuItem::with_id(
+        app,
+        "pip_toggle",
+        app_label(language, "pip_toggle"),
+        true,
+        Some("CmdOrCtrl+Shift+P"),
+    )
+    .map_err(|e| e.to_string())?;
+    let view_reload_item = MenuItem::with_id(
+        app,
+        "reload",
+        app_label(language, "reload"),
+        true,
+        Some("CmdOrCtrl+R"),
+    )
+    .map_err(|e| e.to_string())?;
     let view_sep = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
-    let view_submenu = Submenu::with_items(app, app_label(language, "view"), true, &[&view_show_home_item, &view_pip_item, &view_sep, &view_reload_item])
-        .map_err(|e| e.to_string())?;
+    let view_submenu = Submenu::with_items(
+        app,
+        app_label(language, "view"),
+        true,
+        &[
+            &view_show_home_item,
+            &view_pip_item,
+            &view_sep,
+            &view_reload_item,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
 
-    let window_new_window_item = MenuItem::with_id(app, "new_window", app_label(language, "new_window"), true, Some("CmdOrCtrl+N"))
-        .map_err(|e| e.to_string())?;
-    let window_show_home_item = MenuItem::with_id(app, "show_home", app_label(language, "show_home"), true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let window_new_terminal_item = MenuItem::with_id(app, "new_terminal", app_label(language, "new_terminal"), true, Some("CmdOrCtrl+T"))
-        .map_err(|e| e.to_string())?;
-    let window_settings_item = MenuItem::with_id(app, "settings", app_label(language, "settings"), true, Some("CmdOrCtrl+,"))
-        .map_err(|e| e.to_string())?;
+    let window_new_window_item = MenuItem::with_id(
+        app,
+        "new_window",
+        app_label(language, "new_window"),
+        true,
+        Some("CmdOrCtrl+N"),
+    )
+    .map_err(|e| e.to_string())?;
+    let window_show_home_item = MenuItem::with_id(
+        app,
+        "show_home",
+        app_label(language, "show_home"),
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let window_new_terminal_item = MenuItem::with_id(
+        app,
+        "new_terminal",
+        app_label(language, "new_terminal"),
+        true,
+        Some("CmdOrCtrl+T"),
+    )
+    .map_err(|e| e.to_string())?;
+    let window_settings_item = MenuItem::with_id(
+        app,
+        "settings",
+        app_label(language, "settings"),
+        true,
+        Some("CmdOrCtrl+,"),
+    )
+    .map_err(|e| e.to_string())?;
     let window_submenu = Submenu::with_items(
         app,
         app_label(language, "window"),
         true,
-        &[&window_new_window_item, &window_show_home_item, &window_new_terminal_item, &window_settings_item],
+        &[
+            &window_new_window_item,
+            &window_show_home_item,
+            &window_new_terminal_item,
+            &window_settings_item,
+        ],
     )
     .map_err(|e| e.to_string())?;
 
-    let help_about_item = MenuItem::with_id(app, "show_about", app_label(language, "show_about"), true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let help_shortcuts_item = MenuItem::with_id(app, "show_shortcuts", app_label(language, "show_shortcuts"), true, Some("CmdOrCtrl+/"))
-        .map_err(|e| e.to_string())?;
+    let help_about_item = MenuItem::with_id(
+        app,
+        "show_about",
+        app_label(language, "show_about"),
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let help_shortcuts_item = MenuItem::with_id(
+        app,
+        "show_shortcuts",
+        app_label(language, "show_shortcuts"),
+        true,
+        Some("CmdOrCtrl+/"),
+    )
+    .map_err(|e| e.to_string())?;
     let check_updates_label = build_check_updates_app_label(language, pending_version.as_deref());
-    let help_check_updates_item = MenuItem::with_id(app, "check_updates", check_updates_label.as_str(), true, None::<&str>)
-        .map_err(|e| e.to_string())?;
+    let help_check_updates_item = MenuItem::with_id(
+        app,
+        "check_updates",
+        check_updates_label.as_str(),
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
     let help_sep = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
-    let help_submenu = Submenu::with_items(app, app_label(language, "help"), true, &[&help_check_updates_item, &help_sep, &help_about_item, &help_shortcuts_item])
-        .map_err(|e| e.to_string())?;
+    let help_submenu = Submenu::with_items(
+        app,
+        app_label(language, "help"),
+        true,
+        &[
+            &help_check_updates_item,
+            &help_sep,
+            &help_about_item,
+            &help_shortcuts_item,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
 
     let menu = Menu::with_items(
         app,
-        &[&app_submenu, &file_submenu, &edit_submenu, &view_submenu, &window_submenu, &help_submenu],
+        &[
+            &app_submenu,
+            &file_submenu,
+            &edit_submenu,
+            &view_submenu,
+            &window_submenu,
+            &help_submenu,
+        ],
     )
     .map_err(|e| e.to_string())?;
     app.set_menu(menu).map_err(|e| e.to_string())?;
@@ -324,7 +508,7 @@ pub fn set_tray_language(app: AppHandle, language: String) -> Result<(), String>
     )
     .map_err(|e| e.to_string())?;
 
-    let checked = lifecycle.is_discoverable();
+    let checked = lifecycle.is_lan_access_menu_checked();
     let lan_discover_item = CheckMenuItem::with_id(
         &app,
         "lan_discover",
@@ -382,7 +566,11 @@ pub fn set_tray_language(app: AppHandle, language: String) -> Result<(), String>
 /// Called from the frontend when an update is found (or cleared).
 /// Updates the tray and native menu bar to show/hide the badge indicator.
 #[tauri::command]
-pub fn set_update_badge(app: AppHandle, state: State<'_, AppLifecycleState>, version: Option<String>) -> Result<(), String> {
+pub fn set_update_badge(
+    app: AppHandle,
+    state: State<'_, AppLifecycleState>,
+    version: Option<String>,
+) -> Result<(), String> {
     state.set_pending_update(version);
     let lang = state.current_language();
     set_tray_language(app, lang)

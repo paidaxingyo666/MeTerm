@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>MeTerm 需要访问本地网络，以便手机端发现并安全连接这台电脑。</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_meterm._tcp</string>
+    </array>
+</dict>
+</plist>

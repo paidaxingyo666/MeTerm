@@ -1,7 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import { TerminalRegistry, type SessionStatus } from './terminal';
 import { t } from './i18n';
-import { createSSHSession, type SSHConnectionConfig } from './ssh';
+import type { SSHConnectionConfig } from './ssh';
+import { createSSHSessionForConfig } from './ssh-saved-session';
+import { DrawerManager } from './drawer';
 import {
   type SplitNode,
   type SplitDirection,
@@ -133,6 +135,44 @@ class TabManagerClass {
     this.notify();
   }
 
+  /// 为服务端已存在的会话开标签并连接(远端[手机]创建的会话自动出现在桌面;
+  /// 不 POST create_session)。attach 后本端成为 loopback 客户端,其他窗口的
+  /// 发现 poller 据 has_local_client 跳过,不会重复开标签。
+  addTabForSession(sessionId: string, port: number, token: string, title?: string, executorType?: string, sshInfo?: { host: string; username: string; port: number }): void {
+    const paneId = generatePaneId();
+    const tabId = generateTabId();
+    const tab: Tab = {
+      id: tabId,
+      splitRoot: { type: 'leaf', id: paneId, sessionId },
+      focusedPaneId: paneId,
+      title: title || `${t('responseSession')} ${this.tabs.length + 1}`,
+      status: 'connecting',
+      paneCounterNext: 2,
+      paneNumbers: new Map([[paneId, 1]]),
+    };
+    this.tabs.push(tab);
+    // 手机端建的会话与桌面自建会话一样需要一个 Drawer 实例,否则工具栏"文件管理"按钮
+    // (依赖 DrawerManager.has(activeSessionId))永远不出现。create 幂等,executorType
+    // 决定文件浏览走 SSH 远端还是本地(缺省 local);ssh 会话必须传 'ssh' 才能浏览远端文件系统。
+    DrawerManager.create(sessionId, executorType || 'local');
+    // SSH 会话回填连接信息(host/user/port):手机建的会话桌面本地没有配置,由服务端
+    // /api/sessions 带来。必须在 TerminalRegistry.create(触发 WS onopen → setWebSocket)
+    // 之前设,否则 serverConnectionInfo 仍为 null,SSH 会话初始路径会用错('/' 而非 '.')。
+    if (sshInfo?.host) {
+      DrawerManager.updateServerInfo(sessionId, sshInfo);
+    }
+    // 不抢焦点:用户可能正在别的标签工作,远端会话静默入列
+    if (!this.activeTabId) this.activeTabId = tabId;
+    TerminalRegistry.create(
+      sessionId,
+      port,
+      token,
+      (status) => { this.updateStatus(tabId, sessionId, status); },
+      (title2) => { this.updateTitle(tabId, sessionId, title2); },
+    );
+    this.notify();
+  }
+
   activate(tabId: string): void {
     this.activeTabId = tabId;
     this.notify();
@@ -225,7 +265,7 @@ class TabManagerClass {
     // Create new session — SSH or local
     let newSessionId: string;
     if (sshConfig) {
-      newSessionId = await createSSHSession(sshConfig);
+      newSessionId = await createSSHSessionForConfig(sshConfig, port, authToken);
     } else {
       const raw = await invoke<string>('create_session', { shell: shell || null });
       const parsed = JSON.parse(raw) as SessionCreateResponse;

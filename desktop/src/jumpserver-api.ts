@@ -2,7 +2,8 @@
  * jumpserver-api.ts — JumpServer REST API client
  *
  * Communicates with the Go backend which proxies requests to JumpServer.
- * Handles authentication (with MFA), asset browsing, and connection tokens.
+ * Handles authentication (with MFA), asset browsing, and fixed native SSH
+ * operations. Short-lived Koko credentials never enter this module.
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -90,19 +91,60 @@ export interface AccountsResult {
   error?: string;
 }
 
-export interface ConnectionTokenResult {
-  ok: boolean;
-  id?: string;
-  token?: string;
-  secret?: string; // v2: SSH password for JMS-{token} connection
-  error?: string;
+export interface JumpServerSecrets {
+  password?: string;
+  apiToken?: string;
+  proxyPassword?: string;
+}
+
+export interface JumpServerCredentialBinding {
+  name: string;
+  baseUrl: string;
+  sshHost: string;
+  sshPort: number;
+  username: string;
+  authMethod: 'password' | 'token';
+  orgId: string;
+  proxyType: string;
+  proxyHost: string;
+  proxyPort: number;
+  proxyUsername: string;
+}
+
+export interface JumpServerCredentialStatus {
+  exists: boolean;
+  bindingMatches: boolean;
+  hasPassword: boolean;
+  hasApiToken: boolean;
+  hasProxyPassword: boolean;
 }
 
 // ── Storage ──
 
 const JS_CONNECTIONS_KEY = 'meterm-jumpserver-connections';
-const JS_KEYCHAIN_SERVICE = 'com.meterm.app.jumpserver';
-const JS_KEYCHAIN_SERVICE_OLD = 'com.meterm.dev.jumpserver';
+const JS_CREDENTIAL_MIGRATION_MARKER_KEY = 'meterm-jumpserver-credential-migration-v1';
+const CREDENTIAL_MIGRATION_COMPLETE = 'complete';
+const CREDENTIAL_MIGRATION_MANUAL = 'manual';
+export function jumpServerCredentialBinding(config: JumpServerConfig): JumpServerCredentialBinding {
+  return {
+    name: config.name,
+    baseUrl: config.baseUrl,
+    sshHost: config.sshHost,
+    sshPort: config.sshPort || 2222,
+    username: config.username,
+    authMethod: config.authMethod,
+    orgId: config.orgId || '',
+    proxyType: config.proxyType || '',
+    proxyHost: config.proxyHost || '',
+    proxyPort: config.proxyPort || 0,
+    proxyUsername: config.proxyUsername || '',
+  };
+}
+
+export function stripJumpServerCredentialFields(config: JumpServerConfig): JumpServerConfig {
+  const { password: _password, apiToken: _apiToken, proxyPassword: _proxyPassword, ...metadata } = config;
+  return metadata;
+}
 
 export function loadJumpServerConfigs(): JumpServerConfig[] {
   try {
@@ -128,23 +170,47 @@ export function saveJumpServerConfigs(configs: JumpServerConfig[]): void {
     proxyType: c.proxyType,
     proxyHost: c.proxyHost,
     proxyPort: c.proxyPort,
+    proxyUsername: c.proxyUsername,
   }));
   localStorage.setItem(JS_CONNECTIONS_KEY, JSON.stringify(stripped));
 }
 
-export async function addJumpServerConfig(config: JumpServerConfig): Promise<void> {
+export async function addJumpServerConfig(config: JumpServerConfig, previousName?: string): Promise<void> {
   const configs = loadJumpServerConfigs();
-  const idx = configs.findIndex(c => c.name === config.name);
-  if (idx >= 0) {
-    configs[idx] = config;
+  const oldName = previousName || config.name;
+  const idx = configs.findIndex(c => c.name === oldName);
+  const binding = jumpServerCredentialBinding(config);
+  const hasPrimarySubmission = config.authMethod === 'token' ? !!config.apiToken : !!config.password;
+  if (oldName !== config.name && !hasPrimarySubmission) {
+    throw new Error('jumpserver_credential_authority_changed');
+  }
+  const submitted: JumpServerSecrets = {
+    password: config.password,
+    apiToken: config.apiToken,
+    proxyPassword: config.proxyPassword,
+  };
+  if (submitted.password || submitted.apiToken || submitted.proxyPassword) {
+    await invoke<JumpServerCredentialStatus>('jumpserver_store_credentials', {
+      binding,
+      credentials: submitted,
+    });
   } else {
-    configs.push(config);
+    const migrated = await invoke<JumpServerCredentialStatus>('jumpserver_migrate_credentials', { binding });
+    if (migrated.exists && !migrated.bindingMatches) {
+      throw new Error('jumpserver_credential_authority_changed');
+    }
+  }
+
+  const metadata = stripJumpServerCredentialFields(config);
+  if (idx >= 0) {
+    configs[idx] = metadata;
+  } else {
+    configs.push(metadata);
   }
   saveJumpServerConfigs(configs);
 
-  // Store secrets in keychain
-  if (config.password || config.apiToken) {
-    await storeJSSecrets(config.name, config.password, config.apiToken);
+  if (oldName !== config.name) {
+    await deleteJSSecrets(oldName);
   }
 
   document.dispatchEvent(new CustomEvent('ssh-connections-changed'));
@@ -153,53 +219,67 @@ export async function addJumpServerConfig(config: JumpServerConfig): Promise<voi
 export async function removeJumpServerConfig(name: string): Promise<void> {
   const configs = loadJumpServerConfigs();
   const filtered = configs.filter(c => c.name !== name);
-  saveJumpServerConfigs(filtered);
+  // Keep the metadata/account name available for retry if Keychain deletion
+  // fails; otherwise an orphaned broad-ACL item would become undiscoverable.
   await deleteJSSecrets(name);
+  saveJumpServerConfigs(filtered);
   document.dispatchEvent(new CustomEvent('ssh-connections-changed'));
 }
 
-export async function storeJSSecrets(name: string, password?: string, apiToken?: string): Promise<void> {
-  const data = JSON.stringify({ password: password || '', apiToken: apiToken || '' });
-  try {
-    await invoke('store_credential', { service: JS_KEYCHAIN_SERVICE, account: name, secret: data });
-  } catch (e) {
-    console.warn('[jumpserver] Failed to store secrets:', e);
-  }
-}
-
-export async function loadJSSecrets(name: string): Promise<{ password?: string; apiToken?: string }> {
-  // Try new service name first
-  try {
-    const raw = await invoke<string>('get_credential', { service: JS_KEYCHAIN_SERVICE, account: name });
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return { password: parsed.password || undefined, apiToken: parsed.apiToken || undefined };
-    }
-  } catch { /* not found */ }
-  // Fallback: old service name (com.meterm.dev.jumpserver → com.meterm.app.jumpserver)
-  try {
-    const raw = await invoke<string>('get_credential', { service: JS_KEYCHAIN_SERVICE_OLD, account: name });
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      const result = { password: parsed.password || undefined, apiToken: parsed.apiToken || undefined };
-      // Migrate to new service in background
-      setTimeout(() => {
-        invoke('store_credential', { service: JS_KEYCHAIN_SERVICE, account: name, secret: raw })
-          .then(() => invoke('delete_credential', { service: JS_KEYCHAIN_SERVICE_OLD, account: name }).catch(() => {}))
-          .catch(() => {});
-      }, 3000);
-      return result;
-    }
-  } catch { /* not found */ }
-  return {};
+export async function storeJSSecrets(
+  config: JumpServerConfig,
+  password?: string,
+  apiToken?: string,
+  proxyPassword?: string,
+): Promise<JumpServerCredentialStatus> {
+  return invoke<JumpServerCredentialStatus>('jumpserver_store_credentials', {
+    binding: jumpServerCredentialBinding(config),
+    credentials: { password, apiToken, proxyPassword },
+  });
 }
 
 export async function deleteJSSecrets(name: string): Promise<void> {
+  await invoke('jumpserver_delete_credentials', { name });
+}
+
+export async function jumpServerCredentialStatus(
+  config: JumpServerConfig,
+): Promise<JumpServerCredentialStatus> {
+  return invoke<JumpServerCredentialStatus>('jumpserver_credential_status', {
+    binding: jumpServerCredentialBinding(config),
+  });
+}
+
+/** Startup-only local inspection. Native migration stays on explicit UI use. */
+export async function detectJumpServerCredentialMigrationPendingAtStartup(): Promise<void> {
+  if (localStorage.getItem(JS_CREDENTIAL_MIGRATION_MARKER_KEY)) return;
+
+  let raw: string | null = null;
+  let configs: JumpServerConfig[] = [];
   try {
-    await invoke('delete_credential', { service: JS_KEYCHAIN_SERVICE, account: name });
-  } catch {
-    // ignore
+    raw = localStorage.getItem(JS_CONNECTIONS_KEY);
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('invalid JumpServer connection storage');
+      configs = parsed as JumpServerConfig[];
+    }
+  } catch (error) {
+    localStorage.setItem(JS_CREDENTIAL_MIGRATION_MARKER_KEY, CREDENTIAL_MIGRATION_MANUAL);
+    console.warn('[security] JumpServer credential migration requires explicit re-save:', error);
+    throw error;
   }
+
+  const plaintextConfigs = configs.filter((config) => (
+    !!(config?.password || config?.apiToken || config?.proxyPassword)
+  ));
+  if (plaintextConfigs.length === 0) {
+    localStorage.setItem(JS_CREDENTIAL_MIGRATION_MARKER_KEY, CREDENTIAL_MIGRATION_COMPLETE);
+    return;
+  }
+
+  // Preserve the only plaintext source. Opening/saving the JumpServer entry is
+  // the explicit action that may invoke native credential migration.
+  localStorage.setItem(JS_CREDENTIAL_MIGRATION_MARKER_KEY, CREDENTIAL_MIGRATION_MANUAL);
 }
 
 // ── API Calls (via Go backend proxy) ──
@@ -240,14 +320,15 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
  * If MFA is required, the result will indicate so and the caller should
  * use submitMFA() to complete authentication.
  */
-export async function authenticate(config: JumpServerConfig): Promise<AuthResult> {
+export async function authenticate(
+  config: JumpServerConfig,
+  credentialOverride?: string,
+): Promise<AuthResult> {
   return fetchJSON<AuthResult>('/api/jumpserver/auth', {
     method: 'POST',
     body: JSON.stringify({
-      base_url: config.baseUrl,
-      username: config.username,
-      password: config.password,
-      org_id: config.orgId,
+      binding: jumpServerCredentialBinding(config),
+      credentialOverride,
     }),
   });
 }
@@ -255,13 +336,15 @@ export async function authenticate(config: JumpServerConfig): Promise<AuthResult
 /**
  * Authenticate with a direct API token (Private Token or Bearer Token).
  */
-export async function authenticateWithToken(config: JumpServerConfig): Promise<AuthResult> {
+export async function authenticateWithToken(
+  config: JumpServerConfig,
+  credentialOverride?: string,
+): Promise<AuthResult> {
   return fetchJSON<AuthResult>('/api/jumpserver/token-auth', {
     method: 'POST',
     body: JSON.stringify({
-      base_url: config.baseUrl,
-      token: config.apiToken,
-      org_id: config.orgId,
+      binding: jumpServerCredentialBinding(config),
+      credentialOverride,
     }),
   });
 }
@@ -270,11 +353,15 @@ export async function authenticateWithToken(config: JumpServerConfig): Promise<A
  * Submit MFA verification code.
  * Must be called after authenticate() returns mfa_required=true.
  */
-export async function submitMFA(baseUrl: string, mfaType: string, code: string): Promise<AuthResult> {
+export async function submitMFA(
+  config: JumpServerConfig,
+  mfaType: string,
+  code: string,
+): Promise<AuthResult> {
   return fetchJSON<AuthResult>('/api/jumpserver/mfa', {
     method: 'POST',
     body: JSON.stringify({
-      base_url: baseUrl,
+      binding: jumpServerCredentialBinding(config),
       type: mfaType,
       code,
     }),
@@ -315,34 +402,34 @@ export async function getAccounts(baseUrl: string, assetId: string): Promise<Acc
 }
 
 /**
- * Create a connection token for WebSocket terminal access.
- * Sends all available account identifiers so the backend can try multiple
- * formats for different JumpServer versions:
- *   - v4: account = alias (often UUID when no custom alias)
- *   - v3: account = username
- *   - v2: system_user = id (UUID)
+ * Start the fixed Koko SSH operation. Rust creates and consumes the
+ * short-lived JMS credential; the WebView sends only target metadata.
  */
-export async function createConnectionToken(
-  baseUrl: string,
-  assetId: string,
-  accountName: string,
-  accountUsername: string,
-  accountAlias: string,
-  accountId: string,
-  protocol = 'ssh',
-): Promise<ConnectionTokenResult> {
-  return fetchJSON<ConnectionTokenResult>('/api/jumpserver/connection-token', {
+export async function createJumpServerSshSession(
+  config: JumpServerConfig,
+  asset: JumpServerAsset,
+  account: JumpServerAccount,
+  trustedFingerprint?: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const response = await fetch(`http://127.0.0.1:${port}/api/jumpserver/ssh-session`, {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${authToken}`,
+    },
     body: JSON.stringify({
-      base_url: baseUrl,
-      asset_id: assetId,
-      account: accountUsername,
-      account_name: accountName,
-      account_alias: accountAlias,
-      account_id: accountId,
-      protocol,
+      binding: jumpServerCredentialBinding(config),
+      assetId: asset.id,
+      account: account.username,
+      accountName: account.name,
+      accountAlias: account.alias || '',
+      accountId: account.id,
+      protocol: 'ssh',
+      trustedFingerprint,
     }),
   });
+  const body = await response.json() as Record<string, unknown>;
+  return { status: response.status, body };
 }
 
 /**

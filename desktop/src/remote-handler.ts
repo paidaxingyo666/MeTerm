@@ -13,7 +13,7 @@ import {
 } from './overlays';
 import { activateTab, setViewMode, hideHomeView, hideGalleryView } from './view-manager';
 import { renderTabs } from './tab-renderer';
-import { addRecentRemoteConnection, loadRemoteToken, remoteWsBase, type RemoteServerInfo } from './remote';
+import { addRecentRemoteConnection, type RemoteServerInfo } from './remote';
 import {
   remoteInfoMap, remoteTabNumbers, incrementNextRemoteTabNumber,
 } from './app-state';
@@ -30,13 +30,6 @@ export async function handleRemoteConnect(info: RemoteServerInfo, sessionId: str
     }
   }
 
-  // Load token from keychain if not present in info (e.g., from saved/recent card)
-  let token = info.token;
-  if (!token) {
-    token = await loadRemoteToken(info.host, info.port) || '';
-  }
-
-  const wsUrl = `${remoteWsBase(info)}/ws/${sessionId}`;
   const remoteTabId = `tab-remote-${Date.now().toString(36)}`;
   const { generatePaneId: genPaneId } = await import('./split-pane');
   const remotePaneId = genPaneId();
@@ -53,9 +46,10 @@ export async function handleRemoteConnect(info: RemoteServerInfo, sessionId: str
   };
   TabManager.tabs.push(tab);
   TabManager.activeTabId = remoteTabId;
-  remoteInfoMap.set(sessionId, { ...info, token });
+  const brokeredInfo = { ...info, token: '' };
+  remoteInfoMap.set(sessionId, brokeredInfo);
   remoteTabNumbers.set(sessionId, incrementNextRemoteTabNumber());
-  addRecentRemoteConnection(info);
+  addRecentRemoteConnection(brokeredInfo);
   document.dispatchEvent(new CustomEvent('remote-connections-changed'));
   TabManager.notify();
   renderTabs();
@@ -66,8 +60,8 @@ export async function handleRemoteConnect(info: RemoteServerInfo, sessionId: str
 
   const mt = TerminalRegistry.createRemote(
     sessionId,
-    wsUrl,
-    token,
+    info.host,
+    info.port,
     (status) => {
       const foundTab = TabManager.tabs.find((t) => t.id === remoteTabId);
       if (foundTab) {

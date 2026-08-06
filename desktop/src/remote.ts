@@ -1,9 +1,27 @@
+import { invoke } from '@tauri-apps/api/core';
 import { t } from './i18n';
 import { icon } from './icons';
 import { escapeHtml } from './status-bar';
-import { invoke } from '@tauri-apps/api/core';
-import { getDeviceAlias } from './settings-sharing';
 import { loadGroupOrder, remoteKey, setConnectionGroup, removeConnectionGroup, getConnectionGroup } from './connection-groups';
+import { buildScanPanel } from './remote-scan';
+import {
+  addRecentRemoteConnection,
+  addRemoteConnection,
+  hasRemoteToken,
+  prepareRemoteCredential,
+} from './remote-storage';
+
+export {
+  addRecentRemoteConnection,
+  addRemoteConnection,
+  detectRemoteCredentialMigrationPendingAtStartup,
+  loadRecentRemoteConnections,
+  hasRemoteToken,
+  loadSavedRemoteConnections,
+  pruneUnreachableRecentRemotes,
+  removeRecentRemoteConnection,
+  removeRemoteConnection,
+} from './remote-storage';
 
 export interface RemoteServerInfo {
   host: string;
@@ -11,16 +29,17 @@ export interface RemoteServerInfo {
   token: string;
   name?: string;
   secure?: boolean;
+  /** Optional SHA-256 TLS leaf certificate pin, stored with the native credential binding. */
+  certFp?: string;
 }
 
-function remoteHttpBase(info: RemoteServerInfo): string {
-  const protocol = info.secure ? 'https' : 'http';
-  return `${protocol}://${info.host}:${info.port}`;
-}
-
-export function remoteWsBase(info: RemoteServerInfo): string {
-  const protocol = info.secure ? 'wss' : 'ws';
-  return `${protocol}://${info.host}:${info.port}`;
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (normalized === 'localhost' || normalized === '::1') return true;
+  const octets = normalized.split('.');
+  return octets.length === 4
+    && octets[0] === '127'
+    && octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255);
 }
 
 export interface RemoteSession {
@@ -30,213 +49,8 @@ export interface RemoteSession {
   state: string;
   executor_type?: string;
   private?: boolean;
-}
-
-// --- Remote connection storage (metadata in localStorage, token in OS keychain) ---
-const REMOTE_CONNECTIONS_KEY = 'meterm-remote-connections';
-const REMOTE_RECENT_KEY = 'meterm-remote-recent';
-const MAX_REMOTE_RECENT = 5;
-const REMOTE_KEYCHAIN_SERVICE = 'com.meterm.app.remote';
-const REMOTE_KEYCHAIN_SERVICE_OLD = 'com.meterm.dev.remote';
-
-// ─── Secure token storage helpers ───
-
-function remoteKeychainAccount(host: string, port: number): string {
-  return `${host}:${port}:token`;
-}
-
-async function storeRemoteToken(host: string, port: number, token: string): Promise<void> {
-  if (!token) return;
-  const cacheKey = `${host}:${port}`;
-  // Skip keychain write if cache already has identical token (avoids unnecessary system dialog)
-  if (remoteTokenCache.get(cacheKey) === token) return;
-  remoteTokenCache.set(cacheKey, token);
-  await invoke('store_credential', { service: REMOTE_KEYCHAIN_SERVICE, account: remoteKeychainAccount(host, port), secret: token }).catch(() => {});
-}
-
-// In-memory cache + inflight dedup to avoid repeated keychain access (which triggers system dialogs)
-// null means "checked but not found" (negative cache)
-const remoteTokenCache = new Map<string, string | null>();
-const remoteTokenInflight = new Map<string, Promise<string | undefined>>();
-
-export async function loadRemoteToken(host: string, port: number): Promise<string | undefined> {
-  const cacheKey = `${host}:${port}`;
-  if (remoteTokenCache.has(cacheKey)) {
-    const v = remoteTokenCache.get(cacheKey);
-    return v ?? undefined;
-  }
-  // Deduplicate concurrent calls
-  const existing = remoteTokenInflight.get(cacheKey);
-  if (existing) return existing;
-  const promise = (async () => {
-    const account = remoteKeychainAccount(host, port);
-    try {
-      const token = await invoke<string>('get_credential', { service: REMOTE_KEYCHAIN_SERVICE, account });
-      remoteTokenCache.set(cacheKey, token || null);
-      return token || undefined;
-    } catch { /* not found in new service */ }
-    // Fallback: old service name (com.meterm.dev.remote → com.meterm.app.remote)
-    try {
-      const token = await invoke<string>('get_credential', { service: REMOTE_KEYCHAIN_SERVICE_OLD, account });
-      if (token) {
-        remoteTokenCache.set(cacheKey, token);
-        // Migrate to new service in background
-        setTimeout(() => {
-          invoke('store_credential', { service: REMOTE_KEYCHAIN_SERVICE, account, secret: token })
-            .then(() => invoke('delete_credential', { service: REMOTE_KEYCHAIN_SERVICE_OLD, account }).catch(() => {}))
-            .catch(() => {});
-        }, 3000);
-        return token;
-      }
-    } catch { /* not found */ }
-    remoteTokenCache.set(cacheKey, null);
-    return undefined;
-  })().finally(() => remoteTokenInflight.delete(cacheKey));
-  remoteTokenInflight.set(cacheKey, promise);
-  return promise;
-}
-
-async function deleteRemoteToken(host: string, port: number): Promise<void> {
-  remoteTokenCache.delete(`${host}:${port}`);
-  await invoke('delete_credential', { service: REMOTE_KEYCHAIN_SERVICE, account: remoteKeychainAccount(host, port) }).catch(() => {});
-}
-
-function stripToken(info: RemoteServerInfo): RemoteServerInfo {
-  const { token: _t, ...rest } = info;
-  return { ...rest, token: '' } as RemoteServerInfo;
-}
-
-/** One-time migration: move remote tokens from localStorage to OS keychain */
-export async function migrateRemoteCredentials(): Promise<void> {
-  const raw = localStorage.getItem(REMOTE_CONNECTIONS_KEY);
-  if (raw) {
-    try {
-      const conns = JSON.parse(raw) as RemoteServerInfo[];
-      let migrated = false;
-      for (const conn of conns) {
-        if (conn.token) {
-          await storeRemoteToken(conn.host, conn.port, conn.token);
-          migrated = true;
-        }
-      }
-      if (migrated) {
-        const stripped = conns.map(stripToken);
-        localStorage.setItem(REMOTE_CONNECTIONS_KEY, JSON.stringify(stripped));
-        console.log('[security] Remote connection tokens migrated to OS keychain');
-      }
-    } catch (e) {
-      console.warn('[security] Remote migration failed, tokens remain in localStorage:', e);
-    }
-  }
-
-  // Also strip tokens from recent connections
-  const recentRaw = localStorage.getItem(REMOTE_RECENT_KEY);
-  if (recentRaw) {
-    try {
-      const recent = JSON.parse(recentRaw) as RemoteServerInfo[];
-      const stripped = recent.map(stripToken);
-      localStorage.setItem(REMOTE_RECENT_KEY, JSON.stringify(stripped));
-    } catch {}
-  }
-}
-
-export function loadSavedRemoteConnections(): RemoteServerInfo[] {
-  try {
-    const raw = localStorage.getItem(REMOTE_CONNECTIONS_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return [];
-}
-
-function saveSavedRemoteConnections(conns: RemoteServerInfo[]): void {
-  const stripped = conns.map(stripToken);
-  localStorage.setItem(REMOTE_CONNECTIONS_KEY, JSON.stringify(stripped));
-}
-
-export function addRemoteConnection(info: RemoteServerInfo): void {
-  // Save token to keychain (async, best-effort)
-  storeRemoteToken(info.host, info.port, info.token).catch(() => {});
-
-  const conns = loadSavedRemoteConnections();
-  const key = `${info.host}:${info.port}`;
-  const existing = conns.findIndex((c) => `${c.host}:${c.port}` === key);
-  const stripped = stripToken(info);
-  if (existing >= 0) {
-    conns[existing] = stripped;
-  } else {
-    conns.push(stripped);
-  }
-  saveSavedRemoteConnections(conns);
-}
-
-export function removeRemoteConnection(host: string, port: number): void {
-  deleteRemoteToken(host, port).catch(() => {});
-  const conns = loadSavedRemoteConnections().filter(
-    (c) => !(c.host === host && c.port === port),
-  );
-  saveSavedRemoteConnections(conns);
-}
-
-export function loadRecentRemoteConnections(): RemoteServerInfo[] {
-  try {
-    const raw = localStorage.getItem(REMOTE_RECENT_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return [];
-}
-
-function saveRecentRemoteConnections(conns: RemoteServerInfo[]): void {
-  // Recent connections: strip tokens (they can be loaded from saved connections' keychain entry)
-  const stripped = conns.map(stripToken);
-  localStorage.setItem(REMOTE_RECENT_KEY, JSON.stringify(stripped));
-}
-
-export function addRecentRemoteConnection(info: RemoteServerInfo): void {
-  let recent = loadRecentRemoteConnections();
-  recent = recent.filter(
-    (c) => !(c.host === info.host && c.port === info.port),
-  );
-  recent.unshift(stripToken(info));
-  if (recent.length > MAX_REMOTE_RECENT) recent.length = MAX_REMOTE_RECENT;
-  saveRecentRemoteConnections(recent);
-}
-
-export function removeRecentRemoteConnection(host: string, port: number): void {
-  const conns = loadRecentRemoteConnections().filter(
-    (c) => !(c.host === host && c.port === port),
-  );
-  saveRecentRemoteConnections(conns);
-}
-
-/**
- * Check availability of recent remote connections via TCP ping,
- * remove unreachable ones. Called on app startup.
- */
-export async function pruneUnreachableRecentRemotes(): Promise<void> {
-  const recents = loadRecentRemoteConnections();
-  if (recents.length === 0) return;
-
-  const results = await Promise.allSettled(
-    recents.map(async (info) => {
-      try {
-        await invoke<string>('ping_remote', { host: info.host, port: info.port });
-        return true;
-      } catch {
-        return false;
-      }
-    }),
-  );
-
-  const reachable = recents.filter((_, i) => {
-    const r = results[i];
-    return r.status === 'fulfilled' && r.value;
-  });
-
-  if (reachable.length < recents.length) {
-    const removed = recents.length - reachable.length;
-    console.log(`[remote] pruned ${removed} unreachable recent remote connection(s)`);
-    saveRecentRemoteConnections(reachable);
-  }
+  clients?: number;
+  connected_clients?: number;
 }
 
 type RemoteConnectHandler = (info: RemoteServerInfo, sessionId: string) => void;
@@ -252,20 +66,37 @@ export function parseShareUrl(url: string, externalToken?: string): RemoteServer
   let token = '';
   let secure: boolean | undefined;
 
-  // Try parsing as full URL first (http://host:port/?token=xxx)
+  const rawQuery = url.includes('?') ? url.slice(url.indexOf('?') + 1).split('#', 1)[0] : '';
+  const hasCredentialQuery = Array.from(new URLSearchParams(rawQuery).keys()).some((key) =>
+    ['token', 'access_token', 'authorization'].includes(key.toLowerCase()),
+  );
+  if (hasCredentialQuery) {
+    throw new Error(t('remoteCredentialInUrlRejected'));
+  }
+
+  let parsed: URL | undefined;
   try {
-    const parsed = new URL(url);
+    const candidate = new URL(url);
+    if (['http:', 'https:', 'ws:', 'wss:'].includes(candidate.protocol)) {
+      parsed = candidate;
+    }
+  } catch { /* handled as a bare host below */ }
+
+  // Parse full URLs, but never import credentials from URI components.
+  if (parsed) {
+    if (parsed.username || parsed.password) {
+      throw new Error(t('remoteCredentialInUrlRejected'));
+    }
     host = parsed.hostname;
     port = parseInt(parsed.port) || 8080;
-    token = parsed.searchParams.get('token') || '';
-    // Preserve explicit scheme choice from user input
     secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
-  } catch {
-    // Fallback: parse as host:port or host (no scheme — default insecure for LAN)
+  } else {
+    // Bare LAN addresses default to TLS; localhost keeps the existing HTTP path.
     const trimmed = url.replace(/\/+$/, '');
     const parts = trimmed.split(':');
     host = parts[0] || '';
     port = parseInt(parts[1]) || 8080;
+    secure = !isLoopbackHost(host);
   }
 
   // Use external token if URL didn't contain one
@@ -278,16 +109,16 @@ export function parseShareUrl(url: string, externalToken?: string): RemoteServer
 }
 
 export function parsePairingJson(json: string): RemoteServerInfo {
-  const data = JSON.parse(json);
-  if (!data || data.v !== 1 || !Array.isArray(data.addrs) || !data.token) {
-    throw new Error('Invalid pairing JSON');
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch {
+    throw new Error(t('remoteInvalidJson'));
   }
-  const firstAddr = data.addrs[0] || '';
-  const parts = firstAddr.split(':');
-  const host = parts[0] || '';
-  const port = parseInt(parts[1]) || 8080;
-  if (!host) throw new Error('No address found in pairing data');
-  return { host, port, token: data.token, name: data.name };
+  if (data && typeof data === 'object' && ((data as { v?: unknown }).v === 1 || (data as { v?: unknown }).v === 2)) {
+    throw new Error(t('remoteSecurePairingUnavailable'));
+  }
+  throw new Error(t('remoteInvalidJson'));
 }
 
 /** Error subclass for 401 responses — token expired / revoked. */
@@ -296,20 +127,17 @@ export class TokenExpiredError extends Error {
 }
 
 export async function fetchRemoteSessions(info: RemoteServerInfo): Promise<RemoteSession[]> {
-  // Load token from keychain if not present in info (e.g., connecting from saved/recent card)
-  let token = info.token;
-  if (!token) {
-    token = await loadRemoteToken(info.host, info.port) || '';
+  await prepareRemoteCredential(info);
+  let raw: string;
+  try {
+    raw = await invoke<string>('remote_list_sessions', { host: info.host, port: info.port });
+  } catch (error) {
+    if (String(error).includes('REMOTE_AUTH_EXPIRED')) {
+      throw new TokenExpiredError(t('remoteTokenExpired'));
+    }
+    throw error;
   }
-  const url = `${remoteHttpBase(info)}/api/sessions`;
-  const resp = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (resp.status === 401) {
-    throw new TokenExpiredError(t('remoteTokenExpired'));
-  }
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
-  const data = await resp.json();
+  const data = JSON.parse(raw);
   const sessions = data?.sessions ?? data;
   return Array.isArray(sessions) ? sessions : [];
 }
@@ -325,40 +153,11 @@ export async function requestPairing(
   secure: boolean | undefined,
   signal: AbortSignal,
 ): Promise<string | null> {
-  const baseUrl = remoteHttpBase({ host, port, token: '', secure });
-  const deviceName = await invoke<string>('get_device_name');
-
-  const createResp = await fetch(`${baseUrl}/api/pair`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ device_info: deviceName }),
-    signal,
-  });
-  if (!createResp.ok) return null;
-  const { pair_id, secret } = await createResp.json();
-
-  // Poll for approval (every 2s, max 60s)
-  for (let i = 0; i < 30; i++) {
-    if (signal.aborted) return null;
-    await new Promise((r) => setTimeout(r, 2000));
-    if (signal.aborted) return null;
-
-    const pollResp = await fetch(
-      `${baseUrl}/api/pair/${pair_id}?secret=${encodeURIComponent(secret)}`,
-      { signal },
-    );
-    if (!pollResp.ok) continue;
-    const result = await pollResp.json();
-
-    if (result.status === 'approved' && result.token) {
-      await storeRemoteToken(host, port, result.token);
-      return result.token;
-    }
-    if (result.status === 'denied' || result.status === 'expired') {
-      return null;
-    }
-  }
-  return null; // timeout
+  void host;
+  void port;
+  void secure;
+  if (signal.aborted) return null;
+  throw new Error(t('remoteSecurePairingUnavailable'));
 }
 
 function closeRemoteModal(): void {
@@ -449,11 +248,11 @@ export function showRemoteConnectDialog(): void {
   const sessionList = document.createElement('div');
   sessionList.className = 'remote-session-list';
 
-  function renderSessions(sessions: RemoteSession[], info: RemoteServerInfo): void {
+  async function renderSessions(sessions: RemoteSession[], info: RemoteServerInfo): Promise<void> {
     sessionList.innerHTML = '';
     if (sessions.length === 0) {
       // Auto-save to home when no sessions
-      addRemoteConnection(info);
+      await addRemoteConnection(info);
       applyRemoteGroup(info);
       document.dispatchEvent(new CustomEvent('remote-connections-changed'));
       sessionList.innerHTML = `<div class="remote-no-sessions">${t('remoteNoSessions')}<div class="remote-saved-hint">${t('remoteSavedToHome')}</div></div>`;
@@ -473,12 +272,17 @@ export function showRemoteConnectDialog(): void {
     const saveBtn = document.createElement('button');
     saveBtn.className = 'ssh-btn ssh-btn-secondary remote-save-btn';
     saveBtn.textContent = t('remoteSaveConnection');
-    saveBtn.onclick = () => {
-      addRemoteConnection(info);
-      applyRemoteGroup(info);
-      document.dispatchEvent(new CustomEvent('remote-connections-changed'));
-      saveBtn.textContent = t('remoteSavedToHome');
+    saveBtn.onclick = async () => {
       saveBtn.disabled = true;
+      try {
+        await addRemoteConnection(info);
+        applyRemoteGroup(info);
+        document.dispatchEvent(new CustomEvent('remote-connections-changed'));
+        saveBtn.textContent = t('remoteSavedToHome');
+      } catch (error) {
+        saveBtn.disabled = false;
+        showStatus(`${t('remoteFailed')}: ${String(error)}`, 'error');
+      }
     };
     saveRow.appendChild(saveBtn);
     sessionList.appendChild(saveRow);
@@ -527,8 +331,9 @@ export function showRemoteConnectDialog(): void {
     sessionList.innerHTML = '';
     try {
       const sessions = await fetchRemoteSessions(info);
+      const brokeredInfo = { ...info, token: '' };
       showStatus(t('remoteConnected'), 'success');
-      renderSessions(sessions, info);
+      await renderSessions(sessions, brokeredInfo);
     } catch (err) {
       showStatus(`${t('remoteFailed')}: ${String(err)}`, 'error');
     }
@@ -571,8 +376,6 @@ export function showRemoteConnectDialog(): void {
   const tokenRow = document.createElement('div');
   tokenRow.className = 'remote-token-row';
 
-  let pairingAbort: AbortController | null = null;
-
   const pairBtn = document.createElement('button');
   pairBtn.className = 'ssh-btn ssh-btn-secondary';
   pairBtn.textContent = t('remotePairRequest');
@@ -580,8 +383,8 @@ export function showRemoteConnectDialog(): void {
     try {
       const info = parseShareUrl(urlInput.value.trim());
       void startPairing(info.host, info.port, info.secure);
-    } catch {
-      showStatus(t('remoteInvalidUrl'), 'error');
+    } catch (error) {
+      showStatus(error instanceof Error ? error.message : t('remoteInvalidUrl'), 'error');
     }
   };
 
@@ -591,14 +394,9 @@ export function showRemoteConnectDialog(): void {
   urlConnectBtn.onclick = () => {
     try {
       const info = parseShareUrl(urlInput.value.trim(), tokenInput.value.trim());
-      if (!info.token) {
-        // No token — start pairing flow instead of showing error
-        void startPairing(info.host, info.port, info.secure);
-        return;
-      }
       void doConnect(info);
-    } catch {
-      showStatus(t('remoteInvalidUrl'), 'error');
+    } catch (error) {
+      showStatus(error instanceof Error ? error.message : t('remoteInvalidUrl'), 'error');
     }
   };
 
@@ -608,17 +406,13 @@ export function showRemoteConnectDialog(): void {
   tokenGroup.appendChild(tokenRow);
   urlPanel.appendChild(tokenGroup);
 
-  // Auto-load token from keychain when address loses focus
+  // Check for a saved native credential without ever filling its plaintext
+  // value back into the password field.
   urlInput.addEventListener('blur', async () => {
     if (tokenInput.value) return;
     try {
       const info = parseShareUrl(urlInput.value.trim());
-      if (info.token) {
-        tokenInput.value = info.token;
-      } else {
-        const saved = await loadRemoteToken(info.host, info.port);
-        if (saved) tokenInput.value = saved;
-      }
+      if (await hasRemoteToken(info)) tokenInput.placeholder = t('remoteSavedToHome');
     } catch { /* ignore parse errors during typing */ }
   });
 
@@ -630,106 +424,14 @@ export function showRemoteConnectDialog(): void {
   urlInput.addEventListener('keypress', handleEnter);
   tokenInput.addEventListener('keypress', handleEnter);
 
-  // Pairing flow
-  async function startPairing(host: string, port: number, secure?: boolean): Promise<void> {
-    // Cancel any previous pairing
-    if (pairingAbort) pairingAbort.abort();
-    pairingAbort = new AbortController();
-    const signal = pairingAbort.signal;
-
-    // Disable buttons during pairing
-    pairBtn.textContent = t('remotePairCancel');
-    pairBtn.onclick = () => {
-      pairingAbort?.abort();
-      resetPairBtn();
-    };
-    urlConnectBtn.disabled = true;
-    showStatus(t('remotePairing'), 'info');
+  // Browser WebViews cannot pin the self-signed v2 certificate for both HTTP
+  // and WebSocket traffic. Keep this legacy desktop entry point fail-closed.
+  function startPairing(host: string, port: number, secure?: boolean): void {
+    void host;
+    void port;
+    void secure;
     sessionList.innerHTML = '';
-
-    try {
-      const baseUrl = remoteHttpBase({ host, port, token: '', secure });
-      // Step 1: Create pairing request
-      let createResp: Response;
-      try {
-        createResp = await fetch(`${baseUrl}/api/pair`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ device_info: await invoke<string>('get_device_name') }),
-          signal,
-        });
-      } catch (fetchErr) {
-        // CORS error or network error — server may not support pairing API
-        showStatus(t('remoteInvalidUrl'), 'error');
-        tokenInput.focus();
-        resetPairBtn();
-        return;
-      }
-      if (!createResp.ok) {
-        const errText = await createResp.text();
-        showStatus(`${t('remoteFailed')}: ${errText}`, 'error');
-        resetPairBtn();
-        return;
-      }
-      const { pair_id, secret } = await createResp.json();
-
-      // Step 2: Poll for approval (every 2s, max 60s)
-      const maxAttempts = 30;
-      for (let i = 0; i < maxAttempts; i++) {
-        if (signal.aborted) return;
-        await new Promise((r) => setTimeout(r, 2000));
-        if (signal.aborted) return;
-
-        const pollResp = await fetch(`${baseUrl}/api/pair/${pair_id}?secret=${encodeURIComponent(secret)}`, { signal });
-        if (!pollResp.ok) continue;
-        const result = await pollResp.json();
-
-        if (result.status === 'approved' && result.token) {
-          // Success! Fill token and connect
-          tokenInput.value = result.token;
-          showStatus(t('remotePairApproved'), 'success');
-          resetPairBtn();
-          // Store token and connect
-          const info: RemoteServerInfo = { host, port, token: result.token, secure };
-          await storeRemoteToken(host, port, result.token);
-          void doConnect(info);
-          return;
-        } else if (result.status === 'denied') {
-          showStatus(t('remotePairDenied'), 'error');
-          resetPairBtn();
-          return;
-        } else if (result.status === 'expired') {
-          showStatus(t('remotePairTimeout'), 'error');
-          resetPairBtn();
-          return;
-        }
-        // Still pending, continue polling
-      }
-
-      // Timed out
-      showStatus(t('remotePairTimeout'), 'error');
-      resetPairBtn();
-    } catch (err) {
-      if (signal.aborted) {
-        showStatus('', 'info');
-      } else {
-        showStatus(`${t('remoteFailed')}: ${String(err)}`, 'error');
-      }
-      resetPairBtn();
-    }
-  }
-
-  function resetPairBtn(): void {
-    pairBtn.textContent = t('remotePairRequest');
-    pairBtn.onclick = () => {
-      try {
-        const info = parseShareUrl(urlInput.value.trim());
-        void startPairing(info.host, info.port, info.secure);
-      } catch {
-        showStatus(t('remoteInvalidUrl'), 'error');
-      }
-    };
-    urlConnectBtn.disabled = false;
+    showStatus(t('remoteSecurePairingUnavailable'), 'error');
   }
 
   // JSON panel
@@ -749,8 +451,8 @@ export function showRemoteConnectDialog(): void {
     try {
       const info = parsePairingJson(jsonInput.value.trim());
       void doConnect(info);
-    } catch {
-      showStatus(t('remoteInvalidJson'), 'error');
+    } catch (error) {
+      showStatus(error instanceof Error ? error.message : t('remoteInvalidJson'), 'error');
     }
   };
 
@@ -841,16 +543,6 @@ export function showRemoteEditDialog(prefill?: RemoteServerInfo, onSave?: (info:
   nameGroup.appendChild(nameInput);
   form.appendChild(nameGroup);
 
-  // Load token from keychain asynchronously if editing existing connection
-  if (prefill && !prefill.token) {
-    void loadRemoteToken(prefill.host, prefill.port).then((token) => {
-      if (token) {
-        const tokenEl = form.querySelector('input[type="password"]') as HTMLInputElement | null;
-        if (tokenEl && !tokenEl.value) tokenEl.value = token;
-      }
-    });
-  }
-
   // Host + Port row
   const hostRow = document.createElement('div');
   hostRow.className = 'ssh-form-row';
@@ -935,23 +627,31 @@ export function showRemoteEditDialog(prefill?: RemoteServerInfo, onSave?: (info:
   const saveBtn = document.createElement('button');
   saveBtn.className = 'ssh-btn ssh-btn-primary';
   saveBtn.textContent = t('remoteSaveBtn');
-  saveBtn.onclick = () => {
+  saveBtn.onclick = async () => {
     const info: RemoteServerInfo = {
       host: hostInput.value.trim(),
       port: parseInt(portInput.value) || 8080,
       token: tokenInput.value,
       name: nameInput.value.trim() || undefined,
       secure: prefill?.secure,
+      certFp: prefill?.certFp,
     };
     if (!info.host) return;
-    addRemoteConnection(info);
-    const key = remoteKey(info.host, info.port);
-    const grp = editGroupSelect.value;
-    if (grp) setConnectionGroup(key, grp);
-    else removeConnectionGroup(key);
-    document.dispatchEvent(new CustomEvent('remote-connections-changed'));
-    if (onSave) onSave(info);
-    closeRemoteModal();
+    saveBtn.disabled = true;
+    try {
+      await addRemoteConnection(info);
+      const key = remoteKey(info.host, info.port);
+      const grp = editGroupSelect.value;
+      if (grp) setConnectionGroup(key, grp);
+      else removeConnectionGroup(key);
+      document.dispatchEvent(new CustomEvent('remote-connections-changed'));
+      if (onSave) onSave({ ...info, token: '' });
+      closeRemoteModal();
+    } catch (error) {
+      saveBtn.disabled = false;
+      saveBtn.title = String(error);
+      console.error('[remote] Unable to save credential:', error);
+    }
   };
   btnRow.appendChild(spacer);
   btnRow.appendChild(saveBtn);
@@ -1097,9 +797,10 @@ export function showRemoteCardSessionPopup(anchor: HTMLElement, info: RemoteServ
         retryBtn.onclick = () => { void startCardRepair(); };
         content.appendChild(retryBtn);
       }
-    } catch {
+    } catch (error) {
       if (!repairAbort.signal.aborted) {
-        content.innerHTML = `<div class="remote-list-error">${escapeHtml(t('remoteFailed'))}</div>`;
+        const message = error instanceof Error ? error.message : t('remoteFailed');
+        content.innerHTML = `<div class="remote-list-error">${escapeHtml(message)}</div>`;
       }
     }
   }
@@ -1141,293 +842,4 @@ export function showRemoteCardSessionPopup(anchor: HTMLElement, info: RemoteServ
     }
   };
   setTimeout(() => document.addEventListener('click', closeHandler, true), 0);
-}
-
-// --- LAN Scan Panel ---
-
-interface ScanService {
-  name: string;
-  host: string;
-  port: number;
-}
-
-// Radar/WiFi search SVG icon (16x16)
-const SCAN_SVG = '<svg class="remote-scan-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2"/><path d="M4.93 4.93a5 5 0 0 1 6.14 0"/><path d="M11.07 11.07a5 5 0 0 1-6.14 0"/><path d="M2.81 2.81a8 8 0 0 1 10.38 0"/><path d="M13.19 13.19a8 8 0 0 1-10.38 0"/></svg>';
-
-function buildScanPanel(
-  container: HTMLElement,
-  showStatus: (msg: string, type: 'success' | 'error' | 'info') => void,
-  sessionList: HTMLElement,
-  doConnect: (info: RemoteServerInfo) => Promise<void>,
-): void {
-  const panel = document.createElement('div');
-  panel.className = 'remote-scan-panel';
-
-  // Results area (top)
-  const results = document.createElement('div');
-  results.className = 'remote-scan-results';
-  panel.appendChild(results);
-
-  // Footer area (below results, for rescan button + status)
-  const footer = document.createElement('div');
-  footer.className = 'remote-scan-footer';
-  footer.style.display = 'none';
-  panel.appendChild(footer);
-
-  let scanAbort: AbortController | null = null;
-  let isScanning = false;
-
-  function createScanButton(small: boolean): HTMLButtonElement {
-    const btn = document.createElement('button');
-    btn.className = small ? 'remote-scan-trigger small' : 'remote-scan-trigger';
-    btn.innerHTML = `${SCAN_SVG}<span>${small ? t('remoteRescan') : t('remoteScanLan')}</span>`;
-    btn.onclick = () => {
-      if (isScanning) {
-        scanAbort?.abort();
-        resetScanUI();
-      } else {
-        void startScan();
-      }
-    };
-    return btn;
-  }
-
-  // Initial state: empty state with centered scan button
-  function showEmptyState(): void {
-    results.innerHTML = '';
-    footer.style.display = 'none';
-    const emptyState = document.createElement('div');
-    emptyState.className = 'remote-scan-empty-state';
-    emptyState.appendChild(createScanButton(false));
-    results.appendChild(emptyState);
-  }
-
-  showEmptyState();
-
-  async function startScan(): Promise<void> {
-    scanAbort?.abort();
-    scanAbort = new AbortController();
-    isScanning = true;
-
-    // Show scanning state
-    results.innerHTML = '';
-    footer.style.display = 'none';
-    const scanningState = document.createElement('div');
-    scanningState.className = 'remote-scan-empty-state';
-    const scanningBtn = document.createElement('button');
-    scanningBtn.className = 'remote-scan-trigger scanning';
-    scanningBtn.innerHTML = `${SCAN_SVG}<span>${t('remoteScanScanning')}</span>`;
-    scanningBtn.onclick = () => {
-      scanAbort?.abort();
-      resetScanUI();
-    };
-    scanningState.appendChild(scanningBtn);
-    results.appendChild(scanningState);
-
-    try {
-      const raw = await invoke<string>('discover_lan');
-      const data = JSON.parse(raw);
-      const services: ScanService[] = data.services || [];
-
-      if (services.length === 0) {
-        results.innerHTML = '';
-        const emptyMsg = document.createElement('div');
-        emptyMsg.className = 'remote-scan-empty';
-        emptyMsg.textContent = t('remoteScanEmpty');
-        results.appendChild(emptyMsg);
-
-        // Show rescan button in footer
-        footer.innerHTML = '';
-        footer.style.display = '';
-        footer.appendChild(createScanButton(true));
-      } else {
-        results.innerHTML = '';
-        for (const svc of services) {
-          renderScanCard(results, svc, showStatus, sessionList, doConnect);
-        }
-
-        // Show footer with rescan button + status
-        footer.innerHTML = '';
-        footer.style.display = '';
-        footer.appendChild(createScanButton(true));
-        const statusSpan = document.createElement('span');
-        statusSpan.className = 'remote-scan-status';
-        statusSpan.textContent = t('remoteScanFound').replace('{count}', String(services.length));
-        footer.appendChild(statusSpan);
-      }
-    } catch (err) {
-      if (scanAbort?.signal.aborted) {
-        showEmptyState();
-        return;
-      }
-      const errMsg = String(err);
-      results.innerHTML = '';
-      const errDiv = document.createElement('div');
-      errDiv.className = 'remote-scan-empty';
-      if (errMsg.includes('not running') || errMsg.includes('token not ready')) {
-        errDiv.textContent = t('remoteScanNoLocalServer');
-      } else {
-        errDiv.textContent = `${t('remoteScanError')}: ${errMsg}`;
-      }
-      results.appendChild(errDiv);
-
-      footer.innerHTML = '';
-      footer.style.display = '';
-      footer.appendChild(createScanButton(true));
-    } finally {
-      isScanning = false;
-    }
-  }
-
-  function resetScanUI(): void {
-    isScanning = false;
-    showEmptyState();
-  }
-
-  container.appendChild(panel);
-}
-
-function renderScanCard(
-  container: HTMLElement,
-  svc: ScanService,
-  showStatus: (msg: string, type: 'success' | 'error' | 'info') => void,
-  sessionList: HTMLElement,
-  doConnect: (info: RemoteServerInfo) => Promise<void>,
-): void {
-  const card = document.createElement('div');
-  card.className = 'remote-scan-card';
-
-  const info = document.createElement('div');
-  info.className = 'remote-scan-card-info';
-
-  const name = document.createElement('div');
-  name.className = 'remote-scan-card-name';
-  const alias = getDeviceAlias(svc.host);
-  name.textContent = alias || svc.name;
-
-  const addr = document.createElement('div');
-  addr.className = 'remote-scan-card-addr';
-  addr.textContent = `${svc.host}:${svc.port}`;
-
-  info.appendChild(name);
-  info.appendChild(addr);
-  card.appendChild(info);
-
-  const badge = document.createElement('span');
-  badge.className = 'remote-scan-card-badge verifying';
-  badge.textContent = t('remoteScanVerifying');
-  card.appendChild(badge);
-
-  const connectBtn = document.createElement('button');
-  connectBtn.className = 'ssh-btn ssh-btn-primary';
-  connectBtn.textContent = t('remoteScanConnect');
-  connectBtn.disabled = true;
-  card.appendChild(connectBtn);
-
-  container.appendChild(card);
-
-  // Async verify via /api/ping
-  verifyScanService(svc, badge, connectBtn);
-
-  connectBtn.onclick = () => {
-    // Try loading saved token first, otherwise start pairing
-    void (async () => {
-      const savedToken = await loadRemoteToken(svc.host, svc.port);
-      if (savedToken) {
-        void doConnect({ host: svc.host, port: svc.port, token: savedToken, name: svc.name });
-      } else {
-        // Start pairing flow: show in URL tab context
-        showStatus(t('remotePairing'), 'info');
-        sessionList.innerHTML = '';
-        startScanPairing(svc, showStatus, doConnect);
-      }
-    })();
-  };
-}
-
-async function verifyScanService(
-  svc: ScanService,
-  badge: HTMLElement,
-  connectBtn: HTMLButtonElement,
-): Promise<void> {
-  try {
-    const raw = await invoke<string>('ping_remote', { host: svc.host, port: svc.port });
-    const data = JSON.parse(raw);
-    if (data.service === 'meterm') {
-      badge.className = 'remote-scan-card-badge verified';
-      badge.textContent = t('remoteScanVerified');
-      connectBtn.disabled = false;
-    } else {
-      badge.className = 'remote-scan-card-badge failed';
-      badge.textContent = t('remoteScanUnreachable');
-    }
-  } catch {
-    badge.className = 'remote-scan-card-badge failed';
-    badge.textContent = t('remoteScanUnreachable');
-  }
-}
-
-async function startScanPairing(
-  svc: ScanService,
-  showStatus: (msg: string, type: 'success' | 'error' | 'info') => void,
-  doConnect: (info: RemoteServerInfo) => Promise<void>,
-): Promise<void> {
-  const abort = new AbortController();
-  const { signal } = abort;
-
-  // Auto-abort when dialog is closed (overlay removed from DOM)
-  const checkAlive = setInterval(() => {
-    if (!document.querySelector('.remote-modal-overlay')) {
-      abort.abort();
-      clearInterval(checkAlive);
-    }
-  }, 500);
-
-  const baseUrl = remoteHttpBase({ host: svc.host, port: svc.port, token: '' });
-  try {
-    const createResp = await fetch(`${baseUrl}/api/pair`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device_info: await invoke<string>('get_device_name') }),
-      signal,
-    });
-    if (!createResp.ok) {
-      showStatus(`${t('remoteFailed')}: ${await createResp.text()}`, 'error');
-      return;
-    }
-    const { pair_id, secret } = await createResp.json();
-
-    // Poll for approval
-    for (let i = 0; i < 30; i++) {
-      if (signal.aborted) return;
-      await new Promise((r) => setTimeout(r, 2000));
-      if (signal.aborted) return;
-      const pollResp = await fetch(
-        `${baseUrl}/api/pair/${pair_id}?secret=${encodeURIComponent(secret)}`,
-        { signal },
-      );
-      if (!pollResp.ok) continue;
-      const result = await pollResp.json();
-
-      if (result.status === 'approved' && result.token) {
-        showStatus(t('remotePairApproved'), 'success');
-        await storeRemoteToken(svc.host, svc.port, result.token);
-        void doConnect({ host: svc.host, port: svc.port, token: result.token, name: svc.name });
-        return;
-      } else if (result.status === 'denied') {
-        showStatus(t('remotePairDenied'), 'error');
-        return;
-      } else if (result.status === 'expired') {
-        showStatus(t('remotePairTimeout'), 'error');
-        return;
-      }
-    }
-    showStatus(t('remotePairTimeout'), 'error');
-  } catch (err) {
-    if (!signal.aborted) {
-      showStatus(`${t('remoteFailed')}: ${String(err)}`, 'error');
-    }
-  } finally {
-    clearInterval(checkAlive);
-  }
 }

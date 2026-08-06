@@ -43,6 +43,26 @@ export interface UtilityWindowOptions {
   resizable: boolean;
 }
 
+const UTILITY_WINDOW_URLS: Readonly<Record<string, RegExp>> = {
+  about: /^\?window=about$/,
+  updater: /^\?window=updater$/,
+  'jumpserver-browser': /^\?window=jumpserver-browser$/,
+  editor: /^\?window=editor$/,
+  settings: /^\?window=settings(?:&tab=[A-Za-z0-9_-]{1,64})?$/,
+};
+
+function validateUtilityWindowOptions(opts: UtilityWindowOptions): void {
+  const allowedUrl = UTILITY_WINDOW_URLS[opts.label];
+  if (!allowedUrl?.test(opts.url)) {
+    throw new Error('Invalid utility window label or URL');
+  }
+  if (!opts.title || opts.title.length > 256 || /[\u0000-\u001f\u007f]/.test(opts.title)
+      || !Number.isFinite(opts.width) || !Number.isFinite(opts.height)
+      || opts.width < 160 || opts.width > 2400 || opts.height < 120 || opts.height > 2400) {
+    throw new Error('Invalid utility window geometry or title');
+  }
+}
+
 /**
  * Create a utility window (settings, updater, about, etc.).
  *
@@ -57,6 +77,7 @@ export interface UtilityWindowOptions {
  * asynchronously, keeping the main window responsive.
  */
 export async function createUtilityWindow(opts: UtilityWindowOptions): Promise<void> {
+  validateUtilityWindowOptions(opts);
   if (!isWindows) {
     await invoke('create_transparent_window', { ...opts });
     return;

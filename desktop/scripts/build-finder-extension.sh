@@ -6,7 +6,7 @@
 #
 # Arguments:
 #   app_bundle_path   — Path to MeTerm.app (default: build only, don't embed)
-#   signing_identity  — Code signing identity (default: "-" for ad-hoc)
+#   signing_identity  — Identity, "-" for ad-hoc, or "none" for unsigned
 #
 # The target architecture is auto-detected from the app bundle's main binary.
 # If no app bundle is given, falls back to the host architecture.
@@ -23,7 +23,8 @@ SIGN_IDENTITY="${2:--}"
 
 # Detect target architecture from the app bundle binary, or fall back to host arch
 if [ -n "$APP_BUNDLE" ] && [ -d "$APP_BUNDLE" ]; then
-    APP_BINARY="$APP_BUNDLE/Contents/MacOS/MeTerm"
+    APP_EXECUTABLE="$(plutil -extract CFBundleExecutable raw -o - "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
+    APP_BINARY="$APP_BUNDLE/Contents/MacOS/${APP_EXECUTABLE:-meterm}"
     if [ -f "$APP_BINARY" ]; then
         BINARY_ARCH=$(lipo -archs "$APP_BINARY" 2>/dev/null || echo "")
         if echo "$BINARY_ARCH" | grep -q "x86_64"; then
@@ -47,7 +48,13 @@ fi
 echo "=== Building MeTerm Finder Extension ==="
 echo "  Architecture: $ARCH"
 echo "  Target: $TARGET"
-echo "  Sign identity: $SIGN_IDENTITY"
+if [ "$SIGN_IDENTITY" = "none" ]; then
+    echo "  Sign identity: unsigned"
+elif [ "$SIGN_IDENTITY" = "-" ]; then
+    echo "  Sign identity: ad-hoc"
+else
+    echo "  Sign identity: Developer ID (value hidden)"
+fi
 
 # Clean and create build directory
 rm -rf "$BUILD_DIR"
@@ -71,10 +78,13 @@ swiftc \
 cp "$EXT_SRC/Info.plist" "$APPEX_DIR/Contents/Info.plist"
 
 # Sign the .appex (inside-out: this runs before the host .app is signed).
-# Ad-hoc ("-") skips --timestamp and hardened runtime. A real Developer ID must
-# use --options runtime + --timestamp so Apple notarization accepts the appex.
+# Unsigned output is reserved for the isolated release build input. Ad-hoc
+# ("-") remains the local-development default. A real Developer ID must use
+# hardened runtime + timestamp so Apple notarization accepts the appex.
 echo "  Signing .appex..."
-if [ "$SIGN_IDENTITY" = "-" ]; then
+if [ "$SIGN_IDENTITY" = "none" ]; then
+    echo "  Skipped signing for isolated release input"
+elif [ "$SIGN_IDENTITY" = "-" ]; then
     codesign --force --sign "$SIGN_IDENTITY" \
         --entitlements "$EXT_SRC/MeTermFinder.entitlements" \
         "$APPEX_DIR"

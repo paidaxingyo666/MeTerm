@@ -30,6 +30,16 @@ export function formatElapsed(ms: number): string {
   return `${hr}时${remMin > 0 ? remMin + '分' : ''}`;
 }
 
+/**
+ * Quote one argument for a POSIX-style shell command entered into a terminal.
+ * Control characters are rejected because an interactive shell's line editor
+ * may process them before normal shell quoting takes effect.
+ */
+export function quotePosixShellArg(value: string): string | null {
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(value)) return null;
+  return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
 /** 编码二进制消息：[1B type][payload] */
 export function encodeMessage(type: number, payload: Uint8Array): Uint8Array {
   const message = new Uint8Array(1 + payload.length);
@@ -82,4 +92,3 @@ export function validateFileName(name: string): boolean {
 
   return true;
 }
-

@@ -6,9 +6,8 @@
 // dependencies minimal: only Tauri fs plugin, no external libs.
 // Call installAuditLog() once during app startup.
 //
-// We write into BaseDirectory.AppData (the directory already allowed
-// by `fs:scope-appdata-recursive`) so we don't need extra Tauri
-// capabilities.  On macOS this resolves to
+// We write into the one AppData file explicitly allowed by the Tauri
+// filesystem capability. On macOS this resolves to
 //   ~/Library/Application Support/com.meterm.app/agent-audit.jsonl
 
 import {

@@ -1,7 +1,7 @@
 import type { DrawerInstance } from './drawer';
 import { MsgInput } from './protocol';
 import { escapeHtml } from './status-bar';
-import { formatSize } from './file-utils';
+import { formatSize, quotePosixShellArg } from './file-utils';
 import { addBookmark } from './file-bookmarks';
 import { isEditableFile } from './icons';
 import { openFileInEditor } from './file-editor-bridge';
@@ -58,7 +58,12 @@ function buildMenu(items: MenuItem[], parent: HTMLElement, closeMenu: () => void
 
     if (item.children) {
       menuItem.classList.add('has-submenu');
-      menuItem.innerHTML = `<span>${item.label}</span><span class="submenu-arrow">›</span>`;
+      const label = document.createElement('span');
+      label.textContent = item.label;
+      const arrow = document.createElement('span');
+      arrow.className = 'submenu-arrow';
+      arrow.textContent = '›';
+      menuItem.append(label, arrow);
 
       const submenu = document.createElement('div');
       submenu.className = 'context-menu context-submenu';
@@ -138,7 +143,18 @@ export function setupContextMenu(
     const multiSelect = selected.length > 1;
     const hasFile = fileName !== null;
     const fullPath = hasFile ? fm.getFullPath(fileName) : '';
-    const escapedPath = fullPath.replace(/([ '"\\$`!#&|;(){}])/g, '\\$1');
+    const getSafeShellArg = (path: string): string | null => {
+      const quoted = quotePosixShellArg(path);
+      if (quoted === null) {
+        import('./notify').then(({ showToast }) => {
+          showToast({
+            title: t('ctxMenuTerminalOps'),
+            body: '路径包含终端控制字符，无法安全地填入命令。',
+          });
+        }).catch(() => {});
+      }
+      return quoted;
+    };
 
     // Resolve selected items to full paths and detect which are dirs
     const resolveSelectedInfo = (): { path: string; isDir: boolean }[] => {
@@ -448,23 +464,29 @@ export function setupContextMenu(
               {
                 label: `cd ${isDir ? '' : '..'}`,
                 action: () => {
-                  const dir = isDir ? escapedPath : escapedPath.substring(0, escapedPath.lastIndexOf('/')) || '/';
+                  const rawDir = isDir ? fullPath : fullPath.substring(0, fullPath.lastIndexOf('/')) || '/';
+                  const dir = getSafeShellArg(rawDir);
+                  if (dir === null) return;
                   del.sendTerminalCommand(instance, `cd ${dir}`);
                 },
               },
               {
                 label: isDir ? 'ls' : 'cat',
                 action: () => {
-                  const cmd = isDir ? `ls -la ${escapedPath}` : `cat ${escapedPath}`;
+                  const pathArg = getSafeShellArg(fullPath);
+                  if (pathArg === null) return;
+                  const cmd = isDir ? `ls -la ${pathArg}` : `cat ${pathArg}`;
                   del.sendTerminalCommand(instance, cmd);
                 },
               },
               {
                 label: 'cp',
                 action: () => {
+                  const pathArg = getSafeShellArg(fullPath);
+                  if (pathArg === null) return;
                   const ws = instance.fileManager?.getWebSocket();
                   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-                  const cmd = isDir ? `cp -r ${escapedPath} ` : `cp ${escapedPath} `;
+                  const cmd = isDir ? `cp -r ${pathArg} ` : `cp ${pathArg} `;
                   const payload = new TextEncoder().encode('\x15' + cmd);
                   const msg = new Uint8Array(1 + payload.length);
                   msg[0] = MsgInput;
@@ -475,9 +497,11 @@ export function setupContextMenu(
               {
                 label: 'rm',
                 action: () => {
+                  const pathArg = getSafeShellArg(fullPath);
+                  if (pathArg === null) return;
                   const ws = instance.fileManager?.getWebSocket();
                   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-                  const cmd = isDir ? `rm -r ${escapedPath}` : `rm ${escapedPath}`;
+                  const cmd = isDir ? `rm -r ${pathArg}` : `rm ${pathArg}`;
                   const payload = new TextEncoder().encode('\x15' + cmd);
                   const msg = new Uint8Array(1 + payload.length);
                   msg[0] = MsgInput;
@@ -595,13 +619,13 @@ export function showModal(options: {
       : '';
     overlay.innerHTML = `
       <div class="drawer-modal">
-        <div class="drawer-modal-title">${options.title}</div>
-        ${options.description ? `<div class="drawer-modal-desc" style="font-size:12px;color:#999;margin:4px 0 8px;line-height:1.5;white-space:pre-wrap;">${options.description}</div>` : ''}
+        <div class="drawer-modal-title">${escapeHtml(options.title)}</div>
+        ${options.description ? `<div class="drawer-modal-desc" style="font-size:12px;color:#999;margin:4px 0 8px;line-height:1.5;white-space:pre-wrap;">${escapeHtml(options.description)}</div>` : ''}
         ${copyCommandHtml}
-        ${hasInput ? `<input class="drawer-modal-input" type="text" value="${(options.input!.value || '').replace(/"/g, '&quot;')}" placeholder="${options.input!.placeholder || ''}" spellcheck="false" />` : ''}
+        ${hasInput ? `<input class="drawer-modal-input" type="text" value="${escapeHtml(options.input!.value || '')}" placeholder="${escapeHtml(options.input!.placeholder || '')}" spellcheck="false" />` : ''}
         <div class="drawer-modal-buttons">
-          <button class="drawer-modal-btn cancel">${options.cancelText || '取消'}</button>
-          <button class="drawer-modal-btn confirm${options.danger ? ' danger' : ''}">${options.confirmText || '确定'}</button>
+          <button class="drawer-modal-btn cancel">${escapeHtml(options.cancelText || '取消')}</button>
+          <button class="drawer-modal-btn confirm${options.danger ? ' danger' : ''}">${escapeHtml(options.confirmText || '确定')}</button>
         </div>
       </div>
     `;
@@ -664,8 +688,8 @@ export async function showDeleteConfirm(instance: DrawerInstance, fileName: stri
   const container = (drawerContent && drawerContent.offsetParent !== null) ? drawerContent : document.body;
   // Capture full path immediately (before any async delay)
   const fullPath = instance.fileManager?.getFullPath(fileName) || fileName;
-  const escapedPath = fullPath.replace(/([ '"\\$`!#&|;(){}])/g, '\\$1');
-  const rmCmd = isDir ? `rm -rf ${escapedPath}` : `rm ${escapedPath}`;
+  const shellPath = quotePosixShellArg(fullPath);
+  const rmCmd = shellPath === null ? undefined : (isDir ? `rm -rf ${shellPath}` : `rm ${shellPath}`);
 
   let description: string | undefined;
   let copyCommand: string | undefined;

@@ -21,6 +21,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { createWindowAtPosition } from './window-utils';
 import { startPairPoller } from './pairing';
+import { startRemoteSessionPoller } from './remote-session-poller';
 import {
   removeKickedOverlay, removeReconnectOverlay,
   viewerModeSessionIds, privateSessionIds,
@@ -130,6 +131,7 @@ export async function ensureMeTermReady(): Promise<boolean> {
     setMetermReady(true);
     StatusBar.setConnection('connected', 'Local');
     startPairPoller(port, authToken);
+    startRemoteSessionPoller(port, authToken);
     return true;
   } catch (err) {
     setMetermReady(false);

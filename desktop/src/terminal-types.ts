@@ -50,10 +50,9 @@ export interface ManagedTerminal {
   _hasUserInput: boolean;
   /** Suppress MsgRoleChange during cross-window tab transfer grace period */
   _transferGrace: boolean;
-  /** Remote WebSocket URL override */
-  remoteWsUrl?: string;
-  /** Remote authentication token */
-  remoteToken?: string;
+  /** Canonical remote authority metadata. Authentication stays in Rust. */
+  remoteHost?: string;
+  remotePort?: number;
   /** Whether this is a remote viewer session */
   isRemote?: boolean;
   /** Whether this session was kicked by the host */

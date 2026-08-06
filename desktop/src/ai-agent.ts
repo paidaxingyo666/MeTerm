@@ -448,8 +448,9 @@ export class ToolAgent {
     }
 
     const providerConfig: AIProviderConfig = {
+      providerId: resolved.entry.id,
       type: resolved.entry.type,
-      apiKey: resolved.entry.apiKey,
+      hasApiKey: resolved.entry.hasApiKey,
       baseUrl: resolved.entry.baseUrl,
       model: resolved.model,
       maxTokens: settings.aiMaxTokens,

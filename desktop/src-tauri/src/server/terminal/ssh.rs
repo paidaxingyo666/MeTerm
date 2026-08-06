@@ -5,13 +5,22 @@
 
 use std::collections::VecDeque;
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use russh::keys::key;
+use russh::keys::{self, PublicKey};
 use russh::{client, ChannelMsg, Disconnect};
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
+use super::ssh_algorithms::preferred_algorithms;
+use super::ssh_auth;
+pub use super::ssh_limits::ssh_exec;
+use super::ssh_limits::{
+    operation_with_timeout, SSH_AUTH_TIMEOUT, SSH_CHANNEL_TIMEOUT, SSH_CLOSE_TIMEOUT,
+    SSH_HANDSHAKE_TIMEOUT,
+};
+use super::ssh_transport::establish_connection;
 use super::Terminal;
 
 /// Auth method explicitly selected by the user in the connection dialog.
@@ -57,7 +66,7 @@ pub enum SshAuthUsed {
 }
 
 /// SSH connection configuration.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 pub struct SshConfig {
     pub host: String,
     pub port: u16,
@@ -98,6 +107,26 @@ pub struct SshConfig {
     pub proxy_password: String,
 }
 
+// Authentication material must not become printable merely because a caller
+// adds `{:?}` to an error or tracing statement. Keep the complete structure
+// serializable for its bounded protocol boundary, but make Debug fail safe.
+impl std::fmt::Debug for SshConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SshConfig(redacted)")
+    }
+}
+
+impl Drop for SshConfig {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+
+        self.password.zeroize();
+        self.private_key.zeroize();
+        self.passphrase.zeroize();
+        self.proxy_password.zeroize();
+    }
+}
+
 pub struct SshHandler {
     trusted_fingerprint: Option<String>,
     host: String,
@@ -105,19 +134,26 @@ pub struct SshHandler {
     /// Captured fingerprint when host key is unknown (for frontend confirmation).
     server_fingerprint: Arc<Mutex<Option<String>>>,
     server_key_type: Arc<Mutex<Option<String>>>,
+    host_key_rejected: Arc<AtomicBool>,
+    host_key_changed: Arc<AtomicBool>,
 }
 
-#[async_trait::async_trait]
+/// A user-confirmed host key is an exact pin, not a blanket approval for the
+/// hostname.  In particular, a different key algorithm still needs its own
+/// confirmation instead of silently bypassing a changed-key warning.
+pub(super) fn trusted_fingerprint_matches(trusted: Option<&str>, actual: &str) -> bool {
+    trusted.is_some_and(|value| !value.is_empty() && value == actual)
+}
+
 impl client::Handler for SshHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &key::PublicKey,
+        server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        let key_type = server_public_key.name().to_string();
-        // Use russh-keys fingerprint for display (matches SSH standard)
-        let fingerprint = server_public_key.fingerprint();
+        let key_type = ssh_auth::key_type(server_public_key);
+        let fingerprint = ssh_auth::fingerprint(server_public_key);
         let host = self.host.clone();
         let port = self.port;
 
@@ -125,45 +161,43 @@ impl client::Handler for SshHandler {
         *self.server_fingerprint.lock().await = Some(fingerprint.clone());
         *self.server_key_type.lock().await = Some(key_type);
 
-        // Layer 1: Check ~/.ssh/known_hosts (matches Go knownhosts.New)
-        match russh_keys::known_hosts::check_known_hosts(&host, port, server_public_key) {
-            Ok(true) => return Ok(true),
-            Err(russh_keys::Error::KeyChanged { line }) => {
-                // Host key changed — possible MITM, but allow if user has a
-                // trusted fingerprint (e.g. dedicated SFTP connection may
-                // negotiate a different key algorithm than the terminal session).
+        // An explicit fingerprint supplied by the client is authoritative.  It
+        // must not be bypassed merely because a separately mutable known_hosts
+        // file happens to accept a different key.
+        if self
+            .trusted_fingerprint
+            .as_deref()
+            .is_some_and(|v| !v.is_empty())
+        {
+            if trusted_fingerprint_matches(self.trusted_fingerprint.as_deref(), &fingerprint) {
+                if let Err(e) = keys::known_hosts::learn_known_hosts(&host, port, server_public_key)
+                {
+                    eprintln!("[ssh] warning: could not write known_hosts: {}", e);
+                }
+                return Ok(true);
+            }
+            self.host_key_changed.store(true, Ordering::SeqCst);
+            self.host_key_rejected.store(true, Ordering::SeqCst);
+            return Ok(false);
+        }
+
+        // With no explicit pin, fall back to the local OpenSSH trust store.
+        match keys::known_hosts::check_known_hosts(&host, port, server_public_key) {
+            Ok(true) => Ok(true),
+            Err(keys::Error::KeyChanged { line }) => {
                 eprintln!(
                     "[ssh] HOST KEY CHANGED for {}:{} at known_hosts line {}",
                     host, port, line
                 );
-                // Fall through to Layer 2 (trusted fingerprint check) instead
-                // of rejecting immediately. If no trusted fingerprint, Layer 3
-                // will reject.
+                self.host_key_changed.store(true, Ordering::SeqCst);
+                self.host_key_rejected.store(true, Ordering::SeqCst);
+                Ok(false)
             }
-            _ => {} // Not found or other error — continue to layer 2
-        }
-
-        // Layer 2: Check TrustedFingerprint (user previously confirmed in UI)
-        // Accept if a non-empty trusted fingerprint exists — the user has already
-        // confirmed trust for this host. The fingerprint may differ because the
-        // terminal and SFTP connections can negotiate different key algorithms.
-        if let Some(ref trusted) = self.trusted_fingerprint {
-            if !trusted.is_empty() {
-                if fingerprint == *trusted {
-                    // Exact match — also update known_hosts for this key type
-                    if let Err(e) =
-                        russh_keys::known_hosts::learn_known_hosts(&host, port, server_public_key)
-                    {
-                        eprintln!("[ssh] warning: could not write known_hosts: {}", e);
-                    }
-                }
-                // Trust is established for this host (user confirmed via UI)
-                return Ok(true);
+            _ => {
+                self.host_key_rejected.store(true, Ordering::SeqCst);
+                Ok(false)
             }
         }
-
-        // Layer 3: Unknown host — reject. connect() returns fingerprint for UI confirmation.
-        Ok(false)
     }
 }
 
@@ -189,58 +223,13 @@ pub struct SshTerminal {
     pub auth_used: SshAuthUsed,
 }
 
-/// Execute a command on the SSH server via a new exec channel.
-/// Used for ServerInfo (sysinfo script) and process list.
-pub async fn ssh_exec(
-    session_handle: &Arc<Mutex<Option<client::Handle<SshHandler>>>>,
-    command: &str,
-    timeout_secs: u64,
-) -> Result<String, String> {
-    let mut guard = session_handle.lock().await;
-    let session = guard.as_mut().ok_or("SSH session not available")?;
-
-    let mut channel = session
-        .channel_open_session()
-        .await
-        .map_err(|e| format!("exec channel: {}", e))?;
-
-    channel
-        .exec(true, command)
-        .await
-        .map_err(|e| format!("exec: {}", e))?;
-
-    // Collect output with timeout
-    let mut output = Vec::new();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-
-        match tokio::time::timeout(remaining, channel.wait()).await {
-            Ok(Some(ChannelMsg::Data { data })) => {
-                output.extend_from_slice(&data);
-            }
-            Ok(Some(ChannelMsg::ExtendedData { data, .. })) => {
-                output.extend_from_slice(&data);
-            }
-            Ok(Some(ChannelMsg::Eof)) | Ok(None) => break,
-            Ok(_) => continue,
-            Err(_) => break, // timeout
-        }
-    }
-
-    String::from_utf8(output).map_err(|e| format!("utf8: {}", e))
-}
-
 fn terminal_client_config() -> client::Config {
     client::Config {
         // A larger channel window improves SFTP throughput, but we keep the
         // default packet size to avoid terminal packet truncation and server
         // compatibility issues.
         window_size: 16 * 1024 * 1024,
+        preferred: preferred_algorithms(),
         ..client::Config::default()
     }
 }
@@ -252,12 +241,15 @@ fn sftp_client_config() -> client::Config {
         // overhead on large transfers.
         window_size: 64 * 1024 * 1024,
         maximum_packet_size: 65535,
+        // Must stay in step with `terminal_client_config`: a bastion the
+        // terminal can reach must not become unreachable for file transfer.
+        preferred: preferred_algorithms(),
         ..client::Config::default()
     }
 }
 
 /// Turn the frontend's `private_key` field into a PEM blob suitable for
-/// `russh_keys::decode_secret_key`.
+/// `russh::keys::decode_secret_key`.
 ///
 /// The UI surfaces a single-line text input with placeholder
 /// `~/.ssh/id_rsa`, so the value is virtually always a path. We also
@@ -360,14 +352,14 @@ pub struct SshAgentStatus {
 }
 
 pub async fn probe_ssh_agent() -> SshAgentStatus {
-    // russh-keys' AgentClient::connect_env only exists on Unix — it
+    // russh's AgentClient::connect_env only exists on Unix — it
     // reads $SSH_AUTH_SOCK. Windows has no equivalent in this crate
     // (pageant would need its own implementation), so we report "not
     // available" and the auth ladder falls through to default key
     // files. Same approach used in try_default_key_ladder below.
     #[cfg(unix)]
     {
-        match russh_keys::agent::client::AgentClient::connect_env().await {
+        match keys::agent::client::AgentClient::connect_env().await {
             Ok(mut agent) => match agent.request_identities().await {
                 Ok(ids) => SshAgentStatus {
                     available: true,
@@ -414,19 +406,22 @@ async fn try_default_key_ladder(
     // 1) ssh-agent (Unix only — see probe_ssh_agent for the rationale)
     #[cfg(unix)]
     {
-        match russh_keys::agent::client::AgentClient::connect_env().await {
+        match keys::agent::client::AgentClient::connect_env().await {
             Ok(mut agent) => match agent.request_identities().await {
                 Ok(identities) if !identities.is_empty() => {
                     let id_count = identities.len();
                     let mut signer = agent;
                     for identity in identities {
-                        let (returned, result) = session
-                            .authenticate_future(username, identity, signer)
-                            .await;
-                        signer = returned;
-                        match result {
-                            Ok(true) => return Ok(SshAuthUsed::Agent),
-                            Ok(false) => {} // try next identity
+                        match ssh_auth::authenticate_agent_identity(
+                            session,
+                            username,
+                            identity,
+                            &mut signer,
+                        )
+                        .await
+                        {
+                            Ok(result) if result.success() => return Ok(SshAuthUsed::Agent),
+                            Ok(_) => {} // try next identity
                             Err(e) => diagnostics.push(format!("agent signer: {}", e)),
                         }
                     }
@@ -466,19 +461,16 @@ async fn try_default_key_ladder(
             // Encrypted default keys without a passphrase can't be unlocked
             // here — surface a hint and move on so other defaults still
             // get a chance.
-            let key_pair = match russh_keys::decode_secret_key(&pem, None) {
+            let key_pair = match keys::decode_secret_key(&pem, None) {
                 Ok(k) => k,
                 Err(e) => {
                     diagnostics.push(format!("{}: decode failed: {}", name, e));
                     continue;
                 }
             };
-            match session
-                .authenticate_publickey(username, Arc::new(key_pair))
-                .await
-            {
-                Ok(true) => return Ok(SshAuthUsed::KeyDefault),
-                Ok(false) => diagnostics.push(format!("{}: server rejected", name)),
+            match ssh_auth::authenticate_private_key(session, username, key_pair).await {
+                Ok(result) if result.success() => return Ok(SshAuthUsed::KeyDefault),
+                Ok(_) => diagnostics.push(format!("{}: server rejected", name)),
                 Err(e) => diagnostics.push(format!("{}: auth error: {}", name, e)),
             }
         }
@@ -500,6 +492,8 @@ async fn connect_authenticated_session(
 ) -> Result<(client::Handle<SshHandler>, SshAuthUsed), String> {
     let server_fingerprint = Arc::new(Mutex::new(None));
     let server_key_type = Arc::new(Mutex::new(None));
+    let host_key_rejected = Arc::new(AtomicBool::new(false));
+    let host_key_changed = Arc::new(AtomicBool::new(false));
     let handler = SshHandler {
         trusted_fingerprint: if config.trusted_fingerprint.is_empty() {
             None
@@ -510,61 +504,99 @@ async fn connect_authenticated_session(
         port: config.port,
         server_fingerprint: server_fingerprint.clone(),
         server_key_type: server_key_type.clone(),
+        host_key_rejected: host_key_rejected.clone(),
+        host_key_changed: host_key_changed.clone(),
     };
 
     let stream = establish_connection(config).await?;
-    let mut session = match client::connect_stream(Arc::new(client_config), stream, handler).await {
+    let connect_result = tokio::time::timeout(
+        SSH_HANDSHAKE_TIMEOUT,
+        client::connect_stream(Arc::new(client_config), stream, handler),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "SSH handshake timed out after {}s",
+            SSH_HANDSHAKE_TIMEOUT.as_secs()
+        )
+    })?;
+    let mut session = match connect_result {
         Ok(s) => s,
         Err(e) => {
             let fp = server_fingerprint.lock().await.clone();
             let kt = server_key_type.lock().await.clone();
-            if let (Some(fingerprint), Some(key_type)) = (fp, kt) {
-                let err = serde_json::json!({
-                    "error": "host_key_unknown",
-                    "hostname": format!("{}:{}", config.host, config.port),
-                    "fingerprint": fingerprint,
-                    "key_type": key_type,
-                    "message": format!("The authenticity of host '{}:{}' can't be established.\n{} key fingerprint is {}.", config.host, config.port, key_type, fingerprint),
-                });
-                return Err(err.to_string());
+            if host_key_rejected.load(Ordering::SeqCst) {
+                if let (Some(fingerprint), Some(key_type)) = (fp, kt) {
+                    let changed = host_key_changed.load(Ordering::SeqCst);
+                    let err = serde_json::json!({
+                        "error": if changed { "host_key_mismatch" } else { "host_key_unknown" },
+                        "hostname": format!("{}:{}", config.host, config.port),
+                        "fingerprint": fingerprint,
+                        "key_type": key_type,
+                        "message": if changed {
+                            format!("The host key for '{}:{}' differs from the previously trusted key. The new {} fingerprint is {}.", config.host, config.port, key_type, fingerprint)
+                        } else {
+                            format!("The authenticity of host '{}:{}' can't be established.\n{} key fingerprint is {}.", config.host, config.port, key_type, fingerprint)
+                        },
+                    });
+                    return Err(err.to_string());
+                }
             }
             return Err(format!("SSH connect: {}", e));
         }
     };
 
-    let (auth_ok, auth_used) = match config.auth_method {
-        SshAuthMethod::Password => {
-            let ok = session
-                .authenticate_password(&config.username, &config.password)
-                .await
-                .map_err(|e| format!("password auth: {}", e))?;
-            (ok, SshAuthUsed::Password)
-        }
-        SshAuthMethod::Key if config.private_key.trim().is_empty() => {
-            // Empty path + key mode = OpenSSH-style "auto": ssh-agent then
-            // default identity files. We do NOT fall back to password —
-            // the user explicitly picked key auth.
-            let used = try_default_key_ladder(&mut session, &config.username).await?;
-            (true, used)
-        }
-        SshAuthMethod::Key => {
-            let passphrase = if config.passphrase.is_empty() {
-                None
-            } else {
-                Some(config.passphrase.as_str())
-            };
-            // Frontend sends a path (placeholder hints `~/.ssh/id_rsa`); the
-            // single-line <input> can't hold a real PEM. resolve_private_key_pem
-            // accepts either a path (preferred) or an inline PEM string for
-            // forward-compat, and mirrors the old Go backend's home-dir sandbox.
-            let pem = resolve_private_key_pem(&config.private_key)?;
-            let key_pair = russh_keys::decode_secret_key(&pem, passphrase)
-                .map_err(|e| format!("invalid key: {}", e))?;
-            let ok = session
-                .authenticate_publickey(&config.username, Arc::new(key_pair))
-                .await
-                .map_err(|e| format!("key auth: {}", e))?;
-            (ok, SshAuthUsed::KeyExplicit)
+    let auth_attempt = async {
+        Ok::<_, String>(match config.auth_method {
+            SshAuthMethod::Password => {
+                let ok = session
+                    .authenticate_password(&config.username, &config.password)
+                    .await
+                    .map_err(|e| format!("password auth: {}", e))?
+                    .success();
+                (ok, SshAuthUsed::Password)
+            }
+            SshAuthMethod::Key if config.private_key.trim().is_empty() => {
+                // Empty path + key mode = OpenSSH-style "auto": ssh-agent then
+                // default identity files. We do NOT fall back to password —
+                // the user explicitly picked key auth.
+                let used = try_default_key_ladder(&mut session, &config.username).await?;
+                (true, used)
+            }
+            SshAuthMethod::Key => {
+                let passphrase = if config.passphrase.is_empty() {
+                    None
+                } else {
+                    Some(config.passphrase.as_str())
+                };
+                // Frontend sends a path (placeholder hints `~/.ssh/id_rsa`); the
+                // single-line <input> can't hold a real PEM. resolve_private_key_pem
+                // accepts either a path (preferred) or an inline PEM string for
+                // forward-compat, and mirrors the old Go backend's home-dir sandbox.
+                let pem = resolve_private_key_pem(&config.private_key)?;
+                let key_pair = keys::decode_secret_key(&pem, passphrase)
+                    .map_err(|e| format!("invalid key: {}", e))?;
+                let ok =
+                    ssh_auth::authenticate_private_key(&mut session, &config.username, key_pair)
+                        .await
+                        .map_err(|e| format!("key auth: {}", e))?
+                        .success();
+                (ok, SshAuthUsed::KeyExplicit)
+            }
+        })
+    };
+    let (auth_ok, auth_used) = match tokio::time::timeout(SSH_AUTH_TIMEOUT, auth_attempt).await {
+        Ok(result) => result?,
+        Err(_) => {
+            let _ = tokio::time::timeout(
+                SSH_CLOSE_TIMEOUT,
+                session.disconnect(Disconnect::ByApplication, "authentication timeout", "en"),
+            )
+            .await;
+            return Err(format!(
+                "SSH authentication timed out after {}s",
+                SSH_AUTH_TIMEOUT.as_secs()
+            ));
         }
     };
 
@@ -580,11 +612,12 @@ impl SshTerminal {
         let (session, auth_used) =
             connect_authenticated_session(config, terminal_client_config()).await?;
 
-        // Open channel
-        let mut channel = session
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("channel open: {}", e))?;
+        let mut channel = operation_with_timeout(
+            "terminal channel open",
+            SSH_CHANNEL_TIMEOUT,
+            session.channel_open_session(),
+        )
+        .await?;
 
         // ECHO OFF for invisible hook injection. The hook ends with `stty echo`
         // to restore echo before the first prompt. OSC sequences produced by the
@@ -602,8 +635,10 @@ impl SshTerminal {
                 (russh::Pty::TTY_OP_OSPEED, 14400),
             ]
         };
-        channel
-            .request_pty(
+        operation_with_timeout(
+            "terminal PTY request",
+            SSH_CHANNEL_TIMEOUT,
+            channel.request_pty(
                 false,
                 "xterm-256color",
                 cols as u32,
@@ -611,14 +646,16 @@ impl SshTerminal {
                 0,
                 0,
                 &terminal_modes,
-            )
-            .await
-            .map_err(|e| format!("request pty: {}", e))?;
+            ),
+        )
+        .await?;
 
-        channel
-            .request_shell(false)
-            .await
-            .map_err(|e| format!("request shell: {}", e))?;
+        operation_with_timeout(
+            "terminal shell request",
+            SSH_CHANNEL_TIMEOUT,
+            channel.request_shell(false),
+        )
+        .await?;
 
         // Inject shell hook immediately (ECHO is off, so it's invisible).
         // The hook sends OSC 7/7766/7768 before each prompt for CWD tracking
@@ -641,7 +678,12 @@ impl SshTerminal {
                 elif [ -n \"$BASH_VERSION\" ]; then \
                 PROMPT_COMMAND=\"__meterm_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; fi; \
                 printf '\\033[A\\033[2K\\r'; stty echo\n";
-            let _ = channel.data(hook.as_bytes()).await;
+            operation_with_timeout(
+                "terminal hook write",
+                SSH_CHANNEL_TIMEOUT,
+                channel.data(hook.as_bytes()),
+            )
+            .await?;
         }
 
         let done_token = CancellationToken::new();
@@ -684,18 +726,33 @@ impl SshTerminal {
 
                     // Write input to SSH channel
                     Some(data) = input_rx.recv() => {
-                        if let Err(e) = channel.data(&data[..]).await {
-                            eprintln!("[ssh] write error: {}", e);
+                        match tokio::time::timeout(SSH_CHANNEL_TIMEOUT, channel.data(&data[..])).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                eprintln!("[ssh] write error: {}", error);
+                                break;
+                            }
+                            Err(_) => {
+                                eprintln!("[ssh] write timed out");
+                                break;
+                            }
                         }
                     }
 
                     // Resize
                     Some((cols, rows)) = resize_rx.recv() => {
-                        let _ = channel.window_change(cols as u32, rows as u32, 0, 0).await;
+                        if tokio::time::timeout(
+                            SSH_CHANNEL_TIMEOUT,
+                            channel.window_change(cols as u32, rows as u32, 0, 0),
+                        ).await.is_err() {
+                            eprintln!("[ssh] resize timed out");
+                            break;
+                        }
                     }
                 }
             }
-            let _ = channel.close().await;
+            let _ = tokio::time::timeout(SSH_CLOSE_TIMEOUT, channel.close()).await;
+            done_clone.cancel();
         });
 
         Ok(Self {
@@ -717,23 +774,30 @@ impl SshTerminal {
         session_handle: &Arc<Mutex<Option<client::Handle<SshHandler>>>>,
     ) -> Result<Arc<russh_sftp::client::SftpSession>, String> {
         let mut guard = session_handle.lock().await;
-        let session = guard.as_mut().ok_or_else(|| {
-            "SFTP init: terminal session is no longer available".to_string()
-        })?;
+        let session = guard
+            .as_mut()
+            .ok_or_else(|| "SFTP init: terminal session is no longer available".to_string())?;
 
-        let sftp_channel = session
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("SFTP channel open: {}", e))?;
+        let sftp_channel = operation_with_timeout(
+            "SFTP channel open",
+            SSH_CHANNEL_TIMEOUT,
+            session.channel_open_session(),
+        )
+        .await?;
 
-        sftp_channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|e| format!("SFTP subsystem request: {}", e))?;
+        operation_with_timeout(
+            "SFTP subsystem request",
+            SSH_CHANNEL_TIMEOUT,
+            sftp_channel.request_subsystem(true, "sftp"),
+        )
+        .await?;
 
-        let sftp = russh_sftp::client::SftpSession::new(sftp_channel.into_stream())
-            .await
-            .map_err(|e| format!("SFTP session init: {}", e))?;
+        let sftp = operation_with_timeout(
+            "SFTP session init",
+            SSH_CHANNEL_TIMEOUT,
+            russh_sftp::client::SftpSession::new(sftp_channel.into_stream()),
+        )
+        .await?;
         eprintln!("[ssh] SFTP subsystem initialized (multiplexed on terminal session)");
         Ok(Arc::new(sftp))
     }
@@ -744,24 +808,30 @@ impl SshTerminal {
     pub async fn connect_sftp(
         config: &SshConfig,
     ) -> Result<Arc<russh_sftp::client::SftpSession>, String> {
-        let (session, _auth_used) =
-            connect_authenticated_session(config, sftp_client_config())
-                .await
-                .map_err(|e| format!("dedicated SFTP connect: {}", e))?;
-
-        let sftp_channel = session
-            .channel_open_session()
+        let (session, _auth_used) = connect_authenticated_session(config, sftp_client_config())
             .await
-            .map_err(|e| format!("dedicated SFTP channel open: {}", e))?;
+            .map_err(|e| format!("dedicated SFTP connect: {}", e))?;
 
-        sftp_channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|e| format!("dedicated SFTP subsystem request: {}", e))?;
+        let sftp_channel = operation_with_timeout(
+            "dedicated SFTP channel open",
+            SSH_CHANNEL_TIMEOUT,
+            session.channel_open_session(),
+        )
+        .await?;
 
-        let sftp = russh_sftp::client::SftpSession::new(sftp_channel.into_stream())
-            .await
-            .map_err(|e| format!("dedicated SFTP session init: {}", e))?;
+        operation_with_timeout(
+            "dedicated SFTP subsystem request",
+            SSH_CHANNEL_TIMEOUT,
+            sftp_channel.request_subsystem(true, "sftp"),
+        )
+        .await?;
+
+        let sftp = operation_with_timeout(
+            "dedicated SFTP session init",
+            SSH_CHANNEL_TIMEOUT,
+            russh_sftp::client::SftpSession::new(sftp_channel.into_stream()),
+        )
+        .await?;
         eprintln!("[ssh] dedicated SFTP subsystem initialized");
         Ok(Arc::new(sftp))
     }
@@ -823,12 +893,23 @@ impl Terminal for SshTerminal {
 
     async fn close(&self) -> io::Result<()> {
         if let Some(session) = self.session_handle.lock().await.take() {
-            let _ = session
-                .disconnect(Disconnect::ByApplication, "", "en")
-                .await;
+            let _ = tokio::time::timeout(
+                SSH_CLOSE_TIMEOUT,
+                session.disconnect(Disconnect::ByApplication, "", "en"),
+            )
+            .await;
         }
         self.done_token.cancel();
         Ok(())
+    }
+}
+
+impl Drop for SshTerminal {
+    fn drop(&mut self) {
+        // Pending/aborted session setup may drop the terminal before the async
+        // Terminal::close path owns it. Wake the channel task synchronously;
+        // that task performs its existing bounded channel close.
+        self.done_token.cancel();
     }
 }
 
@@ -840,131 +921,39 @@ pub async fn test_connection(config: &SshConfig) -> Result<SshAuthUsed, String> 
     Ok(auth_used)
 }
 
-// ---------------------------------------------------------------------------
-// Proxy connection helpers
-// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+    use std::time::Duration;
 
-/// TCP connect timeout in seconds.
-const TCP_CONNECT_TIMEOUT_SECS: u64 = 8;
-
-/// Establish a TCP connection to the SSH target, optionally through a proxy.
-async fn establish_connection(config: &SshConfig) -> Result<tokio::net::TcpStream, String> {
-    let target = format!("{}:{}", config.host, config.port);
-    let timeout = std::time::Duration::from_secs(TCP_CONNECT_TIMEOUT_SECS);
-
-    let fut: std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<tokio::net::TcpStream, String>> + Send>,
-    > = match config.proxy_type.as_str() {
-        "socks5" => Box::pin(connect_via_socks5(config, &target)),
-        "http" => Box::pin(connect_via_http_connect(config, &target)),
-        _ => Box::pin(connect_direct(&target)),
-    };
-
-    match tokio::time::timeout(timeout, fut).await {
-        Ok(result) => result,
-        Err(_) => Err(format!(
-            "connection timed out ({}s): host {} unreachable",
-            TCP_CONNECT_TIMEOUT_SECS, target
-        )),
+    fn disconnected_terminal(done_token: CancellationToken) -> SshTerminal {
+        let (_output_tx, output_rx) = mpsc::channel(1);
+        let (input_tx, _input_rx) = mpsc::channel(1);
+        let (resize_tx, _resize_rx) = mpsc::channel(1);
+        SshTerminal {
+            output_rx: Mutex::new(output_rx),
+            pending_output: Mutex::new(VecDeque::new()),
+            input_tx,
+            resize_tx,
+            session_handle: Arc::new(Mutex::new(None)),
+            done_token,
+            sftp: None,
+            auth_used: SshAuthUsed::Password,
+        }
     }
-}
 
-/// Direct TCP connection (no proxy).
-async fn connect_direct(target: &str) -> Result<tokio::net::TcpStream, String> {
-    tokio::net::TcpStream::connect(target)
-        .await
-        .map_err(|e| format!("TCP connect {}: {}", target, e))
-}
+    #[tokio::test]
+    async fn drop_cancels_done_token_and_wakes_waiters() {
+        let token = CancellationToken::new();
+        let observer = token.clone();
+        let waiter = tokio::spawn(async move { observer.cancelled().await });
 
-/// Connect through a SOCKS5 proxy.
-async fn connect_via_socks5(
-    config: &SshConfig,
-    target: &str,
-) -> Result<tokio::net::TcpStream, String> {
-    let proxy_addr = format!(
-        "{}:{}",
-        if config.proxy_host.is_empty() {
-            "127.0.0.1"
-        } else {
-            &config.proxy_host
-        },
-        if config.proxy_port == 0 {
-            1080
-        } else {
-            config.proxy_port
-        },
-    );
+        drop(disconnected_terminal(token.clone()));
 
-    let stream = if !config.proxy_username.is_empty() {
-        tokio_socks::tcp::Socks5Stream::connect_with_password(
-            proxy_addr.as_str(),
-            target,
-            &config.proxy_username,
-            &config.proxy_password,
-        )
-        .await
-        .map_err(|e| format!("SOCKS5 proxy {}: {}", proxy_addr, e))?
-    } else {
-        tokio_socks::tcp::Socks5Stream::connect(proxy_addr.as_str(), target)
+        assert!(token.is_cancelled());
+        tokio::time::timeout(Duration::from_secs(1), waiter)
             .await
-            .map_err(|e| format!("SOCKS5 proxy {}: {}", proxy_addr, e))?
-    };
-
-    Ok(stream.into_inner())
-}
-
-/// Connect through an HTTP CONNECT proxy.
-async fn connect_via_http_connect(
-    config: &SshConfig,
-    target: &str,
-) -> Result<tokio::net::TcpStream, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let proxy_addr = format!(
-        "{}:{}",
-        if config.proxy_host.is_empty() {
-            "127.0.0.1"
-        } else {
-            &config.proxy_host
-        },
-        if config.proxy_port == 0 {
-            8080
-        } else {
-            config.proxy_port
-        },
-    );
-
-    let mut stream = tokio::net::TcpStream::connect(&proxy_addr)
-        .await
-        .map_err(|e| format!("HTTP proxy connect {}: {}", proxy_addr, e))?;
-
-    // Build CONNECT request
-    let mut request = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n", target, target);
-    if !config.proxy_username.is_empty() {
-        use base64::Engine;
-        let credentials = format!("{}:{}", config.proxy_username, config.proxy_password);
-        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
-        request.push_str(&format!("Proxy-Authorization: Basic {}\r\n", encoded));
+            .expect("drop did not wake cancellation waiter")
+            .expect("cancellation waiter task failed");
     }
-    request.push_str("\r\n");
-
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|e| format!("HTTP CONNECT send: {}", e))?;
-
-    // Read response (just need "HTTP/1.x 200")
-    let mut buf = [0u8; 1024];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .map_err(|e| format!("HTTP CONNECT read: {}", e))?;
-
-    let response = String::from_utf8_lossy(&buf[..n]);
-    if !response.contains("200") {
-        let first_line = response.lines().next().unwrap_or(&response);
-        return Err(format!("HTTP CONNECT failed: {}", first_line));
-    }
-
-    Ok(stream)
 }

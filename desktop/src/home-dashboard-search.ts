@@ -43,17 +43,14 @@ export async function searchSearXNG(query: string, page = 1): Promise<SearXNGPag
   const settings = loadSettings();
   if (!settings.searxngEnabled || !settings.searxngUrl) return { results: [], hasMore: false };
 
-  const baseUrl = settings.searxngUrl.replace(/\/+$/, '');
-  const searchUrl = `${baseUrl}/search?q=${encodeURIComponent(query)}&format=json&pageno=${page}`;
-
-  const headers: [string, string][] = [];
-  if (settings.searxngUsername && settings.searxngPassword) {
-    headers.push(['Authorization', 'Basic ' + btoa(`${settings.searxngUsername}:${settings.searxngPassword}`)]);
-  }
-
   try {
-    const resp = await invoke<{ ok: boolean; status: number; body: string }>('fetch_ai_models', {
-      request: { url: searchUrl, headers },
+    const resp = await invoke<{ ok: boolean; status: number; body: string }>('fetch_searxng_search', {
+      request: {
+        baseUrl: settings.searxngUrl,
+        username: settings.searxngUsername,
+        query,
+        page,
+      },
     });
     if (!resp.ok) return { results: [], hasMore: false };
     const data = JSON.parse(resp.body);

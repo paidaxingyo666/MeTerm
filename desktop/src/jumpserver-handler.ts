@@ -23,7 +23,7 @@ import { t } from './i18n';
 import { ensureMeTermReady } from './session-actions';
 import { renderTabs } from './tab-renderer';
 import { renderToolbarActions } from './toolbar';
-import { createSSHSession, type SSHConnectionConfig } from './ssh';
+import { showHostKeyConfirmDialog } from './ssh';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -40,15 +40,32 @@ import {
   authenticate,
   authenticateWithToken,
   submitMFA,
-  loadJSSecrets,
   storeJSSecrets,
-  createConnectionToken,
+  createJumpServerSshSession,
+  stripJumpServerCredentialFields,
 } from './jumpserver-api';
 import { showMFADialog, showJsCredentialPrompt } from './jumpserver-ui';
-import { openJumpServerBrowserWindow } from './jumpserver-browser';
+import {
+  openJumpServerBrowserWindow,
+  resolveJumpServerBrowserSelection,
+} from './jumpserver-browser';
 import { recordJSAssetConnection } from './connection-groups';
 import { isSessionExpired, clearExpiredFlag, markSessionExpired } from './jumpserver-auth-state';
-import { isJumpServerSessionExpired } from './jumpserver-errors';
+import { isJumpServerSessionExpired, parseJumpServerError } from './jumpserver-errors';
+import {
+  clearLegacyJumpServerBrowserStorage,
+  stripJumpServerSecrets,
+} from './jumpserver-browser-context';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readBrowserConfigName(payload: unknown): string | null {
+  if (!isRecord(payload) || typeof payload.configName !== 'string') return null;
+  if (payload.configName.length === 0 || payload.configName.length > 256) return null;
+  return /[\u0000-\u001f\u007f-\u009f]/u.test(payload.configName) ? null : payload.configName;
+}
 
 /**
  * Extract a human-readable error message from JumpServer API error strings.
@@ -85,55 +102,37 @@ export async function openJumpServerBrowser(config: JumpServerConfig): Promise<v
  * Returns true if authenticated, false if cancelled or failed.
  */
 export async function ensureJSAuthenticated(config: JumpServerConfig, force = false): Promise<boolean> {
+  config = stripJumpServerCredentialFields(config);
   // Skip if already authenticated AND not forced AND not in expired state
   if (!force && !isSessionExpired(config.name) && activeJumpServers.has(config.name)) return true;
 
   StatusBar.setConnection('connecting', `JumpServer: ${config.name}`);
 
-  // 凭据 + 认证循环：
-  // (1) 缺凭据 → 先从 Keychain 拿；Keychain 也空 → 弹补输对话框
-  // (2) 用当前凭据尝试认证
-  // (3) 失败 → 带错误信息再弹对话框重试（不污染 Keychain）
-  // (4) 成功 → 跳出循环，认证成功后再把凭据写回 Keychain
-  // 触发场景：旧版本登出删过 Keychain / bundle id 迁移残留 / dropdown 重新登录
-  // / 用户首次输错密码后能立即重试。
-  let workConfig = config;
+  // Stored credentials stay inside the native broker. Only a value entered in
+  // the current prompt is passed as a one-shot override; it is persisted after
+  // authentication (including MFA) succeeds.
   const useToken = config.authMethod === 'token';
   let credentialWasPrompted = false;
+  let credentialOverride: string | undefined;
   let authResult: AuthResult | undefined;
   let promptError: string | undefined;
 
-  // 首次尝试：能从 Keychain 拿就用 Keychain（不打扰）
-  const initiallyMissing = useToken ? !workConfig.apiToken : !workConfig.password;
-  if (initiallyMissing) {
-    const fromKeychain = await loadJSSecrets(config.name);
-    const filled = useToken ? fromKeychain.apiToken : fromKeychain.password;
-    if (filled) {
-      workConfig = useToken
-        ? { ...config, apiToken: filled }
-        : { ...config, password: filled };
-    }
-  }
-
   while (true) {
-    const stillMissing = useToken ? !workConfig.apiToken : !workConfig.password;
-    if (stillMissing || promptError) {
+    if (promptError) {
       const entered = await showJsCredentialPrompt(config, promptError);
       if (!entered) {
         StatusBar.setConnection('disconnected', '');
         return false;
       }
-      workConfig = useToken
-        ? { ...config, apiToken: entered.apiToken }
-        : { ...config, password: entered.password };
+      credentialOverride = useToken ? entered.apiToken : entered.password;
       credentialWasPrompted = true;
       promptError = undefined;
     }
 
     try {
-      authResult = useToken && workConfig.apiToken
-        ? await authenticateWithToken(workConfig)
-        : await authenticate(workConfig);
+      authResult = useToken
+        ? await authenticateWithToken(config, credentialOverride)
+        : await authenticate(config, credentialOverride);
     } catch (e) {
       // 客户端层异常（如序列化失败、解析失败）— 不视为凭据错，直接退出避免死循环
       StatusBar.setError(`JumpServer: ${extractErrorMsg(String(e))}`);
@@ -160,7 +159,7 @@ export async function ensureJSAuthenticated(config: JumpServerConfig, force = fa
           return false;
         }
 
-        const mfaResult = await submitMFA(workConfig.baseUrl, mfaInput.type, mfaInput.code);
+        const mfaResult = await submitMFA(config, mfaInput.type, mfaInput.code);
         if (mfaResult.ok) {
           mfaOk = true;
         } else {
@@ -169,27 +168,31 @@ export async function ensureJSAuthenticated(config: JumpServerConfig, force = fa
       }
     }
 
-    // 认证 + MFA 全部成功 → 把补输的凭据写回 Keychain（下次免输）。
-    // 推迟到这里写：避免用户首次输错密码时把错凭据污染 Keychain，第二次重试时
-    // loadJSSecrets 会拿到错密码绕过补输对话框直接发请求失败。
+    // 认证 + MFA 全部成功 → 把这次补输的值交给 native broker。推迟到
+    // 这里可避免首次输错时污染持久凭据。
     if (credentialWasPrompted) {
       try {
-        await storeJSSecrets(workConfig.name, workConfig.password, workConfig.apiToken);
+        await storeJSSecrets(
+          config,
+          useToken ? undefined : credentialOverride,
+          useToken ? credentialOverride : undefined,
+        );
       } catch (e) {
         console.warn('[jumpserver] storeJSSecrets after successful auth failed:', e);
       }
     }
 
-    // Register as active JumpServer — 用 workConfig 让后续路径（dropdown 重新登录等）拿到完整凭据
-    activeJumpServers.set(workConfig.name, workConfig);
-    clearExpiredFlag(workConfig.name);
+    // Active state is metadata only; later fixed operations materialize their
+    // own required credential within Rust.
+    activeJumpServers.set(config.name, config);
+    clearExpiredFlag(config.name);
     syncActiveJumpServersToStorage();
     void emit('jumpserver-state-changed');
     renderToolbarActions();
     // 清掉函数入口设的 'connecting' 呼吸动画。调用方（如 handleJumpServerConnect /
     // connectToAsset）若紧接着会发起 SSH 等阶段，会再次覆盖此状态；如果调用方就
     // 是单纯重新登录（dropdown / overlays.ts reconnect 前置认证），则停在 connected。
-    StatusBar.setConnection('connected', `JumpServer: ${workConfig.name}`);
+    StatusBar.setConnection('connected', `JumpServer: ${config.name}`);
     return true;
   } catch (err) {
     StatusBar.setError(`JumpServer: ${extractErrorMsg(String(err))}`);
@@ -205,13 +208,7 @@ export async function handleJumpServerConnect(config: JumpServerConfig): Promise
   const ready = await ensureMeTermReady();
   if (!ready) return;
 
-  // Step 1: Load secrets from keychain
-  const secrets = await loadJSSecrets(config.name);
-  const fullConfig: JumpServerConfig = {
-    ...config,
-    password: config.password || secrets.password,
-    apiToken: config.apiToken || secrets.apiToken,
-  };
+  const fullConfig = stripJumpServerCredentialFields(config);
 
   // Step 2: Set proxy mode based on JumpServer config (before HTTP API calls)
   const proxyMode = fullConfig.bypassProxy !== false ? 'direct' : 'system';
@@ -228,7 +225,7 @@ export async function handleJumpServerConnect(config: JumpServerConfig): Promise
 
 // 正在进行的资产连接请求集合 — 同一 config+asset+account 的并发请求只跑一次。
 // 防止 popup 双击 / Tauri emit 重放 / panel dblclick 导致并发 connectToAsset，
-// 后者会同时弹多个 MFA 对话框并发多个 connection-token POST。
+// 后者会同时弹多个 MFA 对话框并发多个固定 Broker 建连请求。
 const inFlightConnects = new Set<string>();
 
 /**
@@ -313,7 +310,16 @@ export async function connectToAsset(
       t('jsConnectingAsset').replace('{name}', asset.name || asset.address),
     );
 
-    // Step 2: Ensure JumpServer auth (cached → instant; expired → network
+    // Secondary windows restore metadata only. Native fixed operations perform
+    // all stored-credential materialization.
+    config = stripJumpServerCredentialFields(config);
+
+    // Step 2: Set proxy mode before authentication. A mode change clears the
+    // native client pool, so doing this after auth would discard that login.
+    const proxyMode = config.bypassProxy !== false ? 'direct' : 'system';
+    await invoke('set_proxy_mode', { mode: proxyMode });
+
+    // Step 3: Ensure JumpServer auth (cached → instant; expired → network
     // round-trip; password expired → MFA dialog). User can cancel MFA,
     // which returns false — that's a "no-op cancel", not an error.
     updateConnectingPlaceholder(t('jsConnectingAuth'));
@@ -323,15 +329,13 @@ export async function connectToAsset(
       return;
     }
 
-    // Step 3: Request the per-connection token from JumpServer API.
-    // 若 Cookie 已过期（Rust 端返回 SESSION_EXPIRED:），自动重认证一次 → 再试 token。
+    // Step 4: The fixed Rust broker creates and consumes the per-connection
+    // credential while opening Koko SSH. The WebView never receives it.
     updateConnectingPlaceholder(t('jsConnectingToken'));
-    const requestToken = () => createConnectionToken(
-      config.baseUrl, asset.id, account.name, account.username, account.alias || '', account.id, 'ssh',
-    );
-    let tokenResult;
+    const connect = () => createBoundJumpServerSshSession(config, asset, account);
+    let sessionId: string;
     try {
-      tokenResult = await requestToken();
+      sessionId = await connect();
     } catch (err) {
       if (isJumpServerSessionExpired(err)) {
         markSessionExpired(config.name);
@@ -342,43 +346,27 @@ export async function connectToAsset(
           return;
         }
         updateConnectingPlaceholder(t('jsConnectingToken'));
-        tokenResult = await requestToken();
+        sessionId = await connect();
       } else {
         throw err;
       }
     }
-    if (!tokenResult.ok || !tokenResult.token) {
-      throw new Error(tokenResult.error || 'Failed to create connection token');
-    }
 
-    // Step 4: Set proxy mode based on JumpServer config
-    const proxyMode = config.bypassProxy !== false ? 'direct' : 'system';
-    void invoke('set_proxy_mode', { mode: proxyMode });
-
-    // Step 5: Build SSH config and connect to Koko.
-    // Koko accepts JMS-{token} as username:
-    //   v2/v3: JMS-{short_token}
-    //   v4:    JMS-{token_id} (UUID)
-    // Use the token ID (UUID) when available — Koko v4 looks up tokens by ID.
-    // For v2 where id IS the token value, this is equivalent.
-    const jmsToken = tokenResult.id || tokenResult.token;
-    const sshConfig: SSHConnectionConfig = {
+    // Keep only display/reconnect metadata in WebView state. In particular,
+    // neither JMS username nor password is cached in sshConfigMap.
+    const sshConfig = {
       name: `${config.name} → ${asset.name}`,
       host: config.sshHost,
       port: config.sshPort || 2222,
-      username: `JMS-${jmsToken}`,
-      authMethod: 'password',
-      password: tokenResult.secret || tokenResult.token || '',
+      username: account.username,
+      authMethod: 'password' as const,
+      password: '',
       skipShellHook: true,
-      // Koko 的连接 token 按 protocol 隔离且常为单次用：第二条 SSH 连接
-      // 用同一份 token 不被接受，所以这里强制把 SFTP 复用在终端那条已
-      // 认证的 session 上（init_sftp 而非 connect_sftp）。
       multiplexSftp: true,
       proxyType: config.proxyType,
       proxyHost: config.proxyHost,
       proxyPort: config.proxyPort,
       proxyUsername: config.proxyUsername,
-      proxyPassword: config.proxyPassword,
     };
 
     updateConnectingPlaceholder(
@@ -386,8 +374,6 @@ export async function connectToAsset(
     );
     StatusBar.setConnection('connecting', `${account.username}@${asset.address}`);
 
-    // Create SSH session to JumpServer Koko
-    const sessionId = await createSSHSession(sshConfig);
     sshConfigMap.set(sessionId, sshConfig);
     jumpServerConfigMap.set(sessionId, {
       config,
@@ -449,6 +435,40 @@ export async function connectToAsset(
   }
 }
 
+export async function createBoundJumpServerSshSession(
+  config: JumpServerConfig,
+  asset: JumpServerAsset,
+  account: JumpServerAccount,
+  trustedFingerprint?: string,
+): Promise<string> {
+  const { status, body } = await createJumpServerSshSession(
+    config,
+    asset,
+    account,
+    trustedFingerprint,
+  );
+  if (status === 201 && typeof body.id === 'string') return body.id;
+
+  const error = typeof body.error === 'string' ? body.error : '';
+  if (status === 409 && (error === 'host_key_unknown' || error === 'host_key_mismatch')) {
+    const hostname = typeof body.hostname === 'string' ? body.hostname : config.sshHost;
+    const fingerprint = typeof body.fingerprint === 'string' ? body.fingerprint : '';
+    const keyType = typeof body.key_type === 'string' ? body.key_type : '';
+    if (error === 'host_key_mismatch') {
+      throw new Error(t('sshHostKeyMismatchMsg')
+        .replace('{hostname}', hostname)
+        .replace('{fingerprint}', fingerprint)
+        .replace('{keyType}', keyType));
+    }
+    const confirmed = await showHostKeyConfirmDialog(hostname, fingerprint, keyType);
+    if (!confirmed) throw new Error('Connection cancelled by user');
+    return createBoundJumpServerSshSession(config, asset, account, fingerprint);
+  }
+  const typed = parseJumpServerError(error);
+  if (typed) throw typed;
+  throw new Error(error || `JumpServer SSH failed (HTTP ${status})`);
+}
+
 /**
  * Extract SSH port from asset protocols.
  */
@@ -458,13 +478,13 @@ function getSSHPort(asset: JumpServerAsset): number {
 }
 
 /**
- * Persist activeJumpServers to localStorage so new windows can inherit the state.
- * Also emits a Tauri event so existing windows can sync.
+ * Persist metadata-only active JumpServer state so new main windows can inherit
+ * session presence. Credentials remain exclusively in memory/Keychain.
  */
 export function syncActiveJumpServersToStorage(): void {
   const data: Record<string, JumpServerConfig> = {};
   for (const [name, config] of activeJumpServers) {
-    data[name] = config;
+    data[name] = stripJumpServerSecrets(config);
   }
   localStorage.setItem('meterm-active-jumpservers', JSON.stringify(data));
 }
@@ -474,22 +494,28 @@ export function syncActiveJumpServersToStorage(): void {
  */
 export function clearActiveJumpServersStorage(): void {
   localStorage.removeItem('meterm-active-jumpservers');
+  clearLegacyJumpServerBrowserStorage();
   activeJumpServers.clear();
 }
 
 /**
- * Restore activeJumpServers from localStorage (for new windows).
+ * Restore metadata-only activeJumpServers state (for new main windows).
  */
 export function restoreActiveJumpServersFromStorage(): void {
   const saved = localStorage.getItem('meterm-active-jumpservers');
   if (!saved) return;
   try {
     const data: Record<string, JumpServerConfig> = JSON.parse(saved);
+    const sanitizedData: Record<string, JumpServerConfig> = {};
     for (const [name, config] of Object.entries(data)) {
+      const sanitized = stripJumpServerSecrets(config);
+      sanitizedData[name] = sanitized;
       if (!activeJumpServers.has(name)) {
-        activeJumpServers.set(name, config);
+        activeJumpServers.set(name, sanitized);
       }
     }
+    // Immediately scrub legacy versions that persisted full credentials.
+    localStorage.setItem('meterm-active-jumpservers', JSON.stringify(sanitizedData));
   } catch { /* ignore parse errors */ }
 }
 
@@ -499,16 +525,21 @@ export function restoreActiveJumpServersFromStorage(): void {
  * Only the last-focused main window will handle the event.
  */
 export function setupJumpServerEventListener(): void {
-  void listen<{
-    configName: string;
-    asset: JumpServerAsset;
-    account: JumpServerAccount;
-  }>('jumpserver-connect-asset', async (event) => {
+  void listen<unknown>('jumpserver-connect-asset', async (event) => {
     // Only handle in the last-focused main window to avoid duplicate sessions
     const currentLabel = getCurrentWindow().label;
     if (currentLabel !== lastFocusedMainWindowLabel) return;
 
-    const { configName, asset, account } = event.payload;
+    const configName = readBrowserConfigName(event.payload);
+    if (!configName || !isRecord(event.payload)
+      || !isRecord(event.payload.asset) || !isRecord(event.payload.account)) return;
+    const selection = resolveJumpServerBrowserSelection(
+      configName,
+      event.payload.asset.id,
+      event.payload.account.id,
+    );
+    if (!selection) return;
+    const { asset, account } = selection;
     const config = activeJumpServers.get(configName);
     if (!config) {
       console.error('[jumpserver] No active config found for:', configName);
@@ -527,11 +558,12 @@ export function setupJumpServerEventListener(): void {
   });
 
   // Listen for dock-to-panel event — close popup, open side panel in main window
-  void listen<{ configName: string }>('jumpserver-dock-to-panel', async (event) => {
+  void listen<unknown>('jumpserver-dock-to-panel', async (event) => {
     const currentLabel = getCurrentWindow().label;
     if (currentLabel !== lastFocusedMainWindowLabel) return;
 
-    const { configName } = event.payload;
+    const configName = readBrowserConfigName(event.payload);
+    if (!configName) return;
     const config = activeJumpServers.get(configName);
     if (!config) return;
 
@@ -541,11 +573,12 @@ export function setupJumpServerEventListener(): void {
   });
 
   // Listen for snap-dock event — reposition popup to main window's right edge
-  void listen<{ configName: string }>('jumpserver-snap-dock', async (event) => {
+  void listen<unknown>('jumpserver-snap-dock', async (event) => {
     const currentLabel = getCurrentWindow().label;
     if (currentLabel !== lastFocusedMainWindowLabel) return;
 
-    const { configName } = event.payload;
+    const configName = readBrowserConfigName(event.payload);
+    if (!configName) return;
     const config = activeJumpServers.get(configName);
     if (!config) return;
 
@@ -555,11 +588,12 @@ export function setupJumpServerEventListener(): void {
   });
 
   // Listen for session-expired event from pop-out window — reopen panel in main window
-  void listen<{ configName: string }>('jumpserver-session-expired-reopen', async (event) => {
+  void listen<unknown>('jumpserver-session-expired-reopen', async (event) => {
     const currentLabel = getCurrentWindow().label;
     if (currentLabel !== lastFocusedMainWindowLabel) return;
 
-    const { configName } = event.payload;
+    const configName = readBrowserConfigName(event.payload);
+    if (!configName) return;
     const config = activeJumpServers.get(configName);
     if (!config) return;
 

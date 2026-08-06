@@ -1,4 +1,20 @@
 {
+  "bundle": {
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/polkit-1/actions/com.meterm.app.export-connections.policy": "linux/com.meterm.app.export-connections.policy",
+          "/usr/share/polkit-1/actions/com.meterm.app.credential-binding.policy": "linux/com.meterm.app.credential-binding.policy"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/polkit-1/actions/com.meterm.app.export-connections.policy": "linux/com.meterm.app.export-connections.policy",
+          "/usr/share/polkit-1/actions/com.meterm.app.credential-binding.policy": "linux/com.meterm.app.credential-binding.policy"
+        }
+      }
+    }
+  },
   "app": {
     "windows": [
       {

@@ -22,7 +22,7 @@ import { AppSettings, getTheme, getColorSchemeBg, hexToRgba } from './themes';
 import { loadFont, getFontFamily, getEffectiveFontWeight } from './fonts';
 import { DrawerManager } from './drawer';
 import { registerFileLinkProvider, getSSHDirProbe, clearSSHDirProbe } from './terminal-file-link';
-import { isWindowsPlatform } from './app-state';
+import { isMacPlatform, isWindowsPlatform } from './app-state';
 import type { SessionStatus, SessionInfo, ManagedTerminal } from './terminal-types';
 export type { SessionStatus, SessionInfo, ManagedTerminal } from './terminal-types';
 import { patchCanvasBgOpacity, patchOverlayScrollbar, patchCanvasTextRendering, patchCanvasSharpness } from './terminal-patches';
@@ -35,6 +35,7 @@ import {
   registerOscColorHandlers,
 } from './terminal-settings';
 import { scheduleResize as _scheduleResize, sendResize } from './terminal-resize';
+import { isMirrored } from './viewer-mirror';
 import { setupKeyHandler, setupPasteListener, applyWKWebViewIMEFix } from './terminal-ime';
 import { handleOscEvents, type OscHandlerCallbacks } from './terminal-osc';
 import { setShellType } from './ai-tools';
@@ -43,6 +44,7 @@ import { sendToTerminal } from './terminal-transport';
 import { InlineCompletion } from './cmd-completion';
 import { globalCompletionIndex } from './cmd-completion-data';
 import { setupClickToMoveCursor } from './terminal-click-move';
+import { registerWebglContextLossFallback, scheduleTerminalRendererRecovery } from './terminal-render-recovery';
 
 /**
  * Detect xterm.js auto-responses to terminal queries (DA, DECRQM, DSR,
@@ -86,6 +88,13 @@ class TerminalRegistryClass {
   /** Shell state listeners — called when shell transitions to idle (OSC 7768) */
   private shellStateListeners = new Map<string, Set<() => void>>();
   private pingTimestamps = new Map<string, number>();
+  /// 全量活性 ping:后台标签的 IPC 客户端也要周期心跳,否则服务端
+  /// 90s 判停跳断开(status-bar 的 5s ping 只发给活跃标签)。
+  private keepalivePingTimer = setInterval(() => {
+    this.terminals.forEach((mt) => {
+      if (!mt.ended) this.sendPing(mt.id);
+    });
+  }, 30_000);
   /** Timestamp of last pong received per session — used for input-triggered health checks */
   private lastPongTime = new Map<string, number>();
   /** Debounce: don't send input-triggered pings more often than every 5s */
@@ -112,13 +121,20 @@ class TerminalRegistryClass {
   }
 
   /** Send master approval/denial for a session */
-  sendMasterApproval(sessionId: string, approved: boolean, requesterId: string): void {
+  sendMasterApproval(
+    sessionId: string,
+    approved: boolean,
+    requesterId: string,
+    requesterConnGen: number,
+  ): void {
     const mt = this.terminals.get(sessionId);
     if (!mt) return;
+    if (!Number.isSafeInteger(requesterConnGen) || requesterConnGen < 0) return;
     const requesterBytes = new TextEncoder().encode(requesterId);
-    const payload = new Uint8Array(1 + requesterBytes.length);
+    const payload = new Uint8Array(9 + requesterBytes.length);
     payload[0] = approved ? 1 : 0;
-    payload.set(requesterBytes, 1);
+    new DataView(payload.buffer).setBigUint64(1, BigInt(requesterConnGen), false);
+    payload.set(requesterBytes, 9);
     sendToTerminal(mt, encodeMessage(MsgMasterApproval, payload));
   }
 
@@ -452,6 +468,10 @@ class TerminalRegistryClass {
       shellState: { phase: 'unknown', lastExitCode: 0, cwd: '', hookInjected: false, lastInputSource: 'none', lastUserInputAt: 0, agentCommandSeq: 0, lastCommand: '', promptRow: -1, promptCol: 0 },
     };
 
+    if (isMacPlatform && webglAddon) {
+      registerWebglContextLossFallback(mt, webglAddon);
+    }
+
     // OSC 7/7766/7768/9/777 are intercepted by Rust OscFilter and delivered
     // via MSG_OSC_EVENT → wsCallbacks.onOscEvent → handleOscEvents.
     // OSC 10/11 (color queries) remain in terminal-settings.ts.
@@ -652,15 +672,15 @@ class TerminalRegistryClass {
 
   createRemote(
     sessionId: string,
-    remoteWsUrl: string,
-    remoteToken: string,
+    remoteHost: string,
+    remotePort: number,
     onStatus: (status: SessionStatus) => void,
     onTitleChange: (title: string) => void,
   ): ManagedTerminal {
     // Create terminal UI without connecting (port=-1 signals skip-connect).
     const mt = this.create(sessionId, -1, '', onStatus, onTitleChange);
-    mt.remoteWsUrl = remoteWsUrl;
-    mt.remoteToken = remoteToken;
+    mt.remoteHost = remoteHost;
+    mt.remotePort = remotePort;
     mt.isRemote = true;
     // Now connect with remote URL
     this.connect(mt);
@@ -843,6 +863,8 @@ class TerminalRegistryClass {
 
     this.terminals.forEach((mt) => {
       if (!mt.container.classList.contains('active') || mt.ended) return;
+      // 镜像(被远端主控)会话:PTY 尺寸归主控,shrink/restore 会打碎镜像且越权 resize
+      if (isMirrored(mt.id)) return;
       const cols = mt.terminal.cols;
       const rows = mt.terminal.rows;
       if (cols <= 1 || rows <= 0) return;
@@ -887,12 +909,26 @@ class TerminalRegistryClass {
       const core = termAny._core;
       core?._renderService?.onIntersectionChange?.(true);
       core?.viewport?.onIntersectionChange?.(true);
+      // On macOS, WKWebView/Metal may preserve a corrupt WebGL texture atlas
+      // across wake. Clear it before repainting while retaining the existing
+      // SIGWINCH path below for TUI state restoration.
+      if (isMacPlatform) {
+        try { mt.terminal.clearTextureAtlas(); } catch { /* renderer may be unavailable */ }
+      }
       mt.terminal.refresh(0, mt.terminal.rows - 1);
     }
 
     if (!skipSigwinch) {
       await this.forceFullRefresh();
     }
+  }
+
+  /**
+   * Repair only xterm's renderer after a normal macOS foreground transition.
+   * No fit(), terminal.resize(), backend resize, or SIGWINCH is performed.
+   */
+  refreshRenderingAfterFocus(): void {
+    scheduleTerminalRendererRecovery(this.terminals.values());
   }
 
   clearActive(): void {
@@ -1257,6 +1293,7 @@ class TerminalRegistryClass {
         const webglAddon = new WebglAddon();
         mt.terminal.loadAddon(webglAddon);
         mt.webglAddon = webglAddon;
+        if (isMacPlatform) registerWebglContextLossFallback(mt, webglAddon);
       } catch {
         // WebGL not available, falls back to canvas renderer
       }

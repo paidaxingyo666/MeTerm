@@ -1,79 +1,76 @@
-# build-win-local.ps1 — Build from existing Windows working directory (no sync)
+# Build from the existing Windows-local worktree without syncing from WSL.
 #
-# Builds directly from the existing %LOCALAPPDATA%\meterm-dev directory,
-# preserving any changes made during dev mode.
+# This is an explicit developer convenience for testing changes made inside
+# the cached worktree. Release builds should use make desktop-build-win.
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
 $env:PATH = 'C:\Program Files\nodejs;' + $env:USERPROFILE + '\.cargo\bin;' + $env:PATH
-$env:CARGO_TARGET_DIR = $env:USERPROFILE + '\AppData\Local\meterm-target'
+$env:CARGO_TARGET_DIR = Join-Path $env:LOCALAPPDATA "meterm-target"
 
-$workDir = Join-Path $env:LOCALAPPDATA "meterm-dev"
+function Invoke-Checked {
+    param([string]$Command, [string[]]$Arguments)
 
-if (-not (Test-Path $workDir)) {
-    Write-Host "[build-win] ERROR: Working directory not found: $workDir" -ForegroundColor Red
-    Write-Host "[build-win] Run 'make desktop-dev-win' first to create it." -ForegroundColor Yellow
-    exit 1
+    & $Command @Arguments
+    $commandExit = $LASTEXITCODE
+    if ($commandExit -ne 0) {
+        throw "$Command failed with exit code $commandExit"
+    }
 }
 
-Write-Host "[build-win] Building from: $workDir (no sync)"
+$workRoot = Join-Path $env:LOCALAPPDATA "meterm-rust-dev"
+$desktopDir = Join-Path $workRoot "desktop"
+$frontendDir = Join-Path $workRoot "frontend"
+if (-not (Test-Path (Join-Path $desktopDir "package.json")) -or
+    -not (Test-Path (Join-Path $frontendDir "package.json"))) {
+    throw "Windows worktree not found. Run make desktop-dev-win or make desktop-build-win first."
+}
 
-Push-Location $workDir
+$conptyDir = Join-Path (Join-Path $desktopDir "src-tauri\binaries") "conpty"
+if (-not (Test-Path (Join-Path $conptyDir "conpty.dll")) -or
+    -not (Test-Path (Join-Path $conptyDir "OpenConsole.exe"))) {
+    throw "ConPTY resources are missing from $conptyDir"
+}
+
+Write-Host "[build-win-local] Building standalone web frontend ..."
+Push-Location $frontendDir
 try {
-    $goExe = Get-Command go -ErrorAction SilentlyContinue
-    if (-not $goExe) {
-        Write-Host "[build-win] ERROR: Go not found in PATH (required to build meterm sidecar)." -ForegroundColor Red
-        exit 1
-    }
+    Invoke-Checked "npm.cmd" @("install")
+    Invoke-Checked "npm.cmd" @("run", "build")
+} finally {
+    Pop-Location
+}
 
-    $backendDir = Join-Path $workDir "backend"
-    $sidecarDir = Join-Path $workDir "desktop\src-tauri\binaries"
-    $sidecarExe = Join-Path $sidecarDir "meterm-server-x86_64-pc-windows-msvc.exe"
-    New-Item -ItemType Directory -Force -Path $sidecarDir | Out-Null
-    Push-Location $backendDir
-    try {
-        Write-Host "[build-win] Building native sidecar -> $sidecarExe ..."
-        go build -o $sidecarExe .
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[build-win] Sidecar build failed with exit code $LASTEXITCODE" -ForegroundColor Red
-            exit $LASTEXITCODE
-        }
-    } finally {
-        Pop-Location
-    }
-
-    npx tauri build --config src-tauri/tauri.windows.conf.json
-    $buildExit = $LASTEXITCODE
-    if ($buildExit -ne 0) {
-        Write-Host "[build-win] Build failed with exit code $buildExit" -ForegroundColor Red
-        exit $buildExit
-    }
+Write-Host "[build-win-local] Building native Tauri/Rust installer from $workRoot ..."
+Push-Location $desktopDir
+try {
+    Invoke-Checked "npm.cmd" @("install")
+    Invoke-Checked "npx.cmd" @("tauri", "build", "--config", "src-tauri/tauri.windows.conf.json")
 } finally {
     Pop-Location
 }
 
 $bundleDir = Join-Path $env:CARGO_TARGET_DIR "release\bundle"
-$dlDir = Join-Path $env:USERPROFILE "Downloads"
-$copied = 0
+$downloadDir = Join-Path $env:USERPROFILE "Downloads"
+New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
 
+$installers = @()
 $nsisDir = Join-Path $bundleDir "nsis"
 if (Test-Path $nsisDir) {
-    Get-ChildItem -Path $nsisDir -Filter "*.exe" | ForEach-Object {
-        Copy-Item $_.FullName -Destination $dlDir -Force
-        Write-Host "[build-win] Copied $($_.Name) -> $dlDir" -ForegroundColor Green
-        $copied++
-    }
+    $installers += @(Get-ChildItem -Path $nsisDir -Filter "*.exe" -File)
 }
-
 $msiDir = Join-Path $bundleDir "msi"
 if (Test-Path $msiDir) {
-    Get-ChildItem -Path $msiDir -Filter "*.msi" | ForEach-Object {
-        Copy-Item $_.FullName -Destination $dlDir -Force
-        Write-Host "[build-win] Copied $($_.Name) -> $dlDir" -ForegroundColor Green
-        $copied++
-    }
+    $installers += @(Get-ChildItem -Path $msiDir -Filter "*.msi" -File)
 }
 
-if ($copied -eq 0) {
-    Write-Host "[build-win] Warning: no installer files found in $bundleDir" -ForegroundColor Yellow
-} else {
-    Write-Host "[build-win] Done! $copied installer(s) copied to $dlDir" -ForegroundColor Green
+if ($installers.Count -eq 0) {
+    throw "Tauri completed but no installer was found in $bundleDir"
 }
+
+foreach ($installer in $installers) {
+    Copy-Item $installer.FullName -Destination $downloadDir -Force
+    Write-Host "[build-win-local] Copied $($installer.Name) -> $downloadDir" -ForegroundColor Green
+}
+Write-Host "[build-win-local] Done: $($installers.Count) installer(s) copied." -ForegroundColor Green

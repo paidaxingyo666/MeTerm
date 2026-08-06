@@ -17,11 +17,12 @@ html.vibrancy-active .pairing-overlay {
 .pairing-dialog {
   background: rgba(var(--bg-settings), 1);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 14px;
-  padding: 24px;
-  min-width: 380px;
-  max-width: 460px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  border-radius: 16px;
+  padding: 28px 28px 22px;
+  width: 340px;
+  box-sizing: border-box;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  text-align: center;
 }
 [data-theme="light"] .pairing-dialog {
   background: rgba(var(--bg-settings), 1);
@@ -36,26 +37,33 @@ html.vibrancy-active .pairing-dialog {
 
 .pairing-title {
   color: var(--text-primary, #d4d4d4);
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 600;
-  margin: 0 0 4px 0;
+  margin: 0 0 5px 0;
 }
 
 .pairing-subtitle {
   color: var(--text-secondary, #888);
-  font-size: 13px;
-  margin: 0 0 16px 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  margin: 0 0 20px 0;
 }
 
+/* QR 白卡:居中、圆角、轻投影 —— 承托黑码白底 */
 .pairing-qr-container {
-  background: inherit;
-  border-radius: 8px;
-  padding: 16px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 16px;
-  min-height: 200px;
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 18px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+  line-height: 0;
+}
+.pairing-qr-container canvas {
+  display: block;
+  border-radius: 4px;
 }
 
 [data-theme="light"] .pairing-overlay {
@@ -131,6 +139,140 @@ html.vibrancy-active .pairing-dialog {
 .pairing-btn-primary:hover {
   background: rgba(var(--accent-rgb, 106, 164, 255), 0.38);
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.25);
+}
+
+/* 配对成功状态行(默认隐藏,JS 命中后 display 显示):居中胶囊 */
+.pairing-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 8px 14px;
+  border-radius: 9px;
+  background: rgba(34, 197, 94, 0.14);
+  color: #22c55e;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* 「配对成功后自动关闭」复选框:整体居中,复选框与文字同一行 */
+.pairing-autoclose {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 18px;
+  font-size: 12.5px;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+  user-select: none;
+}
+.pairing-autoclose input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: none;
+  cursor: pointer;
+  accent-color: var(--accent, #007acc);
+}
+
+/* 「分享 / 更多」:降级为居中文字链,不做大按钮 */
+.pairing-more-toggle {
+  display: block;
+  margin: 0 auto 14px;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #888);
+  font-size: 12.5px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+.pairing-more-toggle:hover {
+  color: var(--text-primary, #d4d4d4);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* 折叠区(分享元数据/链接/复制;默认收起,JS 控 display) */
+.pairing-more-section {
+  text-align: left;
+  border-top: 1px solid var(--border-color, #3c3c3c);
+  padding-top: 16px;
+  margin-bottom: 16px;
+}
+.pairing-more-section .pairing-buttons {
+  justify-content: stretch;
+}
+.pairing-more-section .pairing-btn {
+  flex: 1;
+}
+
+/* 主关闭按钮:整行、正常尺寸(不再被通栏挤成竖排) */
+.pairing-btn-close {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+/* 展开态:人类可读键值行(令牌打码 + 小眼睛) */
+.pairing-kv-list {
+  margin-bottom: 14px;
+}
+.pairing-kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  font-size: 12.5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.pairing-kv:last-child { border-bottom: none; }
+.pairing-kv-k {
+  color: var(--text-secondary, #888);
+  white-space: nowrap;
+  flex: none;
+}
+.pairing-kv-v {
+  color: var(--text-primary, #d4d4d4);
+  font-family: 'Menlo', monospace;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+.pairing-secret {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.pairing-secret-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.5px;
+}
+.pairing-eye {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+  padding: 2px;
+  flex: none;
+  border-radius: 5px;
+  transition: color 0.15s, background 0.15s;
+}
+.pairing-eye:hover {
+  color: var(--text-primary, #d4d4d4);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* ============================================================================

@@ -2068,6 +2068,7 @@ html.vibrancy-active .conn-sidebar.conn-sidebar--flyout {
 .home-new-ssh .hnb-icon { color: #3b82f6; }
 .home-new-remote .hnb-icon { color: #a855f7; }
 .home-new-jumpserver .hnb-icon { color: #f59e0b; }
+.home-new-phone .hnb-icon { color: #06b6d4; }
 
 /* Connection sidebar: stack the "new connection" buttons vertically and drop the
    framed-box look — no border, transparent at rest, just a background highlight on

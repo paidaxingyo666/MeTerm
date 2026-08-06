@@ -12,8 +12,9 @@ pub fn apply_gtk_csd(window: &tauri::WebviewWindow) {
     if let Ok(gtk_win) = window.gtk_window() {
         CSS_INIT.call_once(|| {
             let provider = gtk::CssProvider::new();
-            provider.load_from_data(
-                b"headerbar.titlebar, .titlebar {
+            provider
+                .load_from_data(
+                    b"headerbar.titlebar, .titlebar {
                     min-height: 0;
                     padding: 0;
                     margin: 0;
@@ -28,8 +29,9 @@ pub fn apply_gtk_csd(window: &tauri::WebviewWindow) {
                     padding: 0;
                     margin: 0;
                     border: none;
-                }"
-            ).ok();
+                }",
+                )
+                .ok();
             if let Some(screen) = gdk::Screen::default() {
                 gtk::StyleContext::add_provider_for_screen(
                     &screen,
@@ -65,10 +67,10 @@ pub struct WindowGeometry {
 #[tauri::command]
 pub fn create_window_at_position(app: AppHandle, x: f64, y: f64) -> Result<String, String> {
     crate::startup_log(&format!("create_window_at_position: x={}, y={}", x, y));
-    use tauri::WebviewWindowBuilder;
-    use tauri::WebviewUrl;
     #[cfg(target_os = "macos")]
     use tauri::TitleBarStyle;
+    use tauri::WebviewUrl;
+    use tauri::WebviewWindowBuilder;
 
     let window_label = format!(
         "window-{}",
@@ -234,10 +236,16 @@ pub fn get_all_window_geometries(app: AppHandle) -> Result<Vec<WindowGeometry>, 
 /// Attach a child window to a parent so it follows the parent's movement (macOS native).
 /// On non-macOS platforms this is a no-op.
 #[tauri::command]
-pub fn dock_child_window(app: AppHandle, parent_label: String, child_label: String) -> Result<(), String> {
-    let _parent = app.get_webview_window(&parent_label)
+pub fn dock_child_window(
+    app: AppHandle,
+    parent_label: String,
+    child_label: String,
+) -> Result<(), String> {
+    let _parent = app
+        .get_webview_window(&parent_label)
         .ok_or_else(|| format!("parent window '{}' not found", parent_label))?;
-    let _child = app.get_webview_window(&child_label)
+    let _child = app
+        .get_webview_window(&child_label)
         .ok_or_else(|| format!("child window '{}' not found", child_label))?;
 
     #[cfg(target_os = "macos")]
@@ -254,10 +262,16 @@ pub fn dock_child_window(app: AppHandle, parent_label: String, child_label: Stri
 
 /// Detach a child window from its parent so it can move independently.
 #[tauri::command]
-pub fn undock_child_window(app: AppHandle, parent_label: String, child_label: String) -> Result<(), String> {
-    let _parent = app.get_webview_window(&parent_label)
+pub fn undock_child_window(
+    app: AppHandle,
+    parent_label: String,
+    child_label: String,
+) -> Result<(), String> {
+    let _parent = app
+        .get_webview_window(&parent_label)
         .ok_or_else(|| format!("parent window '{}' not found", parent_label))?;
-    let _child = app.get_webview_window(&child_label)
+    let _child = app
+        .get_webview_window(&child_label)
         .ok_or_else(|| format!("child window '{}' not found", child_label))?;
 
     #[cfg(target_os = "macos")]
@@ -276,6 +290,48 @@ pub fn undock_child_window(app: AppHandle, parent_label: String, child_label: St
 /// This ensures `.transparent(true)` is applied via `WebviewWindowBuilder` — same as
 /// the main window defined in tauri.conf.json.  TypeScript's `new WebviewWindow()`
 /// may not propagate the transparent flag correctly on macOS.
+fn validate_utility_window_request(
+    label: &str,
+    url: &str,
+    title: &str,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let allowed_url = match label {
+        "about" => url == "?window=about",
+        "updater" => url == "?window=updater",
+        "jumpserver-browser" => url == "?window=jumpserver-browser",
+        "editor" => url == "?window=editor",
+        "settings" => {
+            url == "?window=settings"
+                || url
+                    .strip_prefix("?window=settings&tab=")
+                    .is_some_and(|tab| {
+                        !tab.is_empty()
+                            && tab.len() <= 64
+                            && tab.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+                            })
+                    })
+        }
+        _ => false,
+    };
+    if !allowed_url {
+        return Err("invalid utility window label or URL".to_string());
+    }
+    if title.is_empty()
+        || title.len() > 256
+        || title.chars().any(char::is_control)
+        || !width.is_finite()
+        || !height.is_finite()
+        || !(160.0..=2400.0).contains(&width)
+        || !(120.0..=2400.0).contains(&height)
+    {
+        return Err("invalid utility window geometry or title".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn create_transparent_window(
     app: AppHandle,
@@ -288,6 +344,8 @@ pub fn create_transparent_window(
 ) -> Result<(), String> {
     use tauri::WebviewUrl;
 
+    validate_utility_window_request(&label, &url, &title, width, height)?;
+
     if app.get_webview_window(&label).is_some() {
         // Already exists — just show & focus
         let w = app.get_webview_window(&label).unwrap();
@@ -296,11 +354,10 @@ pub fn create_transparent_window(
         return Ok(());
     }
 
-    let webview_url = if url.starts_with("http") {
-        WebviewUrl::External(url.parse::<tauri::Url>().map_err(|e| e.to_string())?)
-    } else {
-        WebviewUrl::App(url.into())
-    };
+    // Utility windows are always bundled app pages. Loading an arbitrary
+    // external origin here would create a phishing surface next to windows
+    // that otherwise have broad local Tauri capabilities.
+    let webview_url = WebviewUrl::App(url.into());
 
     #[cfg(target_os = "linux")]
     let bg_alpha = 0;
@@ -319,7 +376,7 @@ pub fn create_transparent_window(
 
     #[cfg(target_os = "macos")]
     {
-        use tauri::{TitleBarStyle, LogicalPosition};
+        use tauri::{LogicalPosition, TitleBarStyle};
         builder = builder
             .decorations(true)
             .hidden_title(true)
@@ -367,12 +424,16 @@ pub fn create_transparent_window(
 #[tauri::command]
 pub fn set_window_vibrancy(
     app: AppHandle,
+    webview_window: tauri::WebviewWindow,
     label: String,
     enabled: bool,
     _fallback_r: Option<f64>,
     _fallback_g: Option<f64>,
     _fallback_b: Option<f64>,
 ) -> Result<(), String> {
+    if webview_window.label() != label {
+        return Err("window may only change its own vibrancy".to_string());
+    }
     let window = app
         .get_webview_window(&label)
         .ok_or_else(|| format!("window '{}' not found", label))?;
@@ -383,11 +444,17 @@ pub fn set_window_vibrancy(
         let config = EffectsBuilder::new()
             .effects({
                 #[cfg(target_os = "macos")]
-                { vec![Effect::Sidebar] }
+                {
+                    vec![Effect::Sidebar]
+                }
                 #[cfg(target_os = "windows")]
-                { vec![Effect::Mica, Effect::Acrylic] }
+                {
+                    vec![Effect::Mica, Effect::Acrylic]
+                }
                 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-                { vec![] }
+                {
+                    vec![]
+                }
             })
             .state(EffectState::Active)
             .build();
@@ -437,14 +504,23 @@ pub fn set_traffic_lights_visible(window: tauri::Window, visible: bool) -> Resul
     }
 
     #[cfg(not(target_os = "macos"))]
-    { let _ = (window, visible); }
+    {
+        let _ = (window, visible);
+    }
 
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_main_window_count(app: AppHandle) -> u32 {
-    const UTILITY_LABELS: &[&str] = &["settings", "jumpserver-browser", "about", "updater", "tray-dialog", "editor"];
+    const UTILITY_LABELS: &[&str] = &[
+        "settings",
+        "jumpserver-browser",
+        "about",
+        "updater",
+        "tray-dialog",
+        "editor",
+    ];
     app.webview_windows()
         .keys()
         .filter(|k| !UTILITY_LABELS.contains(&k.as_str()))
@@ -474,9 +550,10 @@ pub fn restart_app_via_open(app: AppHandle) {
         if let Ok(exe) = std::env::current_exe() {
             // exe: …/MeTerm.app/Contents/MacOS/meterm
             if let Some(bundle) = exe
-                .parent()                   // MacOS/
-                .and_then(|p| p.parent())   // Contents/
-                .and_then(|p| p.parent())   // MeTerm.app
+                .parent() // MacOS/
+                .and_then(|p| p.parent()) // Contents/
+                .and_then(|p| p.parent())
+            // MeTerm.app
             {
                 if bundle.extension().map_or(false, |e| e == "app") {
                     let bundle_path = bundle.display().to_string();
@@ -485,10 +562,7 @@ pub fn restart_app_via_open(app: AppHandle) {
                     // can take a moment, and we must NOT call `open -a` while the old instance
                     // is still alive (single-instance plugin would just focus the old one).
                     let _ = std::process::Command::new("sh")
-                        .args([
-                            "-c",
-                            &format!("sleep 2 && open -a '{}'", bundle_path),
-                        ])
+                        .args(["-c", &format!("sleep 2 && open -a '{}'", bundle_path)])
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .spawn();
@@ -505,7 +579,14 @@ pub fn restart_app_via_open(app: AppHandle) {
 /// Reveal a window that was created with alphaValue=0 (anti-flash).
 /// Called by JS after the first frame is fully painted.
 #[tauri::command]
-pub fn reveal_window(app: AppHandle, label: String) -> Result<(), String> {
+pub fn reveal_window(
+    app: AppHandle,
+    webview_window: tauri::WebviewWindow,
+    label: String,
+) -> Result<(), String> {
+    if webview_window.label() != label {
+        return Err("window may only reveal itself".to_string());
+    }
     let window = app
         .get_webview_window(&label)
         .ok_or_else(|| format!("window '{}' not found", label))?;
@@ -527,4 +608,61 @@ pub fn reveal_window(app: AppHandle, label: String) -> Result<(), String> {
         let _ = window.set_focus();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_utility_window_request;
+
+    #[test]
+    fn utility_windows_only_accept_known_bundled_pages() {
+        for (label, url) in [
+            ("about", "?window=about"),
+            ("updater", "?window=updater"),
+            ("jumpserver-browser", "?window=jumpserver-browser"),
+            ("editor", "?window=editor"),
+            ("settings", "?window=settings"),
+            ("settings", "?window=settings&tab=sharing_2"),
+        ] {
+            assert!(validate_utility_window_request(label, url, "MeTerm", 480.0, 300.0).is_ok());
+        }
+
+        for (label, url) in [
+            ("external", "https://attacker.invalid"),
+            ("about", "https://attacker.invalid"),
+            ("about", "?window=about&next=https://attacker.invalid"),
+            ("settings", "?window=settings&tab=ok&extra=1"),
+            ("settings", "?window=settings&tab=../about"),
+        ] {
+            assert!(validate_utility_window_request(label, url, "MeTerm", 480.0, 300.0).is_err());
+        }
+    }
+
+    #[test]
+    fn utility_windows_reject_unbounded_geometry_and_control_titles() {
+        assert!(validate_utility_window_request(
+            "about",
+            "?window=about",
+            "bad\nname",
+            480.0,
+            300.0,
+        )
+        .is_err());
+        assert!(validate_utility_window_request(
+            "about",
+            "?window=about",
+            "MeTerm",
+            f64::NAN,
+            300.0,
+        )
+        .is_err());
+        assert!(validate_utility_window_request(
+            "about",
+            "?window=about",
+            "MeTerm",
+            10_000.0,
+            300.0,
+        )
+        .is_err());
+    }
 }

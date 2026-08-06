@@ -9,8 +9,8 @@ import { TerminalRegistry } from './terminal';
 import { DrawerManager } from './drawer';
 import { AICapsuleManager } from './ai-capsule';
 import { getAllLeaves } from './split-pane';
-import { createSSHSession, type SSHConnectionConfig } from './ssh';
-import { createConnectionToken } from './jumpserver-api';
+import type { SSHConnectionConfig } from './ssh';
+import { createSSHSessionForConfig } from './ssh-saved-session';
 import { notifyUser } from './notify';
 import {
   port, authToken,
@@ -20,7 +20,7 @@ import {
   activeJumpServers,
 } from './app-state';
 import { isSessionExpired, markSessionExpired } from './jumpserver-auth-state';
-import { ensureJSAuthenticated } from './jumpserver-handler';
+import { createBoundJumpServerSshSession, ensureJSAuthenticated } from './jumpserver-handler';
 import { isJumpServerSessionExpired } from './jumpserver-errors';
 
 // ── Callback injection (set from main.ts init) ──
@@ -152,7 +152,7 @@ export function showReconnectOverlay(sessionId: string, tabId: string): void {
       const jsConfig = jumpServerConfigMap.get(sessionId);
 
       // JumpServer session expired or logged out → can't create a new connection token.
-      // Prompt re-login; don't call createConnectionToken (it would fail with 401).
+      // Prompt re-login before asking the fixed broker to reconnect.
       if (jsConfig) {
         const cfgName = jsConfig.config.name;
         if (isSessionExpired(cfgName) || !activeJumpServers.has(cfgName)) {
@@ -172,24 +172,16 @@ export function showReconnectOverlay(sessionId: string, tabId: string): void {
         }
       }
 
-      let reconnectConfig = config;
-      if (jsConfig) {
-        const tokenResult = await createConnectionToken(
-          jsConfig.config.baseUrl, jsConfig.asset.id, jsConfig.account.name, jsConfig.account.username, jsConfig.account.alias || '', jsConfig.account.id, 'ssh',
-        );
-        if (!tokenResult.ok || !tokenResult.token) {
-          throw new Error(tokenResult.error || 'Failed to create connection token');
-        }
-        const jmsToken = tokenResult.id || tokenResult.token;
-        reconnectConfig = {
-          ...config,
-          username: `JMS-${jmsToken}`,
-          password: tokenResult.secret || tokenResult.token || '',
-          skipShellHook: true,
-        };
-      }
-
-      const newSessionId = await createSSHSession(reconnectConfig);
+      const reconnectConfig = jsConfig
+        ? { ...config, username: jsConfig.account.username, password: '', skipShellHook: true }
+        : config;
+      const newSessionId = jsConfig
+        ? await createBoundJumpServerSshSession(
+          jsConfig.config,
+          jsConfig.asset,
+          jsConfig.account,
+        )
+        : await createSSHSessionForConfig(reconnectConfig, port, authToken);
       sshConfigMap.set(newSessionId, reconnectConfig);
       sshConfigMap.delete(sessionId);
       // Migrate JumpServer config to new session if present
@@ -274,8 +266,8 @@ export function showReconnectOverlay(sessionId: string, tabId: string): void {
       btn.classList.remove('is-reconnecting');
       overlay.classList.remove('reconnecting');
 
-      // JumpServer 会话过期（Rust 端 SESSION_EXPIRED 前缀，由 createConnectionToken
-      // 在所有候选 body 均返回 401/403 时抛出）→ 自动重认证 + 重试一次。
+      // JumpServer 会话过期（Rust fixed broker 在所有候选 body 均返回
+      // 401/403 时给出 SESSION_EXPIRED）→ 自动重认证 + 重试一次。
       const jsConfig = jumpServerConfigMap.get(sessionId);
       if (jsConfig && isJumpServerSessionExpired(err)) {
         markSessionExpired(jsConfig.config.name);
@@ -369,7 +361,11 @@ export function removeKickedOverlay(sessionId: string): void {
 
 // ── Master Request Approval ──
 
-export const pendingMasterRequests = new Map<string, { requesterId: string; timerId: ReturnType<typeof setTimeout> }>();
+export const pendingMasterRequests = new Map<string, {
+  requesterId: string;
+  requesterConnGen: number;
+  timerId: ReturnType<typeof setTimeout>;
+}>();
 let masterApprovalOverlayEl: HTMLDivElement | null = null;
 let masterApprovalSessionId: string | null = null;
 
@@ -419,7 +415,12 @@ export function respondMasterRequest(sessionId: string, approved: boolean): void
   const pending = pendingMasterRequests.get(sessionId);
   if (!pending) return;
   clearTimeout(pending.timerId);
-  TerminalRegistry.sendMasterApproval(sessionId, approved, pending.requesterId);
+  TerminalRegistry.sendMasterApproval(
+    sessionId,
+    approved,
+    pending.requesterId,
+    pending.requesterConnGen,
+  );
   pendingMasterRequests.delete(sessionId);
   hideMasterApprovalOverlay();
   _renderTabs(); // remove breathing animation
@@ -462,7 +463,11 @@ export function syncMasterApprovalForActiveTab(): void {
   }
 }
 
-export function showMasterApprovalDialog(sessionId: string, requesterId: string): void {
+export function showMasterApprovalDialog(
+  sessionId: string,
+  requesterId: string,
+  requesterConnGen: number,
+): void {
   // Remove any previous request for this session
   const prev = pendingMasterRequests.get(sessionId);
   if (prev) clearTimeout(prev.timerId);
@@ -474,7 +479,7 @@ export function showMasterApprovalDialog(sessionId: string, requesterId: string)
     }
   }, 30000);
 
-  pendingMasterRequests.set(sessionId, { requesterId, timerId });
+  pendingMasterRequests.set(sessionId, { requesterId, requesterConnGen, timerId });
 
   // System notification (dock bounce / taskbar flash)
   void notifyUser({

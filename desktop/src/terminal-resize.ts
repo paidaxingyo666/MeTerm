@@ -1,6 +1,7 @@
 import { encodeResize } from './protocol';
 import { isWindowsPlatform, isPipMode } from './app-state';
 import { sendToTerminal } from './terminal-transport';
+import { isMirrored, relayoutMirror } from './viewer-mirror';
 import type { ManagedTerminal } from './terminal-types';
 
 export function isVisible(mt: ManagedTerminal): boolean {
@@ -89,6 +90,12 @@ export function doResizeInternal(
 
   // PiP mode: freeze pty dimensions — CSS transform handles visual scaling
   if (isPipMode) {
+    return;
+  }
+
+  // 镜像(被远端主控)会话:PTY 尺寸归主控,本地只重排缩放居中
+  if (isMirrored(mt.id)) {
+    relayoutMirror(mt);
     return;
   }
 

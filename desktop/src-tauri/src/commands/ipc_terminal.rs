@@ -7,10 +7,10 @@
 use std::sync::Arc;
 use tauri::State;
 
-use crate::server::ServerState;
 use crate::server::protocol;
 use crate::server::session::client::Client;
 use crate::server::session::state::ClientRole;
+use crate::server::ServerState;
 
 /// Connect to a session via local IPC. Creates an IPC client backed by a
 /// Tauri Channel for downstream output. Returns hello info JSON.
@@ -37,13 +37,21 @@ pub async fn ipc_connect_session(
         .map_err(|e| e.to_string())?;
 
     // Determine actual role after add_client (may have been promoted to Master)
-    let actual_role = if session.master() == id { "master" } else { client.role.as_str() };
+    let actual_role = if session.master() == id {
+        "master"
+    } else {
+        client.role.as_str()
+    };
     let cols = *session.last_cols.lock().unwrap();
     let rows = *session.last_rows.lock().unwrap();
 
     // Send Hello via Channel
-    let hello = protocol::encode_hello(&id, actual_role, 1, cols, rows);
-    client.send(hello);
+    let conn_gen = client.conn_gen();
+    let hello = protocol::encode_hello(&id, actual_role, 1, cols, rows, conn_gen);
+    if !session.send_to_client_generation(&id, conn_gen, hello) {
+        session.remove_client(&id, conn_gen);
+        return Err("IPC terminal output channel closed during hello".to_string());
+    }
 
     // Send role change
     let role_byte = if session.master() == id {
@@ -51,18 +59,42 @@ pub async fn ipc_connect_session(
     } else {
         client.role as u8
     };
-    client.send(protocol::encode_role_change(role_byte));
+    if !session.send_to_client_generation(&id, conn_gen, protocol::encode_role_change(role_byte)) {
+        session.remove_client(&id, conn_gen);
+        return Err("IPC terminal output channel closed during role setup".to_string());
+    }
 
-    // Flush ring buffer (historical terminal output)
-    session.flush_ring_buffer(&client);
+    // 回放历史:agent 会话带背压回放 MSG_AGENT_EVENT 帧,终端会话回放 PTY 环形缓冲。
+    // 与 ws.rs::handle_ws 同序同法:client 已在 add_client 时入 session.clients,attach 逐帧
+    // `send_async` 回放后原子登记进 attached,fan-out 只投给 attached——不这样 agent 会话的 IPC
+    // 观看端永不进 attached、收不到任何 live 帧。IPC 下行是 Tauri Channel(无背压容量限制),
+    // `send_async` 即时返回,故无需像 WS 那样先起 writer 排空通道。
+    if let Some(entry) = state.agents.get(&session_id) {
+        entry.attach(&client).await;
+        // Mirror 会话底层带 PTY:AI 历史(attach)之外再回放终端环形缓冲(见 ws.rs 同段说明)。
+        // IPC 下行是 Tauri Channel(无背压容量限制),两类帧顺序不影响正确性。
+        if entry.kind() == crate::server::agent::AgentKind::Mirror {
+            session.flush_ring_buffer(&client, client.conn_gen());
+        }
+    } else {
+        session.flush_ring_buffer(&client, client.conn_gen());
+    }
+    if session.current_client_connection(&id, conn_gen).is_none() {
+        session.remove_client(&id, conn_gen);
+        return Err("IPC terminal output channel closed during replay".to_string());
+    }
 
-    eprintln!("[ipc] connected client={} session={} role={}", id, session_id, actual_role);
+    eprintln!(
+        "[ipc] connected client={} session={} role={}",
+        id, session_id, actual_role
+    );
 
     Ok(serde_json::json!({
         "client_id": id,
         "role": actual_role,
         "cols": cols,
         "rows": rows,
+        "conn_gen": client.conn_gen(),
     })
     .to_string())
 }
@@ -92,7 +124,12 @@ pub async fn ipc_session_input(
         .session_manager
         .get(&session_id)
         .ok_or("session not found")?;
-    session.handle_input(&client_id, &data);
+    let conn_gen = session
+        .client_connection_generation(&client_id)
+        .ok_or("client not connected")?;
+    if let Some(authority) = session.current_client_connection(&client_id, conn_gen) {
+        session.handle_authorized_input(&authority, &data);
+    }
     Ok(())
 }
 
@@ -109,7 +146,12 @@ pub async fn ipc_session_resize(
         .session_manager
         .get(&session_id)
         .ok_or("session not found")?;
-    session.handle_resize(&client_id, cols, rows);
+    let conn_gen = session
+        .client_connection_generation(&client_id)
+        .ok_or("client not connected")?;
+    if let Some(authority) = session.current_client_connection(&client_id, conn_gen) {
+        session.handle_authorized_resize(&authority, cols, rows);
+    }
     Ok(())
 }
 
@@ -124,10 +166,14 @@ pub async fn ipc_session_ping(
         .session_manager
         .get(&session_id)
         .ok_or("session not found")?;
+    let conn_gen = session
+        .client_connection_generation(&client_id)
+        .ok_or("client not connected")?;
     // Reuse the ping handler from dispatch
     crate::server::dispatch::dispatch_message(
         &session,
         &client_id,
+        conn_gen,
         protocol::MSG_PING,
         &[],
         &state,
@@ -150,12 +196,11 @@ pub async fn ipc_session_control(
         .session_manager
         .get(&session_id)
         .ok_or("session not found")?;
+    let conn_gen = session
+        .client_connection_generation(&client_id)
+        .ok_or("client not connected")?;
     crate::server::dispatch::dispatch_message(
-        &session,
-        &client_id,
-        msg_type,
-        &payload,
-        &state,
+        &session, &client_id, conn_gen, msg_type, &payload, &state,
     )
     .await;
     Ok(())

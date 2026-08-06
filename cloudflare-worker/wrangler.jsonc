@@ -1,0 +1,27 @@
+{
+  "name": "meterm-updater",
+  "main": "update-worker.js",
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "vars": {
+    // Bridge vars are intentionally absent until the immutable bridge Release
+    // exists. BRIDGE_VERSION and BRIDGE_TAG must always be enabled together.
+    "GITHUB_REPO": "paidaxingyo666/MeTerm"
+  },
+
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.05,
+      "persist": true
+    }
+  }
+}

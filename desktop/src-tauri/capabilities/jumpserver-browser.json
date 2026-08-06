@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "jumpserver-browser",
+  "description": "Least-privilege capability for the JumpServer asset browser window.",
+  "windows": ["jumpserver-browser"],
+  "permissions": [
+    "jumpserver-browser-commands",
+    "core:window:allow-inner-size",
+    "core:window:allow-outer-position",
+    "core:window:allow-start-dragging",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-close",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-set-theme",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

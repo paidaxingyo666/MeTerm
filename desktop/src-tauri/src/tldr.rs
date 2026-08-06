@@ -133,8 +133,7 @@ fn parse_tldr_page(content: &str, name: &str, platform: &str) -> TldrPage {
 fn build_index_from_zip(
     zip_path: &std::path::Path,
 ) -> Result<(HashMap<String, TldrPage>, Vec<String>), String> {
-    let file =
-        std::fs::File::open(zip_path).map_err(|e| format!("Failed to open ZIP: {}", e))?;
+    let file = std::fs::File::open(zip_path).map_err(|e| format!("Failed to open ZIP: {}", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("Failed to read ZIP: {}", e))?;
 
@@ -150,9 +149,7 @@ fn build_index_from_zip(
 
         // Match paths like: pages/common/tar.md  or  pages.zh/osx/brew.md
         // Inside the ZIP, paths start with "tldr-main/" prefix
-        let path = entry_name
-            .strip_prefix("tldr-main/")
-            .unwrap_or(&entry_name);
+        let path = entry_name.strip_prefix("tldr-main/").unwrap_or(&entry_name);
 
         if !path.ends_with(".md") {
             continue;
@@ -209,11 +206,7 @@ fn build_index_from_zip(
 
 // ─── Query logic ────────────────────────────────────────────────
 
-fn query_impl(
-    index: &HashMap<String, TldrPage>,
-    command: &str,
-    language: &str,
-) -> TldrQueryResult {
+fn query_impl(index: &HashMap<String, TldrPage>, command: &str, language: &str) -> TldrQueryResult {
     let platforms = get_platform_priority();
     let cmd = command.to_lowercase();
 
@@ -254,8 +247,7 @@ fn now_unix() -> u64 {
 }
 
 const CACHE_EXPIRY_SECS: u64 = 7 * 24 * 3600; // 7 days
-const DOWNLOAD_URL: &str =
-    "https://github.com/tldr-pages/tldr/releases/latest/download/tldr.zip";
+const DOWNLOAD_URL: &str = "https://github.com/tldr-pages/tldr/releases/latest/download/tldr.zip";
 
 fn ensure_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data = app
@@ -263,8 +255,7 @@ fn ensure_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
     let dir = app_data.join("tldr");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create tldr dir: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create tldr dir: {}", e))?;
     Ok(dir)
 }
 
@@ -278,8 +269,7 @@ fn write_meta(dir: &std::path::Path, meta: &CacheMeta) -> Result<(), String> {
     let meta_path = dir.join("meta.json");
     let content =
         serde_json::to_string(meta).map_err(|e| format!("Failed to serialize meta: {}", e))?;
-    std::fs::write(meta_path, content)
-        .map_err(|e| format!("Failed to write meta: {}", e))
+    std::fs::write(meta_path, content).map_err(|e| format!("Failed to write meta: {}", e))
 }
 
 // ─── Tauri commands ─────────────────────────────────────────────
@@ -331,8 +321,7 @@ pub async fn tldr_init(
                 .await
                 .map_err(|e| format!("Failed to read response: {}", e))?;
 
-            std::fs::write(&zip_path, &bytes)
-                .map_err(|e| format!("Failed to save ZIP: {}", e))?;
+            std::fs::write(&zip_path, &bytes).map_err(|e| format!("Failed to save ZIP: {}", e))?;
 
             write_meta(
                 &dir,

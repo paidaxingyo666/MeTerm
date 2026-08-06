@@ -85,8 +85,9 @@ export interface StreamCallbacks {
 export type ProviderType = 'openai' | 'anthropic' | 'gemini';
 
 export interface AIProviderConfig {
+  providerId: string;
   type: ProviderType;
-  apiKey: string;
+  hasApiKey: boolean;
   baseUrl: string;
   model: string;
   maxTokens: number;
@@ -117,15 +118,19 @@ export interface AIProviderEntry {
   type: ProviderType;
   label: string;
   apiKey: string;
+  /** Native broker presence flag; no saved key bytes are materialized here. */
+  hasApiKey: boolean;
+  /** Transient UI request to remove the native credential. */
+  clearApiKey?: boolean;
   baseUrl: string;
   models: string[];         // cached fetched model list
   enabledModels: string[];  // user-selected models to show in AI bar
 }
 
 export const DEFAULT_AI_PROVIDERS: AIProviderEntry[] = [
-  { id: 'openai',    type: 'openai',    label: 'OpenAI',    apiKey: '', baseUrl: 'https://api.openai.com',                    models: [], enabledModels: [] },
-  { id: 'anthropic', type: 'anthropic', label: 'Anthropic', apiKey: '', baseUrl: 'https://api.anthropic.com',                 models: [], enabledModels: [] },
-  { id: 'gemini',    type: 'gemini',    label: 'Gemini',    apiKey: '', baseUrl: 'https://generativelanguage.googleapis.com', models: [], enabledModels: [] },
+  { id: 'openai',    type: 'openai',    label: 'OpenAI',    apiKey: '', hasApiKey: false, baseUrl: 'https://api.openai.com',                    models: [], enabledModels: [] },
+  { id: 'anthropic', type: 'anthropic', label: 'Anthropic', apiKey: '', hasApiKey: false, baseUrl: 'https://api.anthropic.com',                 models: [], enabledModels: [] },
+  { id: 'gemini',    type: 'gemini',    label: 'Gemini',    apiKey: '', hasApiKey: false, baseUrl: 'https://generativelanguage.googleapis.com', models: [], enabledModels: [] },
 ];
 
 // ─── Presets (templates for adding new providers) ───────────────
@@ -147,32 +152,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: 'groq',      label: 'Groq',      type: 'openai',    baseUrl: 'https://api.groq.com/openai',                model: 'llama-3.1-70b-versatile' },
 ];
 
-// ─── OpenAI-Compatible URL Helpers ──────────────────────────────
-
-/**
- * 判断 baseUrl 是否已经包含 API 版本路径（如 /v1, /v4 等）。
- * 若已包含，拼接端点时不再追加 /v1 前缀。
- * 典型场景：
- *   - OpenAI:   https://api.openai.com          → 需追加 /v1
- *   - Groq:     https://api.groq.com/openai      → 需追加 /v1
- *   - Z.ai:     https://open.bigmodel.cn/api/paas/v4  → 已含版本，不追加
- *   - Ollama:   http://localhost:11434            → 需追加 /v1
- */
-function hasVersionPrefix(baseUrl: string): boolean {
-  const path = baseUrl.replace(/\/+$/, '');
-  return /\/v\d+$/.test(path);
-}
-
-/**
- * 构建 OpenAI 兼容端点的完整 URL。
- * 自动判断 baseUrl 是否已包含版本路径，避免重复拼接 /v1。
- */
-function buildOpenAIUrl(baseUrl: string, endpoint: string): string {
-  const base = baseUrl.replace(/\/+$/, '');
-  const prefix = hasVersionPrefix(base) ? '' : '/v1';
-  return `${base}${prefix}${endpoint}`;
-}
-
 // ─── Model Fetching ─────────────────────────────────────────────
 
 const ANTHROPIC_FALLBACK_MODELS = [
@@ -189,13 +168,14 @@ const ANTHROPIC_FALLBACK_MODELS = [
  * 改由 reqwest（Rust）在系统层发起请求可解决此问题。
  */
 async function nativeFetch(
-  url: string,
-  headers: Record<string, string>,
+  provider: Pick<AIProviderEntry, 'id' | 'type' | 'baseUrl'> | AIProviderConfig,
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   const resp = await invoke<{ ok: boolean; status: number; body: string }>('fetch_ai_models', {
     request: {
-      url,
-      headers: Object.entries(headers),
+      providerId: 'id' in provider ? provider.id : provider.providerId,
+      providerType: provider.type,
+      baseUrl: provider.baseUrl,
+      ...('model' in provider ? { model: provider.model } : {}),
     },
   });
   const data = resp.ok ? JSON.parse(resp.body) : null;
@@ -207,8 +187,7 @@ async function nativeFetch(
  * 解决 Windows WebView2 的 CORS 限制，替代浏览器 fetch() 用于 AI 流式聊天。
  */
 async function nativeStreamPost(
-  url: string,
-  headers: Record<string, string>,
+  provider: AIProviderConfig,
   body: object,
   onData: (data: string) => void,
   signal?: AbortSignal,
@@ -239,8 +218,12 @@ async function nativeStreamPost(
     };
 
     invoke<void>('fetch_ai_stream', {
-      url,
-      headers: Object.entries(headers),
+      request: {
+        providerId: provider.providerId,
+        providerType: provider.type,
+        baseUrl: provider.baseUrl,
+        model: provider.model,
+      },
       body: JSON.stringify(body),
       onEvent: channel,
     }).then(() => {
@@ -270,10 +253,7 @@ export async function fetchModels(entry: AIProviderEntry): Promise<string[]> {
 }
 
 async function fetchOpenAIModels(entry: AIProviderEntry): Promise<string[]> {
-  const url = buildOpenAIUrl(entry.baseUrl, '/models');
-  const headers: Record<string, string> = {};
-  if (entry.apiKey) headers['Authorization'] = `Bearer ${entry.apiKey}`;
-  const res = await nativeFetch(url, headers);
+  const res = await nativeFetch(entry);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = res.data as { data?: { id: string }[] };
   const skipPatterns = ['embedding', 'tts', 'whisper', 'dall-e', 'moderation', 'search', 'similarity', 'edit', 'insert', 'audio', 'realtime'];
@@ -285,11 +265,7 @@ async function fetchOpenAIModels(entry: AIProviderEntry): Promise<string[]> {
 
 async function fetchAnthropicModels(entry: AIProviderEntry): Promise<string[]> {
   try {
-    const url = `${entry.baseUrl.replace(/\/+$/, '')}/v1/models`;
-    const res = await nativeFetch(url, {
-      'x-api-key': entry.apiKey,
-      'anthropic-version': '2023-06-01',
-    });
+    const res = await nativeFetch(entry);
     if (res.ok) {
       const data = res.data as { data?: { id: string }[] };
       const models = ((data.data || []) as { id: string }[]).map((m) => m.id).sort();
@@ -300,9 +276,7 @@ async function fetchAnthropicModels(entry: AIProviderEntry): Promise<string[]> {
 }
 
 async function fetchGeminiModels(entry: AIProviderEntry): Promise<string[]> {
-  const baseUrl = entry.baseUrl.replace(/\/+$/, '');
-  const url = `${baseUrl}/v1beta/models`;
-  const res = await nativeFetch(url, { 'x-goog-api-key': entry.apiKey });
+  const res = await nativeFetch(entry);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = res.data as { models?: { name: string; supportedGenerationMethods?: string[] }[] };
   return ((data.models || []) as { name: string; supportedGenerationMethods?: string[] }[])
@@ -326,13 +300,13 @@ export function resolveActiveModel(
   if (activeModel === 'auto') {
     // First: provider with API key and enabled models
     for (const p of providers) {
-      if (p.apiKey && p.enabledModels.length > 0) {
+      if (p.hasApiKey && p.enabledModels.length > 0) {
         return { entry: p, model: p.enabledModels[0] };
       }
     }
     // Fallback: first provider with API key, use default model
     for (const p of providers) {
-      if (p.apiKey) {
+      if (p.hasApiKey) {
         return { entry: p, model: resolveModel(p.type, 'auto') };
       }
     }
@@ -355,8 +329,6 @@ class OpenAIProvider implements AIProvider {
   constructor(private config: AIProviderConfig) {}
 
   chat(messages: ChatMessage[], callbacks: StreamCallbacks, signal?: AbortSignal, tools?: ToolSpec[]): void {
-    const url = buildOpenAIUrl(this.config.baseUrl, '/chat/completions');
-
     // Convert a ContentPart[] (multimodal) payload into OpenAI's
     // content-parts shape. OpenAI uses `image_url` with data URIs.
     const toOpenAIParts = (parts: ContentPart[]): unknown[] => parts.map((p) => {
@@ -444,38 +416,19 @@ class OpenAIProvider implements AIProvider {
       }));
     }
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (this.config.apiKey) {
-      headers['Authorization'] = `Bearer ${this.config.apiKey}`;
-    }
-
-    this.doStream(url, headers, body, callbacks, signal);
+    this.doStream(body, callbacks, signal);
   }
 
   async validateConfig(): Promise<{ ok: boolean; error?: string }> {
     try {
       // 优先尝试 /models 端点；部分兼容提供商（如智谱 Z.ai）不支持此端点，
       // 则 fallback 到发送一条最小 chat 请求来验证配置
-      const modelsUrl = buildOpenAIUrl(this.config.baseUrl, '/models');
-      const headers: Record<string, string> = {};
-      if (this.config.apiKey) headers['Authorization'] = `Bearer ${this.config.apiKey}`;
-      const res = await nativeFetch(modelsUrl, headers);
+      const res = await nativeFetch(this.config);
       if (res.ok) return { ok: true };
-
-      // /models 404 → 可能是不支持该端点的兼容提供商，尝试 chat 端点
-      if (res.status === 404) {
-        const chatUrl = buildOpenAIUrl(this.config.baseUrl, '/chat/completions');
-        const chatRes = await nativeFetch(chatUrl, {
-          ...headers,
-          'Content-Type': 'application/json',
-        });
-        // 400 = 请求格式错误（说明端点存在），401 = 认证失败
-        if (chatRes.status === 400 || chatRes.ok) return { ok: true };
-        if (chatRes.status === 401) return { ok: false, error: 'Invalid API key' };
-        return { ok: false, error: `HTTP ${chatRes.status}` };
-      }
+      // Some OpenAI-compatible services intentionally omit /models. A 404
+      // still proves the bound authority is reachable without broadening the
+      // native broker to an arbitrary endpoint probe.
+      if (res.status === 404) return { ok: true };
       return { ok: false, error: `HTTP ${res.status}` };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
@@ -489,8 +442,6 @@ class OpenAIProvider implements AIProvider {
    * provides id + function.name, subsequent chunks append to function.arguments.
    */
   private async doStream(
-    url: string,
-    headers: Record<string, string>,
     body: object,
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
@@ -501,7 +452,7 @@ class OpenAIProvider implements AIProvider {
     const tcMap = new Map<number, { id: string; name: string; arguments: string }>();
 
     try {
-      await nativeStreamPost(url, headers, body, (data) => {
+      await nativeStreamPost(this.config, body, (data) => {
         try {
           const parsed = JSON.parse(data);
           const choice = parsed.choices?.[0];
@@ -575,8 +526,6 @@ class AnthropicProvider implements AIProvider {
   constructor(private config: AIProviderConfig) {}
 
   chat(messages: ChatMessage[], callbacks: StreamCallbacks, signal?: AbortSignal, tools?: ToolSpec[]): void {
-    const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/messages`;
-
     const systemMessages = messages.filter((m) => m.role === 'system');
     const conversationMessages = messages.filter((m) => m.role !== 'system');
 
@@ -696,23 +645,12 @@ class AnthropicProvider implements AIProvider {
       body.tools = toolsArr;
     }
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-api-key': this.config.apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    };
-
-    this.doStream(url, headers, body, callbacks, signal);
+    this.doStream(body, callbacks, signal);
   }
 
   async validateConfig(): Promise<{ ok: boolean; error?: string }> {
     try {
-      const url = `${this.config.baseUrl.replace(/\/+$/, '')}/v1/models`;
-      const res = await nativeFetch(url, {
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': '2023-06-01',
-      });
+      const res = await nativeFetch(this.config);
       if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
       return { ok: true };
     } catch (e) {
@@ -726,8 +664,6 @@ class AnthropicProvider implements AIProvider {
    * (type=input_json_delta) → content_block_stop.
    */
   private async doStream(
-    url: string,
-    headers: Record<string, string>,
     body: object,
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
@@ -737,7 +673,7 @@ class AnthropicProvider implements AIProvider {
     let currentTC: { id: string; name: string; arguments: string } | null = null;
 
     try {
-      await nativeStreamPost(url, headers, body, (data) => {
+      await nativeStreamPost(this.config, body, (data) => {
         try {
           const parsed = JSON.parse(data);
 
@@ -785,9 +721,6 @@ class GeminiProvider implements AIProvider {
   constructor(private config: AIProviderConfig) {}
 
   chat(messages: ChatMessage[], callbacks: StreamCallbacks, signal?: AbortSignal, tools?: ToolSpec[]): void {
-    const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
-    const url = `${baseUrl}/v1beta/models/${this.config.model}:streamGenerateContent?alt=sse`;
-
     const systemMessages = messages.filter((m) => m.role === 'system');
     const conversationMessages = messages.filter((m) => m.role !== 'system');
 
@@ -886,19 +819,12 @@ class GeminiProvider implements AIProvider {
       }];
     }
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': this.config.apiKey,
-    };
-
-    this.doStream(url, headers, body, callbacks, signal);
+    this.doStream(body, callbacks, signal);
   }
 
   async validateConfig(): Promise<{ ok: boolean; error?: string }> {
     try {
-      const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
-      const url = `${baseUrl}/v1beta/models/${this.config.model}`;
-      const res = await nativeFetch(url, { 'x-goog-api-key': this.config.apiKey });
+      const res = await nativeFetch(this.config);
       if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
       return { ok: true };
     } catch (e) {
@@ -912,8 +838,6 @@ class GeminiProvider implements AIProvider {
    * Gemini does not provide tool-call IDs so we synthesize one.
    */
   private async doStream(
-    url: string,
-    headers: Record<string, string>,
     body: object,
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
@@ -922,7 +846,7 @@ class GeminiProvider implements AIProvider {
     const toolCalls: ToolCall[] = [];
 
     try {
-      await nativeStreamPost(url, headers, body, (data) => {
+      await nativeStreamPost(this.config, body, (data) => {
         try {
           const parsed = JSON.parse(data);
           const parts = parsed.candidates?.[0]?.content?.parts;

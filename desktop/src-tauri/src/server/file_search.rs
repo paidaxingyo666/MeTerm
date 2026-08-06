@@ -55,34 +55,65 @@ fn is_junk_dir(name: &str) -> bool {
 fn send_batch(
     session: &Session,
     client_id: &str,
+    expected_conn_gen: u64,
     request_id: &Option<String>,
     hits: &[SearchHit],
     done: bool,
     truncated: bool,
     error: Option<String>,
-) {
-    let resp = SearchResponse { request_id, hits, done, truncated, error };
+) -> bool {
+    let resp = SearchResponse {
+        request_id,
+        hits,
+        done,
+        truncated,
+        error,
+    };
     let data = serde_json::to_vec(&resp).unwrap_or_default();
-    session.send_to_client(
+    session.send_to_client_generation(
         client_id,
+        expected_conn_gen,
         protocol::encode_message(protocol::MSG_FILE_SEARCH_RESP, &data),
-    );
+    )
 }
 
 /// Recursive search over the LOCAL filesystem (blocking — call via spawn_blocking).
-pub fn handle_local_file_search(payload: &[u8], session: &Session, client_id: &str) {
+pub fn handle_local_file_search(
+    payload: &[u8],
+    session: &Session,
+    client_id: &str,
+    expected_conn_gen: u64,
+) {
     use walkdir::WalkDir;
 
     let req: SearchRequest = match serde_json::from_slice(payload) {
         Ok(r) => r,
         Err(e) => {
-            send_batch(session, client_id, &None, &[], true, false, Some(e.to_string()));
+            send_batch(
+                session,
+                client_id,
+                expected_conn_gen,
+                &None,
+                &[],
+                true,
+                false,
+                Some(e.to_string()),
+            );
             return;
         }
     };
     let q = req.query.trim().to_lowercase();
     if q.is_empty() {
-        send_batch(session, client_id, &req.request_id, &[], true, false, None);
+        send_batch(
+            session,
+            client_id,
+            expected_conn_gen,
+            &req.request_id,
+            &[],
+            true,
+            false,
+            None,
+        );
         return;
     }
     let cap = req.max_results.unwrap_or(DEFAULT_CAP).min(HARD_CAP);
@@ -124,12 +155,32 @@ pub fn handle_local_file_search(payload: &[u8], session: &Session, client_id: &s
             break;
         }
         if batch.len() >= BATCH {
-            send_batch(session, client_id, &req.request_id, &batch, false, false, None);
+            if !send_batch(
+                session,
+                client_id,
+                expected_conn_gen,
+                &req.request_id,
+                &batch,
+                false,
+                false,
+                None,
+            ) {
+                return;
+            }
             batch.clear();
         }
     }
 
-    send_batch(session, client_id, &req.request_id, &batch, true, truncated, None);
+    send_batch(
+        session,
+        client_id,
+        expected_conn_gen,
+        &req.request_id,
+        &batch,
+        true,
+        truncated,
+        None,
+    );
 }
 
 /// Recursive search over an SFTP session (BFS via read_dir). Covers SSH and
@@ -139,24 +190,45 @@ pub async fn handle_sftp_file_search(
     sftp: &SftpSession,
     session: &Session,
     client_id: &str,
+    expected_conn_gen: u64,
 ) {
     let req: SearchRequest = match serde_json::from_slice(payload) {
         Ok(r) => r,
         Err(e) => {
-            send_batch(session, client_id, &None, &[], true, false, Some(e.to_string()));
+            send_batch(
+                session,
+                client_id,
+                expected_conn_gen,
+                &None,
+                &[],
+                true,
+                false,
+                Some(e.to_string()),
+            );
             return;
         }
     };
     let q = req.query.trim().to_lowercase();
     if q.is_empty() {
-        send_batch(session, client_id, &req.request_id, &[], true, false, None);
+        send_batch(
+            session,
+            client_id,
+            expected_conn_gen,
+            &req.request_id,
+            &[],
+            true,
+            false,
+            None,
+        );
         return;
     }
     let cap = req.max_results.unwrap_or(DEFAULT_CAP).min(HARD_CAP);
 
     // Resolve a relative root (e.g. ".") to an absolute path.
     let root = if !req.path.starts_with('/') {
-        sftp.canonicalize(&req.path).await.unwrap_or_else(|_| req.path.clone())
+        sftp.canonicalize(&req.path)
+            .await
+            .unwrap_or_else(|_| req.path.clone())
     } else {
         req.path.clone()
     };
@@ -194,14 +266,29 @@ pub async fn handle_sftp_file_search(
             };
 
             if name.to_lowercase().contains(&q) {
-                batch.push(SearchHit { path: full.clone(), name: name.clone(), is_dir });
+                batch.push(SearchHit {
+                    path: full.clone(),
+                    name: name.clone(),
+                    is_dir,
+                });
                 total += 1;
                 if total >= cap {
                     truncated = true;
                     break 'outer;
                 }
                 if batch.len() >= BATCH {
-                    send_batch(session, client_id, &req.request_id, &batch, false, false, None);
+                    if !send_batch(
+                        session,
+                        client_id,
+                        expected_conn_gen,
+                        &req.request_id,
+                        &batch,
+                        false,
+                        false,
+                        None,
+                    ) {
+                        return;
+                    }
                     batch.clear();
                 }
             }
@@ -213,5 +300,14 @@ pub async fn handle_sftp_file_search(
         }
     }
 
-    send_batch(session, client_id, &req.request_id, &batch, true, truncated, None);
+    send_batch(
+        session,
+        client_id,
+        expected_conn_gen,
+        &req.request_id,
+        &batch,
+        true,
+        truncated,
+        None,
+    );
 }

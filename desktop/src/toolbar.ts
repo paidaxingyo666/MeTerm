@@ -14,11 +14,11 @@ import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { save, open as openDialog } from '@tauri-apps/plugin-dialog';
-import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 import { confirmSystem, showInfoSystem, requestQuitWithConfirm } from './window-lifecycle';
 import { hasRemoteTabs, showRemoteSessionListPopup } from './remote-list';
-import { updateSSHHomeView, exportConnectionsToJSON, importConnectionsFromJSON } from './ssh';
+import { updateSSHHomeView, exportConnectionsToFile, formatSSHExportResult, importConnectionsFromJSON } from './ssh';
 import { showHomeView, showGalleryView, openSettings } from './view-manager';
 import { createNewSession, createNewPrivateSession, closeAllSessions, createNewWindowNearCurrent } from './session-actions';
 import { renderTabs } from './tab-renderer';
@@ -30,6 +30,7 @@ import { DrawerManager } from './drawer';
 import { AICapsuleManager } from './ai-capsule';
 import { ConnectionSidebar } from './connection-sidebar';
 import { toggleFileManager, closeFileManager, isFileManagerOpen } from './file-manager-toggle';
+import { getLanAccessState, setLanAccess } from './lan-access';
 import appIconUrl from '../src-tauri/icons/icon.svg';
 
 /** Platforms that need custom window controls (no native overlay titlebar). */
@@ -119,7 +120,7 @@ export function showWindowsToolbarMenu(anchor: HTMLElement): void {
 
   const zh = settings?.language === 'zh';
 
-  const addCheckItem = (label: string, checked: boolean, onClick: () => void | Promise<void>): void => {
+  const addCheckItem = (label: string, checked: boolean, onClick: () => void | Promise<void>): HTMLButtonElement => {
     const item = document.createElement('button');
     item.className = 'custom-context-menu-item';
     item.type = 'button';
@@ -129,6 +130,7 @@ export function showWindowsToolbarMenu(anchor: HTMLElement): void {
       void onClick();
     };
     menu.appendChild(item);
+    return item;
   };
 
   addItem(zh ? '新窗口' : 'New Window', async () => {
@@ -154,21 +156,32 @@ export function showWindowsToolbarMenu(anchor: HTMLElement): void {
     async () => { await togglePip(); },
   );
   addDivider();
-  const isDiscoverable = localStorage.getItem('meterm-discoverable') === '1';
-  addCheckItem(
-    zh ? '局域网发现' : 'LAN Discovery',
-    isDiscoverable,
+  let lanAccessEnabled: boolean | undefined;
+  const lanAccessItem = addCheckItem(
+    t('settingsLanAccess'),
+    false,
     async () => {
-      const newState = !isDiscoverable;
+      if (lanAccessEnabled === undefined) return;
+      const requested = !lanAccessEnabled;
+      if (!requested && !await confirmSystem(t('settingsLanAccessDisableConfirm'))) return;
       try {
-        await invoke('toggle_lan_sharing', { enabled: newState });
-        localStorage.setItem('meterm-discoverable', newState ? '1' : '0');
-        await invoke('set_discoverable_state', { checked: newState });
-      } catch (err) {
-        console.error('toggle_lan_sharing failed:', err);
+        lanAccessEnabled = (await setLanAccess(requested)).enabled;
+      } catch (error) {
+        console.error('set_lan_access failed:', error);
+        await showInfoSystem(t('settingsLanAccessError'), t('settingsLanAccess'));
       }
     },
   );
+  lanAccessItem.disabled = true;
+  void getLanAccessState().then((state) => {
+    lanAccessEnabled = state.enabled;
+    lanAccessItem.textContent = state.enabled
+      ? `✓ ${t('settingsLanAccess')}`
+      : `    ${t('settingsLanAccess')}`;
+    lanAccessItem.disabled = false;
+  }).catch((error) => {
+    console.error('get_lan_access_state failed:', error);
+  });
   addDivider();
   addItem(
     zh ? '导入连接' : 'Import Connections',
@@ -180,7 +193,7 @@ export function showWindowsToolbarMenu(anchor: HTMLElement): void {
       if (filePath) {
         try {
           const json = await readTextFile(filePath as string);
-          const result = importConnectionsFromJSON(json);
+          const result = await importConnectionsFromJSON(json);
           updateSSHHomeView();
           await showInfoSystem(`${result.count} ${t('sshImportCount')}`, t('sshImportSuccess'));
         } catch {
@@ -192,18 +205,17 @@ export function showWindowsToolbarMenu(anchor: HTMLElement): void {
   addItem(
     zh ? '导出连接' : 'Export Connections',
     async () => {
-      const result = await exportConnectionsToJSON();
-      if (!result) {
-        await showInfoSystem(t('sshNoConnectionsToExport'), t('appName'));
-        return;
-      }
-      const filePath = await save({
-        defaultPath: 'meterm-connections.json',
-        filters: [{ name: 'JSON', extensions: ['json'] }],
-      });
-      if (filePath) {
-        await writeTextFile(filePath, result.json);
-        await showInfoSystem(`${result.count} ${t('sshExportCount')}`, t('sshExportSuccess'));
+      try {
+        const result = await exportConnectionsToFile();
+        if (result === undefined) {
+          await showInfoSystem(t('sshNoConnectionsToExport'), t('appName'));
+          return;
+        }
+        if (result) {
+          await showInfoSystem(formatSSHExportResult(result), t('sshExportSuccess'));
+        }
+      } catch {
+        await showInfoSystem(t('sshExportFailed'), t('appName'));
       }
     },
   );
@@ -402,7 +414,7 @@ export function renderToolbarActions(): void {
   const shareBtn = document.createElement('button');
   shareBtn.className = 'toolbar-icon-btn';
   shareBtn.type = 'button';
-  shareBtn.title = t('shareLink');
+  shareBtn.title = t('settingsTabSharing');
   shareBtn.innerHTML = `<span class="tab-icon">${icon('share')}</span>`;
   shareBtn.onclick = () => openSettings('sharing');
   toolbarRightEl.appendChild(shareBtn);

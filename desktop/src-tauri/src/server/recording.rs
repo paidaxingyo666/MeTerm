@@ -11,8 +11,8 @@
 //! Direction bytes: 'i'=Input, 'o'=Output, 'r'=Resize, 'e'=Event
 //! ⚠️ Resize data uses BigEndian u16 for cols/rows (unlike the LE outer fields).
 
-use std::io::{self, Write, BufWriter};
 use std::fs::{File, OpenOptions};
+use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,9 +55,9 @@ impl FileRecorder {
 impl Recorder for FileRecorder {
     fn record(&self, entry: LogEntry) -> io::Result<()> {
         let mut guard = self.writer.lock().unwrap();
-        let writer = guard.as_mut().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "recorder closed")
-        })?;
+        let writer = guard
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "recorder closed"))?;
 
         // Write timestamp (i64 LE)
         writer.write_all(&entry.timestamp.to_le_bytes())?;
@@ -82,9 +82,7 @@ impl Recorder for FileRecorder {
 
 /// Start a 500ms periodic flush timer for a recorder.
 /// Returns a JoinHandle that can be aborted to stop flushing.
-pub fn start_flush_timer(
-    recorder: std::sync::Arc<dyn Recorder>,
-) -> tokio::task::JoinHandle<()> {
+pub fn start_flush_timer(recorder: std::sync::Arc<dyn Recorder>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
         loop {
@@ -136,13 +134,10 @@ impl ReplayReader {
             return None;
         }
 
-        let timestamp = i64::from_le_bytes(
-            self.data[self.pos..self.pos + 8].try_into().ok()?,
-        );
+        let timestamp = i64::from_le_bytes(self.data[self.pos..self.pos + 8].try_into().ok()?);
         let direction = self.data[self.pos + 8];
-        let data_len = u32::from_le_bytes(
-            self.data[self.pos + 9..self.pos + 13].try_into().ok()?,
-        ) as usize;
+        let data_len =
+            u32::from_le_bytes(self.data[self.pos + 9..self.pos + 13].try_into().ok()?) as usize;
 
         self.pos += 13;
 

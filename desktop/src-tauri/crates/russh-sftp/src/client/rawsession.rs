@@ -719,7 +719,11 @@ impl RawSftpSession {
 
     /// Send a packet without waiting for the response.
     /// Returns a receiver that can be awaited later to collect the response.
-    pub fn send_no_wait(&self, id: Option<u32>, packet: Packet) -> SftpResult<mpsc::Receiver<SftpResult<Packet>>> {
+    pub fn send_no_wait(
+        &self,
+        id: Option<u32>,
+        packet: Packet,
+    ) -> SftpResult<mpsc::Receiver<SftpResult<Packet>>> {
         if self.tx.is_closed() {
             return Err(Error::UnexpectedBehavior("session closed".into()));
         }
@@ -758,7 +762,10 @@ impl RawSftpSession {
             }
             .into(),
         )?;
-        Ok(PendingWrite { rx, timeout_secs: self.options.timeout.try_read().map(|t| *t).unwrap_or(10) })
+        Ok(PendingWrite {
+            rx,
+            timeout_secs: self.options.timeout.try_read().map(|t| *t).unwrap_or(10),
+        })
     }
 
     /// Collect all responses for a batch of pipelined writes.
@@ -795,7 +802,10 @@ impl RawSftpSession {
             }
             .into(),
         )?;
-        Ok(PendingRead { rx, timeout_secs: self.options.timeout.try_read().map(|t| *t).unwrap_or(10) })
+        Ok(PendingRead {
+            rx,
+            timeout_secs: self.options.timeout.try_read().map(|t| *t).unwrap_or(10),
+        })
     }
 }
 
@@ -826,7 +836,9 @@ impl PendingWrite {
             Ok(result) => {
                 let result = match result {
                     Ok(pkt) => match pkt {
-                        Packet::Status(status) if status.status_code == StatusCode::Ok => Ok(status),
+                        Packet::Status(status) if status.status_code == StatusCode::Ok => {
+                            Ok(status)
+                        }
                         Packet::Status(status) => Err(status.into()),
                         _ => Err(Error::UnexpectedPacket),
                     },

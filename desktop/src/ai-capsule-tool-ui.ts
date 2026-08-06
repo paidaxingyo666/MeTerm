@@ -43,7 +43,7 @@ export function toolArgsInline(toolName: string, args: Record<string, unknown>):
   } else if ((toolName === 'read_file' || toolName === 'write_file') && args.path) {
     return `<span class="ai-tool-args-inline"><code>${escapeHtml(String(args.path))}</code></span>`;
   } else if (toolName === 'read_terminal') {
-    return `<span class="ai-tool-args-inline"><code>${args.lines ?? 50} lines</code></span>`;
+    return `<span class="ai-tool-args-inline"><code>${escapeHtml(String(args.lines ?? 50))} lines</code></span>`;
   } else if (toolName === 'command_help' && args.command) {
     return `<span class="ai-tool-args-inline"><code>${escapeHtml(String(args.command))}</code></span>`;
   } else if (toolName === 'todo_write') {

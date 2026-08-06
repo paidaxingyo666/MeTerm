@@ -1,33 +1,72 @@
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::server::lan_access::LanAccessStatus;
 use crate::server::ServerState;
 
 #[tauri::command]
-pub async fn toggle_lan_sharing(
+pub fn get_lan_access_state(state: State<'_, Arc<ServerState>>) -> LanAccessStatus {
+    state.lan_access_status()
+}
+
+#[tauri::command]
+pub fn set_lan_access(
+    app: AppHandle,
     state: State<'_, Arc<ServerState>>,
     enabled: bool,
-) -> Result<serde_json::Value, String> {
-    if enabled {
-        let lan_port = state.start_lan_proxy()?;
-        if let Some(ref dm) = state.discovery_manager {
-            let name = state.display_name();
-            if let Err(e) = dm.set_discoverable(true, Some(lan_port), Some(&name)) {
-                state.stop_lan_proxy();
-                return Err(format!("failed to enable discoverability: {}", e));
-            }
-        } else {
-            eprintln!("[lan] warning: discovery_manager is None, mDNS registration skipped");
+) -> Result<LanAccessStatus, String> {
+    finish_lan_transition(&app, &state, state.set_lan_access(enabled))
+}
+
+#[tauri::command]
+pub fn set_lan_discovery(
+    app: AppHandle,
+    state: State<'_, Arc<ServerState>>,
+    enabled: bool,
+) -> Result<LanAccessStatus, String> {
+    finish_lan_transition(&app, &state, state.set_lan_discovery(enabled))
+}
+
+/// Native tray action. It performs the Rust transition itself; renderer events
+/// are notification-only and are never required to enforce the security gate.
+pub(crate) fn toggle_tray_lan_access(
+    app: &AppHandle,
+    state: &ServerState,
+) -> Result<LanAccessStatus, String> {
+    let current = state.lan_access_status();
+    let result = state.set_lan_access(!current.enabled);
+    finish_lan_transition(app, state, result)
+}
+
+fn finish_lan_transition(
+    app: &AppHandle,
+    state: &ServerState,
+    result: Result<LanAccessStatus, String>,
+) -> Result<LanAccessStatus, String> {
+    match result {
+        Ok(status) => {
+            publish_lan_state(app, &status);
+            Ok(status)
         }
-        eprintln!("[lan] sharing enabled on port {}", lan_port);
-        Ok(serde_json::json!({ "ok": true, "lan_port": lan_port }))
-    } else {
-        if let Some(ref dm) = state.discovery_manager {
-            let _ = dm.set_discoverable(false, None, None);
+        Err(error) => {
+            publish_lan_state(app, &state.lan_access_status());
+            Err(error)
         }
-        state.stop_lan_proxy();
-        eprintln!("[lan] sharing disabled");
-        Ok(serde_json::json!({ "ok": true }))
+    }
+}
+
+fn publish_lan_state(app: &AppHandle, status: &LanAccessStatus) {
+    if let Some(lifecycle) = app.try_state::<crate::AppLifecycleState>() {
+        // The single native check item is the LAN access kill switch. mDNS has
+        // its own settings control and must never share this visual state.
+        lifecycle.set_lan_access_menu_checked(status.enabled);
+        let language = lifecycle.current_language();
+        if let Err(error) = super::menu::set_tray_language(app.clone(), language) {
+            eprintln!("[lan] tray state refresh failed: {error}");
+        }
+    }
+    if let Err(error) = app.emit("lan-access-state-changed", status.clone()) {
+        eprintln!("[lan] state event failed: {error}");
     }
 }
 
@@ -71,15 +110,6 @@ pub fn set_device_name(state: State<'_, Arc<ServerState>>, name: String) {
 }
 
 #[tauri::command]
-pub fn set_discoverable_state(app: AppHandle, checked: bool) -> Result<(), String> {
-    let lifecycle = app.state::<crate::AppLifecycleState>();
-    lifecycle.set_discoverable(checked);
-
-    let language = lifecycle.current_language();
-    super::menu::set_tray_language(app, language)
-}
-
-#[tauri::command]
 pub async fn list_clients(state: State<'_, Arc<ServerState>>) -> Result<String, String> {
     let clients = state.session_manager.list_all_clients();
     Ok(serde_json::json!({ "clients": clients }).to_string())
@@ -116,6 +146,37 @@ pub async fn list_devices(state: State<'_, Arc<ServerState>>) -> Result<String, 
     Ok(serde_json::json!({ "devices": devices }).to_string())
 }
 
+/// List persistent per-device credentials, including offline paired devices.
+/// This is local Tauri IPC only; remote callers use the owner-only HTTP route.
+#[tauri::command]
+pub async fn list_paired_credentials(state: State<'_, Arc<ServerState>>) -> Result<String, String> {
+    let devices = state.authenticator.list_device_credentials();
+    Ok(serde_json::json!({ "devices": devices }).to_string())
+}
+
+/// Revoke one stable device identity and immediately tear down every related
+/// terminal/presence connection and push destination.
+#[tauri::command]
+pub async fn revoke_paired_credential(
+    state: State<'_, Arc<ServerState>>,
+    device_id: String,
+) -> Result<String, String> {
+    state
+        .authenticator
+        .validate_device_identity(&device_id, "Paired device")?;
+    let Some(retired) = state.authenticator.revoke_device(&device_id)? else {
+        return Err("device credential not found".to_string());
+    };
+    let cleanup = state.disconnect_device_generation(&retired.device_id, retired.generation);
+    Ok(serde_json::json!({
+        "ok": true,
+        "disconnected": cleanup.disconnected,
+        "presence_disconnected": cleanup.presence_disconnected,
+        "push_removed": cleanup.push_removed != 0,
+    })
+    .to_string())
+}
+
 #[tauri::command]
 pub async fn kick_device(
     state: State<'_, Arc<ServerState>>,
@@ -123,6 +184,8 @@ pub async fn kick_device(
     ban: Option<bool>,
 ) -> Result<String, String> {
     super::validate_ip(&ip)?;
+    // TODO(device-auth): revoke credentials only through a future stable
+    // device_id route. IP-based session kicks are not a safe identity mapping.
     let count = state.session_manager.kick_by_ip(&ip);
     if ban.unwrap_or(false) {
         let _ = state.ban_manager.ban(&ip, "kicked and banned");

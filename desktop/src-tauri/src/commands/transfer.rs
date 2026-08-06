@@ -3,15 +3,20 @@ use std::io::{BufWriter as StdBufWriter, Read as _, Seek as _, Write as _};
 use std::net::{SocketAddr, TcpStream as StdTcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ssh2::{CheckResult, HashType, KnownHostFileKind, MethodType};
 use tauri::State;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
+use tokio_util::sync::CancellationToken;
 
-use crate::server::dispatch::{validate_path, wait_download_ctrl};
+use crate::server::dispatch::{validate_download_offset, validate_path, wait_download_ctrl};
+use crate::server::session::downloads::DownloadOwner;
+use crate::server::session::transfer::{
+    finalize_local_upload, finalize_sftp_upload, finalize_ssh2_upload, UploadLeaseOwner,
+};
 use crate::server::session::{DownloadSignal, Session, UploadSignal};
 use crate::server::terminal::ssh::{
     resolve_private_key_pem, SshAuthMethod, SshConfig, DEFAULT_KEY_FILES,
@@ -28,7 +33,9 @@ const SFTP_DOWNLOAD_MAX_INFLIGHT_BYTES: usize = 32 * 1024 * 1024;
 const SSH2_DOWNLOAD_BUFFER_SIZE: usize = 1024 * 1024;
 const SSH2_UPLOAD_BUFFER_SIZE: usize = 1024 * 1024;
 const SSH2_SESSION_TIMEOUT: Duration = Duration::from_secs(15);
+const ASYNC_SFTP_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const SSH2_PAUSE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const SESSION_UPLOAD_CANCEL_GRACE: Duration = Duration::from_secs(30);
 
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -256,11 +263,7 @@ fn has_aes_acceleration() -> bool {
     {
         std::arch::is_aarch64_feature_detected!("aes")
     }
-    #[cfg(not(any(
-        target_arch = "x86",
-        target_arch = "x86_64",
-        target_arch = "aarch64"
-    )))]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
     {
         false
     }
@@ -340,7 +343,10 @@ fn connect_via_socks5_blocking(
         .read_exact(&mut method_reply)
         .map_err(|e| format!("SOCKS5 method {}: {}", proxy_addr, e))?;
     if method_reply[0] != 0x05 {
-        return Err(format!("SOCKS5 proxy {} returned invalid version", proxy_addr));
+        return Err(format!(
+            "SOCKS5 proxy {} returned invalid version",
+            proxy_addr
+        ));
     }
     match method_reply[1] {
         0x00 => {}
@@ -401,7 +407,10 @@ fn connect_via_socks5_blocking(
         .read_exact(&mut reply)
         .map_err(|e| format!("SOCKS5 CONNECT reply {}: {}", proxy_addr, e))?;
     if reply[0] != 0x05 {
-        return Err(format!("SOCKS5 proxy {} returned invalid version", proxy_addr));
+        return Err(format!(
+            "SOCKS5 proxy {} returned invalid version",
+            proxy_addr
+        ));
     }
     if reply[1] != 0x00 {
         return Err(format!(
@@ -491,6 +500,13 @@ fn establish_blocking_connection(config: &SshConfig) -> Result<StdTcpStream, Str
     Ok(stream)
 }
 
+pub(super) fn ssh_sha256_fingerprint_matches(trusted: &str, hash: &[u8]) -> bool {
+    let trusted = trusted.trim();
+    let digest = trusted.strip_prefix("SHA256:").unwrap_or(trusted);
+    let digest = digest.strip_suffix('=').unwrap_or(digest);
+    digest == base64::engine::general_purpose::STANDARD_NO_PAD.encode(hash)
+}
+
 fn verify_ssh2_host_key(session: &ssh2::Session, config: &SshConfig) -> Result<(), String> {
     let (host_key, _) = session
         .host_key()
@@ -500,9 +516,11 @@ fn verify_ssh2_host_key(session: &ssh2::Session, config: &SshConfig) -> Result<(
         let hash = session
             .host_key_hash(HashType::Sha256)
             .ok_or_else(|| "failed to compute SHA256 host fingerprint".to_string())?;
-        let actual =
-            format!("SHA256:{}", base64::engine::general_purpose::STANDARD.encode(hash));
-        if actual == config.trusted_fingerprint {
+        let actual = format!(
+            "SHA256:{}",
+            base64::engine::general_purpose::STANDARD_NO_PAD.encode(hash)
+        );
+        if ssh_sha256_fingerprint_matches(&config.trusted_fingerprint, hash) {
             return Ok(());
         }
         return Err(format!(
@@ -514,28 +532,39 @@ fn verify_ssh2_host_key(session: &ssh2::Session, config: &SshConfig) -> Result<(
     let mut known_hosts = session
         .known_hosts()
         .map_err(|e| format!("load known_hosts: {}", e))?;
-    let mut loaded_any = false;
     for path in known_hosts_paths() {
         if path.exists() {
             known_hosts
                 .read_file(&path, KnownHostFileKind::OpenSSH)
                 .map_err(|e| format!("read known_hosts {}: {}", path.display(), e))?;
-            loaded_any = true;
         }
     }
 
     match known_hosts.check_port(&config.host, config.port, host_key) {
         CheckResult::Match => Ok(()),
-        CheckResult::Mismatch | CheckResult::NotFound => {
-            // ssh2's known_hosts check may fail due to key type differences
-            // (e.g. known_hosts has ed25519 but ssh2 negotiated rsa).
-            // If the terminal session already verified this host (session exists),
-            // trust it. Otherwise reject.
-            eprintln!(
-                "[transfer] ssh2 known_hosts check failed for {}:{}, allowing (terminal session already verified)",
+        CheckResult::Mismatch => {
+            // A known_hosts entry exists for this host and the key presented on
+            // this fresh transfer connection does NOT match it — a host key
+            // change / possible MITM. The terminal (russh) path never silently
+            // trusts a changed key without a user-confirmed fingerprint
+            // (Layer 3 rejects); mirror that posture here. A legitimate change
+            // is re-confirmed by the user in the UI, which populates
+            // `trusted_fingerprint` and is handled by the exact-match branch
+            // above.
+            Err(format!(
+                "SSH host key mismatch for {}:{}: differs from the known_hosts entry; reconnect the terminal session to re-confirm the host key",
                 config.host, config.port
-            );
-            Ok(())
+            ))
+        }
+        CheckResult::NotFound => {
+            // This is a fresh TCP/SSH connection.  A verified terminal on a
+            // different connection (or a key for another algorithm) cannot
+            // authenticate this key; accepting here would expose passwords and
+            // file contents to a selective MITM of the transfer connection.
+            Err(format!(
+                "cannot verify SSH host key for {}:{}: key is not present in known_hosts and no trusted fingerprint was supplied",
+                config.host, config.port
+            ))
         }
         CheckResult::Failure => Err("failed to verify SSH host key".to_string()),
     }
@@ -663,12 +692,15 @@ fn run_ssh2_session_download_blocking(
         }
     );
 
-    let sftp = session.sftp().map_err(|e| format!("open ssh2 sftp: {}", e))?;
+    let sftp = session
+        .sftp()
+        .map_err(|e| format!("open ssh2 sftp: {}", e))?;
     let total_size = sftp
         .stat(Path::new(path))
         .map_err(|e| format!("stat remote file: {}", e))?
         .size
         .unwrap_or(0);
+    validate_download_offset(start_offset, total_size).map_err(str::to_string)?;
     let _ = updates.send(BlockingDownloadUpdate::Started { total_size });
 
     let mut remote = sftp
@@ -750,6 +782,7 @@ async fn run_ssh2_session_download(
     mut ctrl: tokio::sync::mpsc::Receiver<DownloadSignal>,
     transfer_id: u32,
     on_event: &tauri::ipc::Channel<SessionDownloadEvent>,
+    cancellation: CancellationToken,
 ) -> Result<DownloadOutcome, String> {
     validate_path(&path).map_err(|e| e.to_string())?;
     ensure_save_path(&save_path)?;
@@ -760,8 +793,22 @@ async fn run_ssh2_session_download(
 
     let paused_ctrl = Arc::clone(&paused);
     let cancelled_ctrl = Arc::clone(&cancelled);
+    let ctrl_cancellation = cancellation.clone();
     let ctrl_task = tokio::spawn(async move {
-        while let Some(signal) = ctrl.recv().await {
+        loop {
+            let signal = tokio::select! {
+                _ = ctrl_cancellation.cancelled() => {
+                    cancelled_ctrl.store(true, Ordering::Relaxed);
+                    paused_ctrl.store(false, Ordering::Relaxed);
+                    break;
+                }
+                signal = ctrl.recv() => signal,
+            };
+            let Some(signal) = signal else {
+                cancelled_ctrl.store(true, Ordering::Relaxed);
+                paused_ctrl.store(false, Ordering::Relaxed);
+                break;
+            };
             match signal {
                 DownloadSignal::Pause => paused_ctrl.store(true, Ordering::Relaxed),
                 DownloadSignal::Continue => paused_ctrl.store(false, Ordering::Relaxed),
@@ -870,9 +917,7 @@ fn ensure_local_source_path(local_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-async fn wait_upload_ctrl(
-    ctrl: &mut tokio::sync::mpsc::Receiver<UploadSignal>,
-) -> bool {
+async fn wait_upload_ctrl(ctrl: &mut tokio::sync::mpsc::Receiver<UploadSignal>) -> bool {
     loop {
         match ctrl.try_recv() {
             Ok(UploadSignal::Cancel) => return true,
@@ -898,46 +943,6 @@ async fn cleanup_sftp_part_file(
     remote_part_path: &str,
 ) {
     let _ = sftp.remove_file(remote_part_path.to_string()).await;
-}
-
-fn finalize_ssh2_upload(
-    sftp: &ssh2::Sftp,
-    remote_part_path: &str,
-    remote_path: &str,
-) -> Result<(), String> {
-    sftp.rename(
-        Path::new(remote_part_path),
-        Path::new(remote_path),
-        None,
-    )
-    .or_else(|_| {
-        let _ = sftp.unlink(Path::new(remote_path));
-        sftp.rename(
-            Path::new(remote_part_path),
-            Path::new(remote_path),
-            None,
-        )
-    })
-    .map_err(|e| format!("rename remote file: {}", e))
-}
-
-async fn finalize_sftp_upload(
-    sftp: &Arc<russh_sftp::client::SftpSession>,
-    remote_part_path: &str,
-    remote_path: &str,
-) -> Result<(), String> {
-    if sftp
-        .rename(remote_part_path.to_string(), remote_path.to_string())
-        .await
-        .is_ok()
-    {
-        return Ok(());
-    }
-
-    let _ = sftp.remove_file(remote_path.to_string()).await;
-    sftp.rename(remote_part_path.to_string(), remote_path.to_string())
-        .await
-        .map_err(|e| format!("rename remote file: {}", e))
 }
 
 fn run_ssh2_session_upload_blocking(
@@ -990,7 +995,9 @@ fn run_ssh2_session_upload_blocking(
         .len();
     let _ = updates.send(BlockingUploadUpdate::Started { total_size });
 
-    let sftp = session.sftp().map_err(|e| format!("open ssh2 sftp: {}", e))?;
+    let sftp = session
+        .sftp()
+        .map_err(|e| format!("open ssh2 sftp: {}", e))?;
     let remote_part_path = format!("{}.meterm.part", remote_path);
     let mut source =
         std::fs::File::open(local_path).map_err(|e| format!("open local file: {}", e))?;
@@ -1182,6 +1189,16 @@ async fn open_download_target(
     Ok(file)
 }
 
+async fn finish_cancelled_download(
+    save_path: &str,
+    transfer_id: u32,
+    on_event: &tauri::ipc::Channel<SessionDownloadEvent>,
+) -> Result<DownloadOutcome, String> {
+    remove_partial_file(save_path).await;
+    send_event(on_event, SessionDownloadEvent::Cancelled { transfer_id })?;
+    Ok(DownloadOutcome::Cancelled)
+}
+
 async fn run_local_session_download(
     path: String,
     save_path: String,
@@ -1189,6 +1206,7 @@ async fn run_local_session_download(
     mut ctrl: tokio::sync::mpsc::Receiver<DownloadSignal>,
     transfer_id: u32,
     on_event: &tauri::ipc::Channel<SessionDownloadEvent>,
+    cancellation: CancellationToken,
 ) -> Result<DownloadOutcome, String> {
     validate_path(&path).map_err(|e| e.to_string())?;
     ensure_save_path(&save_path)?;
@@ -1197,10 +1215,16 @@ async fn run_local_session_download(
         return Err("source path and save path must be different".to_string());
     }
 
-    let meta = tokio::fs::metadata(&path)
-        .await
-        .map_err(|e| format!("stat source file: {}", e))?;
+    let meta = tokio::select! {
+        _ = cancellation.cancelled() => {
+            return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+        }
+        result = tokio::fs::metadata(&path) => {
+            result.map_err(|e| format!("stat source file: {}", e))?
+        }
+    };
     let total_size = meta.len();
+    validate_download_offset(start_offset, total_size).map_err(str::to_string)?;
 
     send_event(
         on_event,
@@ -1210,50 +1234,77 @@ async fn run_local_session_download(
         },
     )?;
 
-    let mut source = tokio::fs::File::open(&path)
-        .await
-        .map_err(|e| format!("open source file: {}", e))?;
+    let mut source = tokio::select! {
+        _ = cancellation.cancelled() => {
+            return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+        }
+        result = tokio::fs::File::open(&path) => {
+            result.map_err(|e| format!("open source file: {}", e))?
+        }
+    };
     if start_offset > 0 {
-        source
-            .seek(std::io::SeekFrom::Start(start_offset))
-            .await
-            .map_err(|e| format!("seek source file: {}", e))?;
+        tokio::select! {
+            _ = cancellation.cancelled() => {
+                return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+            }
+            result = source.seek(std::io::SeekFrom::Start(start_offset)) => {
+                result.map_err(|e| format!("seek source file: {}", e))?;
+            }
+        }
     }
 
-    let target = open_download_target(&save_path, start_offset).await?;
+    let target = tokio::select! {
+        _ = cancellation.cancelled() => {
+            return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+        }
+        result = open_download_target(&save_path, start_offset) => result?,
+    };
     let mut writer = BufWriter::with_capacity(DOWNLOAD_WRITE_BUFFER_SIZE, target);
     let mut reporter = ProgressReporter::new(on_event, transfer_id, total_size);
     let mut written = start_offset;
     let mut buf = vec![0u8; LOCAL_DOWNLOAD_CHUNK_SIZE];
 
     loop {
-        if wait_download_ctrl(&mut ctrl).await {
+        if wait_download_ctrl(&mut ctrl, &cancellation, || false).await {
             drop(writer);
-            remove_partial_file(&save_path).await;
-            send_event(on_event, SessionDownloadEvent::Cancelled { transfer_id })?;
-            return Ok(DownloadOutcome::Cancelled);
+            return finish_cancelled_download(&save_path, transfer_id, on_event).await;
         }
 
-        let n = source
-            .read(&mut buf)
-            .await
-            .map_err(|e| format!("read source file: {}", e))?;
+        let n = tokio::select! {
+            _ = cancellation.cancelled() => {
+                drop(writer);
+                return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+            }
+            result = source.read(&mut buf) => {
+                result.map_err(|e| format!("read source file: {}", e))?
+            }
+        };
         if n == 0 {
             break;
         }
 
-        writer
-            .write_all(&buf[..n])
-            .await
-            .map_err(|e| format!("write local file: {}", e))?;
+        let write_result = tokio::select! {
+            _ = cancellation.cancelled() => None,
+            result = writer.write_all(&buf[..n]) => Some(result),
+        };
+        let Some(write_result) = write_result else {
+            drop(writer);
+            return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+        };
+        write_result.map_err(|e| format!("write local file: {}", e))?;
         written += n as u64;
         reporter.emit_if_needed(written, written >= total_size)?;
     }
 
-    writer
-        .flush()
-        .await
-        .map_err(|e| format!("flush local file: {}", e))?;
+    let flush_result = tokio::select! {
+        _ = cancellation.cancelled() => None,
+        result = writer.flush() => Some(result),
+    };
+    let Some(flush_result) = flush_result else {
+        drop(writer);
+        return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+    };
+    flush_result.map_err(|e| format!("flush local file: {}", e))?;
     reporter.emit_if_needed(written, true)?;
 
     send_event(
@@ -1275,15 +1326,25 @@ async fn run_sftp_session_download(
     ctrl: tokio::sync::mpsc::Receiver<DownloadSignal>,
     transfer_id: u32,
     on_event: &tauri::ipc::Channel<SessionDownloadEvent>,
+    cancellation: CancellationToken,
 ) -> Result<DownloadOutcome, String> {
     validate_path(&path).map_err(|e| e.to_string())?;
     ensure_save_path(&save_path)?;
 
-    let meta = sftp
-        .metadata(path.clone())
-        .await
+    let meta_result = tokio::select! {
+        _ = cancellation.cancelled() => {
+            return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+        }
+        result = tokio::time::timeout(
+            ASYNC_SFTP_OPERATION_TIMEOUT,
+            sftp.metadata(path.clone()),
+        ) => result,
+    };
+    let meta = meta_result
+        .map_err(|_| "stat remote file timed out".to_string())?
         .map_err(|e| format!("stat remote file: {}", e))?;
     let total_size = meta.size.unwrap_or(0);
+    validate_download_offset(start_offset, total_size).map_err(str::to_string)?;
 
     send_event(
         on_event,
@@ -1293,18 +1354,39 @@ async fn run_sftp_session_download(
         },
     )?;
 
-    let mut remote = sftp
-        .open(path)
-        .await
+    let open_result = tokio::select! {
+        _ = cancellation.cancelled() => {
+            return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+        }
+        result = tokio::time::timeout(
+            ASYNC_SFTP_OPERATION_TIMEOUT,
+            sftp.open(path),
+        ) => result,
+    };
+    let mut remote = open_result
+        .map_err(|_| "open remote file timed out".to_string())?
         .map_err(|e| format!("open remote file: {}", e))?;
     if start_offset > 0 {
-        remote
-            .seek(std::io::SeekFrom::Start(start_offset))
-            .await
+        let seek_result = tokio::select! {
+            _ = cancellation.cancelled() => {
+                return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+            }
+            result = tokio::time::timeout(
+                ASYNC_SFTP_OPERATION_TIMEOUT,
+                remote.seek(std::io::SeekFrom::Start(start_offset)),
+            ) => result,
+        };
+        seek_result
+            .map_err(|_| "seek remote file timed out".to_string())?
             .map_err(|e| format!("seek remote file: {}", e))?;
     }
 
-    let target = open_download_target(&save_path, start_offset).await?;
+    let target = tokio::select! {
+        _ = cancellation.cancelled() => {
+            return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+        }
+        result = open_download_target(&save_path, start_offset) => result?,
+    };
     let writer = Arc::new(tokio::sync::Mutex::new(BufWriter::with_capacity(
         DOWNLOAD_WRITE_BUFFER_SIZE,
         target,
@@ -1318,17 +1400,20 @@ async fn run_sftp_session_download(
     let cancelled = Arc::new(AtomicBool::new(false));
     let ctrl = Arc::new(tokio::sync::Mutex::new(ctrl));
     let remaining_bytes = total_size.saturating_sub(start_offset) as usize;
-    let max_inflight_bytes = remaining_bytes
-        .min(SFTP_DOWNLOAD_MAX_INFLIGHT_BYTES)
-        .max(1);
+    let max_inflight_bytes = remaining_bytes.min(SFTP_DOWNLOAD_MAX_INFLIGHT_BYTES).max(1);
 
     if total_size == 0 {
-        writer
-            .lock()
-            .await
-            .flush()
-            .await
-            .map_err(|e| format!("flush local file: {}", e))?;
+        let flush_result = tokio::select! {
+            _ = cancellation.cancelled() => None,
+            result = async {
+                writer.lock().await.flush().await
+            } => Some(result),
+        };
+        let Some(flush_result) = flush_result else {
+            drop(writer);
+            return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+        };
+        flush_result.map_err(|e| format!("flush local file: {}", e))?;
         send_event(
             on_event,
             SessionDownloadEvent::Completed {
@@ -1340,66 +1425,105 @@ async fn run_sftp_session_download(
         return Ok(DownloadOutcome::Completed);
     }
 
-    let emitted = remote
-        .read_pipelined_streaming_each(max_inflight_bytes, {
+    let read = remote.read_pipelined_streaming_each(max_inflight_bytes, {
+        let ctrl = Arc::clone(&ctrl);
+        let writer = Arc::clone(&writer);
+        let progress_state = Arc::clone(&progress_state);
+        let written = Arc::clone(&written);
+        let cancelled = Arc::clone(&cancelled);
+        let cancellation = cancellation.clone();
+        move |chunk| {
             let ctrl = Arc::clone(&ctrl);
             let writer = Arc::clone(&writer);
             let progress_state = Arc::clone(&progress_state);
             let written = Arc::clone(&written);
             let cancelled = Arc::clone(&cancelled);
-            move |chunk| {
-                let ctrl = Arc::clone(&ctrl);
-                let writer = Arc::clone(&writer);
-                let progress_state = Arc::clone(&progress_state);
-                let written = Arc::clone(&written);
-                let cancelled = Arc::clone(&cancelled);
-                async move {
-                    let mut ctrl = ctrl.lock().await;
-                    if wait_download_ctrl(&mut ctrl).await {
+            let cancellation = cancellation.clone();
+            async move {
+                let mut ctrl = ctrl.lock().await;
+                if wait_download_ctrl(&mut ctrl, &cancellation, || false).await {
+                    cancelled.store(true, Ordering::Relaxed);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "download cancelled",
+                    ));
+                }
+                drop(ctrl);
+
+                tokio::select! {
+                    _ = cancellation.cancelled() => {
                         cancelled.store(true, Ordering::Relaxed);
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::Interrupted,
                             "download cancelled",
                         ));
                     }
-                    drop(ctrl);
-
-                    writer
-                        .lock()
-                        .await
-                        .write_all(&chunk)
-                        .await
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-
-                    let written_now =
-                        written.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
-                    progress_state
-                        .lock()
-                        .await
-                        .emit_if_needed(written_now, written_now >= total_size)
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                    Ok(())
+                    result = async {
+                        writer.lock().await.write_all(&chunk).await
+                    } => {
+                        result.map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                        })?;
+                    }
                 }
+
+                let written_now =
+                    written.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
+                tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        cancelled.store(true, Ordering::Relaxed);
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            "download cancelled",
+                        ));
+                    }
+                    result = async {
+                        progress_state
+                            .lock()
+                            .await
+                            .emit_if_needed(written_now, written_now >= total_size)
+                    } => {
+                        result.map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::Other, e)
+                        })?;
+                    }
+                }
+                Ok(())
             }
-        })
-        .await;
+        }
+    });
+    tokio::pin!(read);
+    let emitted = tokio::select! {
+        _ = cancellation.cancelled() => {
+            cancelled.store(true, Ordering::Relaxed);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "download cancelled",
+            ))
+        }
+        result = &mut read => result,
+    };
 
     if let Err(err) = emitted {
         if cancelled.load(Ordering::Relaxed) && err.kind() == std::io::ErrorKind::Interrupted {
-            remove_partial_file(&save_path).await;
-            send_event(on_event, SessionDownloadEvent::Cancelled { transfer_id })?;
-            return Ok(DownloadOutcome::Cancelled);
+            drop(writer);
+            return finish_cancelled_download(&save_path, transfer_id, on_event).await;
         }
         remove_partial_file(&save_path).await;
         return Err(format!("read remote file: {}", err));
     }
 
-    writer
-        .lock()
-        .await
-        .flush()
-        .await
-        .map_err(|e| format!("flush local file: {}", e))?;
+    let flush_result = tokio::select! {
+        _ = cancellation.cancelled() => None,
+        result = async {
+            writer.lock().await.flush().await
+        } => Some(result),
+    };
+    let Some(flush_result) = flush_result else {
+        drop(writer);
+        return finish_cancelled_download(&save_path, transfer_id, on_event).await;
+    };
+    flush_result.map_err(|e| format!("flush local file: {}", e))?;
     let written = written.load(Ordering::Relaxed);
     progress_state.lock().await.emit_if_needed(written, true)?;
 
@@ -1427,6 +1551,7 @@ async fn run_session_download(
     ctrl: tokio::sync::mpsc::Receiver<DownloadSignal>,
     transfer_id: u32,
     on_event: &tauri::ipc::Channel<SessionDownloadEvent>,
+    cancellation: CancellationToken,
 ) -> Result<DownloadOutcome, String> {
     let is_ssh = *session.executor_type.lock().unwrap() == "ssh";
     if is_ssh {
@@ -1440,6 +1565,7 @@ async fn run_session_download(
                 ctrl,
                 transfer_id,
                 on_event,
+                cancellation,
             )
             .await;
         }
@@ -1457,11 +1583,20 @@ async fn run_session_download(
             ctrl,
             transfer_id,
             on_event,
+            cancellation,
         )
         .await
     } else {
-        run_local_session_download(path, save_path, start_offset, ctrl, transfer_id, on_event)
-            .await
+        run_local_session_download(
+            path,
+            save_path,
+            start_offset,
+            ctrl,
+            transfer_id,
+            on_event,
+            cancellation,
+        )
+        .await
     }
 }
 
@@ -1486,18 +1621,17 @@ pub async fn start_session_file_download(
     let start_offset = offset.unwrap_or(0);
 
     let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel::<DownloadSignal>(8);
-    {
-        let mut ctrls = session.download_ctrls.lock().await;
-        if ctrls.contains_key(&transfer_id) {
-            return Err("download transfer already exists".to_string());
-        }
-        ctrls.insert(transfer_id, ctrl_tx);
-    }
+    let registration = session
+        .download_registry
+        .register(DownloadOwner::ipc(transfer_id), ctrl_tx)
+        .map_err(|error| error.to_string())?;
+    let cancellation = registration.cancellation_token();
 
     let session_clone = session.clone();
     let path_clone = remote_path.clone();
     let save_path_clone = save_path.clone();
     tokio::spawn(async move {
+        let _download_guard = session_clone.download_registry.task_guard(registration);
         let result = run_session_download(
             session_clone.clone(),
             path_clone,
@@ -1506,14 +1640,9 @@ pub async fn start_session_file_download(
             ctrl_rx,
             transfer_id,
             &on_event,
+            cancellation,
         )
         .await;
-
-        session_clone
-            .download_ctrls
-            .lock()
-            .await
-            .remove(&transfer_id);
 
         if let Err(err) = result {
             remove_partial_file(&save_path_clone).await;
@@ -1542,14 +1671,6 @@ pub async fn control_session_file_download(
         .get(&session_id)
         .ok_or_else(|| "session not found".to_string())?;
 
-    let tx = {
-        let ctrls = session.download_ctrls.lock().await;
-        ctrls
-            .get(&transfer_id)
-            .cloned()
-            .ok_or_else(|| "download transfer not found".to_string())?
-    };
-
     let sig = match signal.as_str() {
         "pause" => DownloadSignal::Pause,
         "continue" => DownloadSignal::Continue,
@@ -1557,9 +1678,14 @@ pub async fn control_session_file_download(
         _ => return Err("invalid download signal".to_string()),
     };
 
-    tx.send(sig)
-        .await
-        .map_err(|_| "download transfer control channel closed".to_string())
+    if session
+        .download_registry
+        .signal_owner(&DownloadOwner::ipc(transfer_id), sig)
+    {
+        Ok(())
+    } else {
+        Err("download transfer not found or cannot accept control".to_string())
+    }
 }
 
 async fn run_local_session_upload(
@@ -1627,12 +1753,7 @@ async fn run_local_session_upload(
         .await
         .map_err(|e| format!("flush target file: {}", e))?;
     drop(writer);
-    if tokio::fs::rename(&remote_part_path, &remote_path).await.is_err() {
-        let _ = tokio::fs::remove_file(&remote_path).await;
-        tokio::fs::rename(&remote_part_path, &remote_path)
-            .await
-            .map_err(|e| format!("rename target file: {}", e))?;
-    }
+    finalize_local_upload(&remote_part_path, &remote_path).await?;
     reporter.emit_if_needed(written, true)?;
 
     send_upload_event(
@@ -1736,8 +1857,15 @@ async fn run_session_upload(
     if is_ssh {
         let ssh_config = session.ssh_config.lock().unwrap().clone();
         if let Some(config) = ssh_config {
-            return run_ssh2_session_upload(config, local_path, remote_path, ctrl, transfer_id, on_event)
-                .await;
+            return run_ssh2_session_upload(
+                config,
+                local_path,
+                remote_path,
+                ctrl,
+                transfer_id,
+                on_event,
+            )
+            .await;
         }
 
         return Err("SSH session configuration is unavailable".to_string());
@@ -1770,6 +1898,7 @@ pub async fn start_session_file_upload(
         .ok_or_else(|| "session not found".to_string())?;
 
     let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel::<UploadSignal>(8);
+    let session_cancel_tx = ctrl_tx.clone();
     {
         let mut ctrls = session.upload_ctrls.lock().await;
         if ctrls.contains_key(&transfer_id) {
@@ -1777,21 +1906,56 @@ pub async fn start_session_file_upload(
         }
         ctrls.insert(transfer_id, ctrl_tx);
     }
+    let upload_lease = match session
+        .upload_path_leases
+        .acquire(&remote_path, UploadLeaseOwner::Ipc(transfer_id))
+    {
+        Ok(lease) => lease,
+        Err(error) => {
+            session.upload_ctrls.lock().await.remove(&transfer_id);
+            return Err(error);
+        }
+    };
 
     let session_clone = session.clone();
     let local_path_clone = local_path.clone();
     let remote_path_clone = remote_path.clone();
     tokio::spawn(async move {
-        let result = run_session_upload(
+        let cancellation = session_clone.cancellation_token();
+        let mut upload = Box::pin(run_session_upload(
             session_clone.clone(),
             local_path_clone,
             remote_path_clone.clone(),
             ctrl_rx,
             transfer_id,
             &on_event,
-        )
-        .await;
+        ));
+        let mut cancel_signal = Box::pin(async {
+            cancellation.cancelled().await;
+            let _ = session_cancel_tx.send(UploadSignal::Cancel).await;
+        });
+        let mut poisoned = false;
+        let result = tokio::select! {
+            result = &mut upload => result,
+            _ = &mut cancel_signal => {
+                match tokio::time::timeout(SESSION_UPLOAD_CANCEL_GRACE, &mut upload).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        poisoned = true;
+                        Err("session closed before upload stopped; destination remains locked".to_string())
+                    }
+                }
+            }
+        };
 
+        if poisoned {
+            // The blocking SSH2 worker or a remote write may still complete
+            // after its future is dropped. Do not let another transfer reuse
+            // the fixed `.meterm.part` path in this Session.
+            session_clone.upload_path_leases.poison(&upload_lease);
+        } else {
+            session_clone.upload_path_leases.release(&upload_lease);
+        }
         session_clone.upload_ctrls.lock().await.remove(&transfer_id);
 
         if let Err(err) = result {

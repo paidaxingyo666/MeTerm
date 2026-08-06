@@ -98,8 +98,13 @@ export function encodeResize(cols: number, rows: number): Uint8Array {
 
 export interface HelloMessage {
   client_id: string;
+  /** 服务端为当前 client_id 连接分配的单调代次。 */
+  conn_gen: number;
   role: string;
   protocol_version: number;
+  /** 连接时 PTY 当前尺寸(viewer 镜像的初始尺寸来源,主控后续变化走下行 0x03)。 */
+  cols?: number;
+  rows?: number;
 }
 
 export function decodeHello(payload: Uint8Array): HelloMessage {

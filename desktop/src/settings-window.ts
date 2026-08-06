@@ -1,4 +1,11 @@
-import { loadSettings, AppSettings, resolveIsDark, getEffectiveTheme, saveSettings } from './themes';
+import {
+  loadSettings,
+  type AppSettings,
+  resolveIsDark,
+  getEffectiveTheme,
+  saveSettings,
+  flushSettingsSecrets,
+} from './themes';
 import { createSettingsPanel } from './settings';
 import { initLanguage, setLanguage, t } from './i18n';
 import { emit, listen } from '@tauri-apps/api/event';
@@ -128,7 +135,11 @@ export function initSettingsWindow(): void {
         // Update vibrancy for this window
         void applyVibrancy(settings.enableVibrancy);
 
-        void emit('settings-changed');
+        // Other windows reload credentials from Keychain on this event, so do
+        // not notify them before the serialized secret write has completed.
+        void flushSettingsSecrets()
+          .then(() => emit('settings-changed'))
+          .catch(error => console.warn('[settings] Credential update failed; value remains dirty:', error));
       },
       onLanguageChange: () => {
         void emit('settings-changed');

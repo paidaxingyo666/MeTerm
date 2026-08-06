@@ -7,27 +7,29 @@
 
 import { TabManager } from './tabs';
 import { TerminalRegistry } from './terminal';
+import { enterMirror, exitMirror } from './viewer-mirror';
 import { DrawerManager } from './drawer';
 import { SidebarManager } from './file-sidebar';
 import { getAllLeaves } from './split-pane';
 import { AICapsuleManager } from './ai-capsule';
 import { loadSettings, saveSettings } from './themes';
+import { hydrateSettingsSecretPresenceFromStorage } from './settings-secrets';
 import { applyWindowOpacity, applyAiBarOpacity, applyVibrancy, resolveThemeAttr, applyColorScheme, applyBackgroundImage } from './appearance';
 import { applyUiFont } from './fonts';
 import { setHomeViewSettings } from './home';
 import { updateGalleryView, setGalleryViewSettings } from './gallery';
 import { t } from './i18n';
 import { setLanguage } from './i18n';
-import { updateSSHHomeView, exportConnectionsToJSON, importConnectionsFromJSON, type SSHConnectionConfig } from './ssh';
+import { updateSSHHomeView, exportConnectionsToFile, formatSSHExportResult, importConnectionsFromJSON, type SSHConnectionConfig } from './ssh';
 import { showRemoteConnectDialog, type RemoteServerInfo } from './remote';
 import { StatusBar } from './status-bar';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { save, open as openDialog } from '@tauri-apps/plugin-dialog';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { confirmSystem, showInfoSystem, showAboutDialog, showHideToTrayDialog, requestQuitWithConfirm, syncTrayLanguage } from './window-lifecycle';
-import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 import { performCopy, performPaste, performSelectAll } from './clipboard-actions';
 import { notifyUser } from './notify';
 import { showPairApprovalDialog } from './pairing';
@@ -66,7 +68,7 @@ import {
   settings, setSettings,
   isHomeView, isGalleryView, isPipMode,
   sshConfigMap, remoteInfoMap, sessionProgressMap,
-  isWindowsPlatform, isLinuxPlatform,
+  isMacPlatform, isWindowsPlatform, isLinuxPlatform,
   setLastFocusedMainWindowLabel,
 } from './app-state';
 import { togglePip } from './pip';
@@ -390,8 +392,8 @@ export function setupDomEventListeners(): void {
 
   // Master request approval dialog
   document.addEventListener('master-request', ((e: CustomEvent) => {
-    const { sessionId, requesterId } = e.detail;
-    showMasterApprovalDialog(sessionId, requesterId);
+    const { sessionId, requesterId, requesterConnGen } = e.detail;
+    showMasterApprovalDialog(sessionId, requesterId, requesterConnGen);
   }) as EventListener);
 
   // Pairing request approval dialog (with dedup against poller)
@@ -405,6 +407,8 @@ export function setupDomEventListeners(): void {
   // Master lost — show appropriate overlay based on session type
   document.addEventListener('master-lost', ((e: CustomEvent) => {
     const { sessionId } = e.detail;
+    // 进入镜像渲染:随后服务端会下行主控的 PTY 尺寸(0x03),按其等比缩放居中
+    enterMirror(sessionId);
     const mt = TerminalRegistry.get(sessionId);
     if (mt?.isRemote) {
       enterViewerMode(sessionId);
@@ -420,11 +424,25 @@ export function setupDomEventListeners(): void {
     reclaimSessionIds.delete(sessionId);
     exitViewerMode(sessionId);
     hideReclaimButton();
+    // 拿回主控:退出镜像,fit 回自身尺寸 + resize + nudge(TUI 强制重绘)
+    const mt = TerminalRegistry.get(sessionId);
+    if (mt) exitMirror(mt);
   }) as EventListener);
 
   // Master request denied — update viewer overlay
   document.addEventListener('master-request-denied', (() => {
     showViewerRequestDenied();
+  }) as EventListener);
+
+  // 会话被远端(手机)显式删除:自动关闭对应标签。
+  // 分屏 tab(多面板)不整个关——只让该面板显示已结束,避免误伤其他面板。
+  document.addEventListener('session-deleted', ((e: CustomEvent<{ sessionId: string }>) => {
+    const { sessionId } = e.detail;
+    const tab = TabManager.tabs.find((t) =>
+      getAllLeaves(t.splitRoot).some((l) => l.sessionId === sessionId));
+    if (tab && getAllLeaves(tab.splitRoot).length === 1) {
+      void TabManager.closeTab(tab.id);
+    }
   }) as EventListener);
 
   document.addEventListener('client-kicked', ((e: CustomEvent<{ sessionId: string }>) => {
@@ -477,6 +495,12 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
   void getCurrentWindow().listen('tauri://focus', () => {
     setLastFocusedMainWindowLabel(currentWindowLabel);
     void emit('main-window-focused', { label: currentWindowLabel });
+    // Normal app foregrounding does not necessarily fire visibilitychange.
+    // Repair only xterm's macOS renderer here; PTY/TUI SIGWINCH recovery stays
+    // scoped to actual sleep/lock and PiP transitions.
+    if (isMacPlatform && metermReady) {
+      TerminalRegistry.refreshRenderingAfterFocus();
+    }
   });
   // When another main window broadcasts its focus
   void listen<{ label: string }>('main-window-focused', (event) => {
@@ -624,20 +648,6 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
     }
   });
 
-  // LAN Discovery toggle from tray menu
-  void listen<{ enabled: boolean }>('menu-toggle-lan-discover', async (event) => {
-    const enabled = event.payload.enabled;
-    try {
-      await invoke('toggle_lan_sharing', { enabled });
-      localStorage.setItem('meterm-discoverable', enabled ? '1' : '0');
-    } catch (err) {
-      console.error('toggle_lan_sharing failed:', err);
-      try {
-        await invoke('set_discoverable_state', { checked: !enabled });
-      } catch { /* ignore rollback errors */ }
-    }
-  });
-
   void listen<{ target_window: string }>('menu-undo', (event) => {
     if (!isForThisWindow(event.payload)) return;
     document.execCommand('undo');
@@ -711,7 +721,7 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
     if (filePath) {
       try {
         const content = await readTextFile(filePath as string);
-        const result = importConnectionsFromJSON(content);
+        const result = await importConnectionsFromJSON(content);
         await showInfoSystem(`${result.count} ${t('sshImportCount')}`, t('sshImportSuccess'));
         if (isHomeView) updateSSHHomeView();
       } catch {
@@ -722,22 +732,17 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
 
   void listen<{ target_window: string }>('menu-export-connections', async (event) => {
     if (!isForThisWindow(event.payload)) return;
-    const result = await exportConnectionsToJSON();
-    if (!result) {
-      await showInfoSystem(t('sshNoConnectionsToExport'), t('appName'));
-      return;
-    }
-    const filePath = await save({
-      filters: [{ name: 'JSON', extensions: ['json'] }],
-      defaultPath: 'meterm-connections.json',
-    });
-    if (filePath) {
-      try {
-        await writeTextFile(filePath, result.json);
-        await showInfoSystem(`${result.count} ${t('sshExportCount')}`, t('sshExportSuccess'));
-      } catch (err) {
-        await showInfoSystem(String(err), t('appName'));
+    try {
+      const result = await exportConnectionsToFile();
+      if (result === undefined) {
+        await showInfoSystem(t('sshNoConnectionsToExport'), t('appName'));
+        return;
       }
+      if (result) {
+        await showInfoSystem(formatSSHExportResult(result), t('sshExportSuccess'));
+      }
+    } catch {
+      await showInfoSystem(t('sshExportFailed'), t('appName'));
     }
   });
 
@@ -750,6 +755,9 @@ export function setupTauriEventListeners(currentWindowLabel: string): void {
 
   // Listen for settings changes from the settings window
   void listen('settings-changed', () => {
+    // The settings window already committed native changes and published only
+    // versioned presence flags. Other windows must not re-open Keychain.
+    hydrateSettingsSecretPresenceFromStorage();
     const terminalPanelEl = getTerminalPanelEl();
     setSettings(loadSettings());
     setLanguage(settings.language);

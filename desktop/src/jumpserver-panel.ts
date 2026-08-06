@@ -152,11 +152,6 @@ export async function startDockedBrowser(config: JumpServerConfig): Promise<void
   const browserX = mainX + mainW + 2;
   const browserY = mainY;
 
-  // Store position for the browser window to use
-  localStorage.setItem('meterm-js-browser-port', String((await import('./app-state')).port));
-  localStorage.setItem('meterm-js-browser-token', (await import('./app-state')).authToken);
-  localStorage.setItem('meterm-js-browser-config', JSON.stringify(config));
-
   const label = 'jumpserver-browser';
   let win = await WebviewWindow.getByLabel(label);
 

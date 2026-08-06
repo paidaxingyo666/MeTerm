@@ -13,9 +13,12 @@ use tokio_util::sync::CancellationToken;
 
 /// Allocate a random free port on all interfaces.
 pub fn allocate_lan_port() -> Result<u16, String> {
-    let listener = TcpListener::bind("0.0.0.0:0")
-        .map_err(|e| format!("LAN port allocation failed: {}", e))?;
-    listener.local_addr().map(|a| a.port()).map_err(|e| e.to_string())
+    let listener =
+        TcpListener::bind("0.0.0.0:0").map_err(|e| format!("LAN port allocation failed: {}", e))?;
+    listener
+        .local_addr()
+        .map(|a| a.port())
+        .map_err(|e| e.to_string())
 }
 
 /// Run the TCP proxy. Forwards connections from `listen_addr` to `forward_addr`.
@@ -30,7 +33,10 @@ pub async fn run_tcp_proxy(listen_addr: String, forward_addr: String, cancel: Ca
         }
     };
 
-    eprintln!("[meterm-proxy] listening on {} → {}", listen_addr, forward_addr);
+    eprintln!(
+        "[meterm-proxy] listening on {} → {}",
+        listen_addr, forward_addr
+    );
 
     loop {
         tokio::select! {

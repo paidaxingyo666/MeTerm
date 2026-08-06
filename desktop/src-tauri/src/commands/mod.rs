@@ -1,15 +1,25 @@
 pub mod ai;
+pub mod connection_export;
+pub mod connection_sync;
 pub mod context_menu;
 pub mod fs;
 pub mod ipc_terminal;
+pub mod jumpserver_browser;
+pub mod jumpserver_credentials;
 pub mod lan;
 pub mod lifecycle;
 pub mod menu;
+pub mod remote_broker;
 pub mod security;
 pub mod session;
+pub mod settings_secrets;
 pub mod ssh;
 pub mod transfer;
+pub(crate) mod user_presence;
 pub mod window;
+
+#[cfg(test)]
+mod transfer_tests;
 
 use serde::Serialize;
 
@@ -42,4 +52,4 @@ pub struct MeTermConnectionInfo {
 }
 
 // Re-export functions used directly (not via generate_handler!) in lib.rs
-pub use menu::{set_app_menu_language, set_tray_language};
+pub use menu::set_app_menu_language;

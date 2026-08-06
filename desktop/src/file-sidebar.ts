@@ -12,7 +12,7 @@ import { TerminalRegistry } from './terminal';
 import { setupContextMenu } from './drawer-context-menu';
 import { loadSettings, saveSettings } from './themes';
 import { escapeHtml } from './status-bar';
-import { formatSize, formatSpeed, formatElapsed } from './file-utils';
+import { formatSize, formatSpeed, formatElapsed, quotePosixShellArg } from './file-utils';
 import { t } from './i18n';
 import type { TransferRecord } from './file-transfer-history';
 import { isEditableFile } from './icons';
@@ -152,8 +152,17 @@ class SidebarManagerClass {
       },
       onDropToTerminal: (dirPath) => {
         // Send cd command to terminal
-        const escapedPath = dirPath.replace(/([ '"\\$`!#&|;(){}])/g, '\\$1');
-        const cmd = `cd ${escapedPath}\n`;
+        const shellPath = quotePosixShellArg(dirPath);
+        if (shellPath === null) {
+          import('./notify').then(({ showToast }) => {
+            showToast({
+              title: t('ctxMenuTerminalOps'),
+              body: '路径包含终端控制字符，无法安全地填入命令。',
+            });
+          }).catch(() => {});
+          return;
+        }
+        const cmd = `cd ${shellPath}\n`;
         const ws = fileManager.getWebSocket();
         if (ws && ws.readyState === WebSocket.OPEN) {
           const payload = new TextEncoder().encode('\x15' + cmd);

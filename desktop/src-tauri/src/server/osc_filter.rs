@@ -29,12 +29,14 @@ pub enum OscEvent {
     #[serde(rename = "marker")]
     Marker { id: String, data: String },
 
-    /// OSC 7768: Shell state — `exit_code;cwd;last_cmd`
+    /// OSC 7768: Shell state — `exit_code;cwd;last_cmd[;duration_ms]`
+    /// `duration_ms` 为第 4 段(可选),缺失或非法数字时为 `None`,兼容旧 3 字段格式。
     #[serde(rename = "shell")]
     ShellState {
         exit: i32,
         cwd: String,
         cmd: String,
+        duration_ms: Option<u64>,
     },
 
     /// OSC 9;4: Progress indicator — `4;state;percent`
@@ -72,6 +74,10 @@ enum State {
 /// Byte-level OSC filter with internal state for cross-read-boundary support.
 pub struct OscFilter {
     state: State,
+    /// 最近一次 OSC 0/2 窗口标题(旁路记录,序列本身仍透传给 xterm)。
+    /// run-loop 每次 feed 后 take_title() 取走,存入 Session.title 供
+    /// 会话列表 API 下发(手机端此前只能显示 UUID)。
+    pending_title: Option<String>,
     /// Current OSC number being parsed.
     osc_num: u32,
     /// OSC body accumulator (for cross-boundary support).
@@ -84,6 +90,7 @@ pub struct OscFilter {
 impl OscFilter {
     pub fn new() -> Self {
         Self {
+            pending_title: None,
             state: State::Normal,
             osc_num: 0,
             osc_buf: Vec::with_capacity(256),
@@ -96,6 +103,11 @@ impl OscFilter {
     /// Returns `(clean_output, events)`:
     /// - `clean_output`: terminal data with intercepted OSC sequences removed
     /// - `events`: structured events extracted from intercepted OSC sequences
+    /// 取走最近记录的窗口标题(feed 之后由 run-loop 调用)。
+    pub fn take_title(&mut self) -> Option<String> {
+        self.pending_title.take()
+    }
+
     pub fn feed(&mut self, input: &[u8]) -> (Vec<u8>, Vec<OscEvent>) {
         let mut clean = Vec::with_capacity(input.len());
         let mut events = Vec::new();
@@ -160,11 +172,12 @@ impl OscFilter {
                         // Safety: flush if body is too long.
                         // Large limit for OSC 52 (clipboard) and non-intercepted OSC
                         // (e.g. 1337 iTerm2 images) that are passed through to xterm.js.
-                        let limit = if self.osc_num == 52 || !INTERCEPTED_OSC.contains(&self.osc_num) {
-                            MAX_OSC_BODY_CLIPBOARD
-                        } else {
-                            MAX_OSC_BODY
-                        };
+                        let limit =
+                            if self.osc_num == 52 || !INTERCEPTED_OSC.contains(&self.osc_num) {
+                                MAX_OSC_BODY_CLIPBOARD
+                            } else {
+                                MAX_OSC_BODY
+                            };
                         if self.osc_buf.len() > limit {
                             self.flush_corrupted(&mut clean);
                             self.state = State::Normal;
@@ -200,6 +213,13 @@ impl OscFilter {
                 events.push(ev);
             }
         } else {
+            // OSC 0/2(窗口标题):旁路记录后仍原样透传(桌面 xterm 的
+            // onTitleChange 依赖收到原序列)
+            if self.osc_num == 0 || self.osc_num == 2 {
+                // 空标题也记录:shell 清空标题(OSC 0;)时列表不该残留旧值
+                let t = String::from_utf8_lossy(&self.osc_buf).trim().to_string();
+                self.pending_title = Some(t);
+            }
             // Not intercepted — reconstruct and pass through
             clean.push(0x1b);
             clean.push(b']');
@@ -243,28 +263,44 @@ impl OscFilter {
                 Some(OscEvent::Marker { id, data })
             }
             7768 => {
-                // OSC 7768: exit_code;cwd;last_cmd
+                // OSC 7768: exit_code;cwd;last_cmd[;duration_ms]
+                // 第 4 段(duration_ms)为可选,兼容旧版 shell 钩子只发 3 段的情况。
+                // cmd 段可能包含分号(命令本身),所以先按 3 段切出 exit/cwd/剩余部分,
+                // 再从剩余部分里反切出末尾可能存在的 duration_ms。
                 let mut parts = body.splitn(3, ';');
                 let exit = parts
                     .next()
                     .and_then(|s| s.parse::<i32>().ok())
                     .unwrap_or(0);
                 let cwd = parts.next().unwrap_or("").to_string();
-                let cmd = parts.next().unwrap_or("").trim().to_string();
-                Some(OscEvent::ShellState { exit, cwd, cmd })
+                let rest = parts.next().unwrap_or("");
+
+                // 尝试从 rest 末尾拆出 `;duration_ms`:只有当分号后的部分能完整解析为
+                // u64 时才视为 duration_ms,否则整个 rest 都算作 cmd(向后兼容 3 字段)。
+                let (cmd, duration_ms) = match rest.rfind(';') {
+                    Some(idx) => {
+                        let maybe_dur = &rest[idx + 1..];
+                        match maybe_dur.trim().parse::<u64>() {
+                            Ok(d) => (rest[..idx].to_string(), Some(d)),
+                            Err(_) => (rest.to_string(), None),
+                        }
+                    }
+                    None => (rest.to_string(), None),
+                };
+                let cmd = cmd.trim().to_string();
+                Some(OscEvent::ShellState {
+                    exit,
+                    cwd,
+                    cmd,
+                    duration_ms,
+                })
             }
             9 => {
                 // OSC 9: "4;state;percent" (progress) or "text" (notify)
                 if body.starts_with("4;") {
                     let mut parts = body[2..].splitn(2, ';');
-                    let state = parts
-                        .next()
-                        .and_then(|s| s.parse::<u8>().ok())
-                        .unwrap_or(0);
-                    let percent = parts
-                        .next()
-                        .and_then(|s| s.parse::<u8>().ok())
-                        .unwrap_or(0);
+                    let state = parts.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
+                    let percent = parts.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
                     Some(OscEvent::Progress { state, percent })
                 } else {
                     Some(OscEvent::Notify {
@@ -279,9 +315,10 @@ impl OscFilter {
                 let sel = parts.next().unwrap_or("c").to_string();
                 match parts.next() {
                     Some("?") => Some(OscEvent::ClipboardGet { sel }),
-                    Some(data) if !data.is_empty() => {
-                        Some(OscEvent::ClipboardSet { sel, data: data.to_string() })
-                    }
+                    Some(data) if !data.is_empty() => Some(OscEvent::ClipboardSet {
+                        sel,
+                        data: data.to_string(),
+                    }),
                     _ => None,
                 }
             }
@@ -345,16 +382,47 @@ mod tests {
 
     #[test]
     fn intercept_osc7768_shell_state() {
+        // 旧版 3 字段格式(无 duration_ms),验证向后兼容:duration_ms 应为 None。
         let mut f = OscFilter::new();
         let input = b"\x1b]7768;0;/tmp;ls -la\x07";
         let (clean, events) = f.feed(input);
         assert!(clean.is_empty());
         assert_eq!(events.len(), 1);
         match &events[0] {
-            OscEvent::ShellState { exit, cwd, cmd } => {
+            OscEvent::ShellState {
+                exit,
+                cwd,
+                cmd,
+                duration_ms,
+            } => {
                 assert_eq!(*exit, 0);
                 assert_eq!(cwd, "/tmp");
                 assert_eq!(cmd, "ls -la");
+                assert_eq!(*duration_ms, None);
+            }
+            _ => panic!("expected ShellState"),
+        }
+    }
+
+    #[test]
+    fn intercept_osc7768_shell_state_with_duration() {
+        // 新版 4 字段格式,末尾附带 duration_ms(毫秒)。
+        let mut f = OscFilter::new();
+        let input = b"\x1b]7768;0;/tmp;ls -la;1234\x07";
+        let (clean, events) = f.feed(input);
+        assert!(clean.is_empty());
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            OscEvent::ShellState {
+                exit,
+                cwd,
+                cmd,
+                duration_ms,
+            } => {
+                assert_eq!(*exit, 0);
+                assert_eq!(cwd, "/tmp");
+                assert_eq!(cmd, "ls -la");
+                assert_eq!(*duration_ms, Some(1234));
             }
             _ => panic!("expected ShellState"),
         }

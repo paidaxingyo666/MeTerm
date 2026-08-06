@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { emit, listen } from '@tauri-apps/api/event';
+import { emitTo, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { LogicalPosition } from '@tauri-apps/api/dpi';
@@ -28,8 +28,8 @@ export interface TabTransferSessionInfo {
   sshInfo?: { host: string; username: string; port: number };
   bufferContent?: string;
   isRemote?: boolean;
-  remoteWsUrl?: string;
-  remoteToken?: string;
+  remoteHost?: string;
+  remotePort?: number;
   isJumpServer?: boolean;
   jumpServerInfo?: {
     config: import('./jumpserver-api').JumpServerConfig;
@@ -60,6 +60,18 @@ export interface TabTransferPayload {
 export interface TabTransferCompletePayload {
   sourceWindow: string;
   sessionId: string;
+}
+
+function summarizeTabTransfer(payload: TabTransferPayload): Record<string, string | number | boolean> {
+  const sessions = payload.sessions || [];
+  return {
+    sourceWindow: payload.sourceWindow,
+    targetWindow: payload.targetWindow,
+    tabId: payload.tabId,
+    sessionCount: sessions.length,
+    hasRemoteSessions: sessions.some((session) => session.isRemote === true),
+    hasJumpServerSessions: sessions.some((session) => session.isJumpServer === true),
+  };
 }
 
 export interface SingleTabDragHoverPayload {
@@ -296,7 +308,7 @@ function onWindowDragMove(event: PointerEvent): void {
     }
     windowDragState.currentTarget = target.label;
     const tab = TabManager.tabs.find((t) => t.id === windowDragState!.sessionId);
-    void emit('single-tab-drag-hover', {
+    void emitTo(target.label, 'single-tab-drag-hover', {
       sourceLabel: getCurrentWindow().label,
       targetLabel: target.label,
       screenX: event.screenX,
@@ -308,7 +320,7 @@ function onWindowDragMove(event: PointerEvent): void {
     if (prevTarget) {
       // Leaving target tab bar: restore source window opacity
       document.documentElement.style.opacity = '';
-      void emit('single-tab-drag-leave', {
+      void emitTo(prevTarget, 'single-tab-drag-leave', {
         targetLabel: prevTarget,
       } satisfies SingleTabDragLeavePayload);
     }
@@ -336,7 +348,7 @@ async function onWindowDragUp(event: PointerEvent): Promise<void> {
 
   // Clear hover indicator in target window
   if (state.currentTarget) {
-    await emit('single-tab-drag-leave', {
+    await emitTo(state.currentTarget, 'single-tab-drag-leave', {
       targetLabel: state.currentTarget,
     } satisfies SingleTabDragLeavePayload);
   }
@@ -355,7 +367,7 @@ async function onWindowDragUp(event: PointerEvent): Promise<void> {
   // This avoids registering a second listener that races with the persistent one.
   singleTabMergeWindowLabel = getCurrentWindow().label;
 
-  await emit('tab-transfer-request', payload);
+  await emitTo(payload.targetWindow, 'tab-transfer-request', payload);
 }
 
 function buildTransferPayload(tabId: string, targetLabel: string): TabTransferPayload | null {
@@ -380,8 +392,8 @@ function buildTransferPayload(tabId: string, targetLabel: string): TabTransferPa
       sshInfo: sshInfo || undefined,
       bufferContent: TerminalRegistry.serializeBuffer(leaf.sessionId) || undefined,
       isRemote: mt?.isRemote || false,
-      remoteWsUrl: mt?.remoteWsUrl,
-      remoteToken: mt?.remoteToken,
+      remoteHost: mt?.remoteHost,
+      remotePort: mt?.remotePort,
       isJumpServer: !!jsInfo,
       jumpServerInfo: jsInfo || undefined,
     };
@@ -530,7 +542,7 @@ function onPointerMove(event: PointerEvent): void {
     hideDragPreview();
     // Clear any cross-window hover indicator
     if (dragState.currentTarget) {
-      void emit('single-tab-drag-leave', {
+      void emitTo(dragState.currentTarget, 'single-tab-drag-leave', {
         targetLabel: dragState.currentTarget,
       } satisfies SingleTabDragLeavePayload);
       dragState.currentTarget = null;
@@ -603,7 +615,7 @@ function onPointerMove(event: PointerEvent): void {
       hideDragPreview();
       dragState.currentTarget = target.label;
       const tab = TabManager.tabs.find((t) => t.id === dragState!.sessionId);
-      void emit('single-tab-drag-hover', {
+      void emitTo(target.label, 'single-tab-drag-hover', {
         sourceLabel: getCurrentWindow().label,
         targetLabel: target.label,
         screenX: event.screenX,
@@ -613,7 +625,7 @@ function onPointerMove(event: PointerEvent): void {
       } satisfies SingleTabDragHoverPayload);
     } else {
       if (prevTarget) {
-        void emit('single-tab-drag-leave', {
+        void emitTo(prevTarget, 'single-tab-drag-leave', {
           targetLabel: prevTarget,
         } satisfies SingleTabDragLeavePayload);
       }
@@ -656,7 +668,7 @@ async function onPointerUp(event: PointerEvent): Promise<void> {
 
   // Clear cross-window hover indicator
   if (state.currentTarget) {
-    void emit('single-tab-drag-leave', {
+    void emitTo(state.currentTarget, 'single-tab-drag-leave', {
       targetLabel: state.currentTarget,
     } satisfies SingleTabDragLeavePayload);
   }
@@ -738,8 +750,8 @@ async function onPointerUp(event: PointerEvent): Promise<void> {
         const payload = buildTransferPayload(savedSessionId, newLabel);
         if (!payload) return;
 
-        console.log('[TAB-DRAG] Emitting tab-transfer-request to new window:', payload);
-        await emit('tab-transfer-request', payload);
+        console.log('[TAB-DRAG] Emitting tab-transfer-request to new window:', summarizeTabTransfer(payload));
+        await emitTo(payload.targetWindow, 'tab-transfer-request', payload);
       } catch (err) {
         console.error('[TAB-DRAG] Failed to create new window for tab:', err);
       }
@@ -751,8 +763,8 @@ async function onPointerUp(event: PointerEvent): Promise<void> {
   const payload = buildTransferPayload(savedSessionId, targetWindow.label);
   if (!payload) return;
 
-  console.log('[TAB-DRAG] Emitting tab-transfer-request:', payload);
-  await emit('tab-transfer-request', payload);
+  console.log('[TAB-DRAG] Emitting tab-transfer-request:', summarizeTabTransfer(payload));
+  await emitTo(payload.targetWindow, 'tab-transfer-request', payload);
 }
 
 export function initTabDrag(tabElement: HTMLElement, sessionId: string): void {
@@ -942,8 +954,8 @@ export function setupTabTransferListener(
         const mt = TerminalRegistry.get(sess.sessionId);
         if (mt) {
           mt.isRemote = true;
-          mt.remoteWsUrl = sess.remoteWsUrl;
-          mt.remoteToken = sess.remoteToken;
+          mt.remoteHost = sess.remoteHost;
+          mt.remotePort = sess.remotePort;
         }
       }
 
@@ -986,7 +998,7 @@ export function setupTabTransferListener(
       sessionId: payload.tabId || payload.sessionId,
     };
     console.log('[TAB-DRAG] Emitting tab-transfer-complete:', completePayload);
-    await emit('tab-transfer-complete', completePayload);
+    await emitTo(completePayload.sourceWindow, 'tab-transfer-complete', completePayload);
   }).then((fn) => {
     unlisten = fn;
   });

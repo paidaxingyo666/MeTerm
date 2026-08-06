@@ -1,5 +1,6 @@
 // 文件管理器书签/收藏目录模块
 import { createOverlayScrollbar } from './overlay-scrollbar';
+import { escapeHtml } from './status-bar';
 
 export interface Bookmark {
   path: string;
@@ -63,9 +64,9 @@ export function showBookmarkPopup(
     list.innerHTML = '<div class="bookmark-empty">暂无书签</div>';
   } else {
     list.innerHTML = bookmarks.map(b => `
-      <div class="bookmark-item" data-path="${b.path.replace(/"/g, '&quot;')}">
-        <span class="bookmark-path" title="${b.path.replace(/"/g, '&quot;')}">${b.label || b.path}</span>
-        <button class="bookmark-delete" data-path="${b.path.replace(/"/g, '&quot;')}" title="删除书签">&times;</button>
+      <div class="bookmark-item" data-path="${escapeHtml(b.path)}">
+        <span class="bookmark-path" title="${escapeHtml(b.path)}">${escapeHtml(b.label || b.path)}</span>
+        <button class="bookmark-delete" data-path="${escapeHtml(b.path)}" title="删除书签">&times;</button>
       </div>
     `).join('');
   }

@@ -3,10 +3,11 @@ import { getAvailableLanguages, t, setLanguage } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { FONT_REGISTRY, UI_FONT_EXTRAS, getFontDef, getAvailableCJKFonts } from './fonts';
 import { isMacPlatform } from './app-state';
-import { open, save } from '@tauri-apps/plugin-dialog';
-import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
-import { exportConnectionsToJSON, importConnectionsFromJSON } from './ssh';
+import { open } from '@tauri-apps/plugin-dialog';
+import { readTextFile } from '@tauri-apps/plugin-fs';
+import { exportConnectionsToFile, formatSSHExportResult, importConnectionsFromJSON } from './ssh';
 import { createSettingsSelect } from './custom-select';
+import { escapeHtml } from './status-bar';
 // emit removed — palette now syncs through update() → saveSettings → settings-changed
 
 export function createGeneralTab(
@@ -230,7 +231,7 @@ export function createGeneralTab(
   bgImageSection.innerHTML = `
     <label>${t('backgroundImage')}</label>
     <div class="settings-btn-row">
-      <button class="settings-select" id="bg-image-select" style="text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${bgFileName || t('backgroundImageSelect')}</button>
+      <button class="settings-select" id="bg-image-select" style="text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(bgFileName || t('backgroundImageSelect'))}</button>
       <button class="settings-select" id="bg-image-clear" style="width:auto;flex:none">${t('backgroundImageClear')}</button>
     </div>
   `;
@@ -662,25 +663,20 @@ export function createGeneralTab(
   exportBtn.style.cursor = 'pointer';
   exportBtn.textContent = t('sshExportConnections');
   exportBtn.onclick = async () => {
-    const result = await exportConnectionsToJSON();
-    if (!result) {
-      sshIoStatus.textContent = t('sshNoConnectionsToExport');
-      sshIoStatus.className = 'settings-ssh-io-status ssh-status-error';
-      return;
-    }
-    const filePath = await save({
-      filters: [{ name: 'JSON', extensions: ['json'] }],
-      defaultPath: 'meterm-connections.json',
-    });
-    if (filePath) {
-      try {
-        await writeTextFile(filePath, result.json);
-        sshIoStatus.textContent = `${result.count} ${t('sshExportCount')}`;
-        sshIoStatus.className = 'settings-ssh-io-status ssh-status-success';
-      } catch (err) {
-        sshIoStatus.textContent = String(err);
+    try {
+      const result = await exportConnectionsToFile();
+      if (result === undefined) {
+        sshIoStatus.textContent = t('sshNoConnectionsToExport');
         sshIoStatus.className = 'settings-ssh-io-status ssh-status-error';
+        return;
       }
+      if (result) {
+        sshIoStatus.textContent = formatSSHExportResult(result);
+        sshIoStatus.className = 'settings-ssh-io-status ssh-status-success';
+      }
+    } catch {
+      sshIoStatus.textContent = t('sshExportFailed');
+      sshIoStatus.className = 'settings-ssh-io-status ssh-status-error';
     }
   };
 
@@ -696,7 +692,7 @@ export function createGeneralTab(
     if (filePath) {
       try {
         const content = await readTextFile(filePath as string);
-        const result = importConnectionsFromJSON(content);
+        const result = await importConnectionsFromJSON(content);
         sshIoStatus.textContent = `${result.count} ${t('sshImportCount')}`;
         sshIoStatus.className = 'settings-ssh-io-status ssh-status-success';
         document.dispatchEvent(new CustomEvent('ssh-connections-changed'));

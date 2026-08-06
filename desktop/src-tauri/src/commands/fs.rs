@@ -22,12 +22,19 @@ fn normalize_path(path: &str) -> String {
         // Convert MSYS/Git Bash paths: /c/Users/... → C:\Users\...
         // Also handle file:// URL pathname: /C:/Users/... → C:\Users\...
         if let Some(rest) = s.strip_prefix('/') {
-            if rest.len() >= 2 && rest.as_bytes()[0].is_ascii_alphabetic() && rest.as_bytes()[1] == b'/' {
+            if rest.len() >= 2
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && rest.as_bytes()[1] == b'/'
+            {
                 let drive = rest.as_bytes()[0].to_ascii_uppercase() as char;
                 s = format!("{}:{}", drive, rest[1..].replace('/', "\\"));
                 return s;
             }
-            if rest.len() >= 3 && rest.as_bytes()[0].is_ascii_alphabetic() && rest.as_bytes()[1] == b':' && (rest.as_bytes()[2] == b'/' || rest.as_bytes()[2] == b'\\') {
+            if rest.len() >= 3
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && rest.as_bytes()[1] == b':'
+                && (rest.as_bytes()[2] == b'/' || rest.as_bytes()[2] == b'\\')
+            {
                 let drive = rest.as_bytes()[0].to_ascii_uppercase() as char;
                 s = format!("{}:{}", drive, rest[2..].replace('/', "\\"));
                 return s;
@@ -189,7 +196,10 @@ pub async fn copy_background_image(
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
-    if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp") {
+    if !matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+    ) {
         return Err("unsupported image format".to_string());
     }
 
@@ -211,8 +221,7 @@ pub async fn copy_background_image(
     let dest = bg_dir.join(&dest_name);
 
     // Copy the file
-    std::fs::copy(&source, &dest)
-        .map_err(|e| format!("failed to copy image: {}", e))?;
+    std::fs::copy(&source, &dest).map_err(|e| format!("failed to copy image: {}", e))?;
 
     // Delete old background image if provided and it's inside our backgrounds dir
     if let Some(old) = old_path {
@@ -238,8 +247,7 @@ pub async fn delete_background_image(app: AppHandle, path: String) -> Result<(),
 
     // Only delete files inside our backgrounds directory (prevent path traversal)
     if target.starts_with(&bg_dir) && target.is_file() {
-        std::fs::remove_file(target)
-            .map_err(|e| format!("failed to delete image: {}", e))?;
+        std::fs::remove_file(target).map_err(|e| format!("failed to delete image: {}", e))?;
     }
 
     Ok(())
@@ -247,18 +255,21 @@ pub async fn delete_background_image(app: AppHandle, path: String) -> Result<(),
 
 /// Take and return the initial open path from CLI args (consumed once).
 #[tauri::command]
-pub fn take_initial_open_path(
-    state: State<'_, AppLifecycleState>,
-) -> Option<String> {
-    state.initial_open_path.lock().ok().and_then(|mut guard| guard.take())
+pub fn take_initial_open_path(state: State<'_, AppLifecycleState>) -> Option<String> {
+    state
+        .initial_open_path
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
 }
 
 // ─── Agent file I/O (unrestricted, sidecar-style) ───
 //
-// The Tauri `@tauri-apps/plugin-fs` API enforces a path scope (we
-// only ship `fs:scope-appdata-recursive`), so the AI agent's
-// `read_file` / `write_file` tools cannot read arbitrary local files
-// through the plugin — they hit a "path not allowed" error.
+// The Tauri `@tauri-apps/plugin-fs` API enforces a path scope. Static
+// access is limited to chat history and the agent audit log; user-picked
+// and dropped files are added dynamically by Tauri. The AI agent's
+// `read_file` / `write_file` tools therefore cannot read arbitrary local
+// files through the plugin — they hit a "path not allowed" error.
 //
 // These two commands bypass the plugin entirely and use std::fs,
 // which is consistent with the rest of the agent's surface area:
@@ -323,8 +334,8 @@ pub fn agent_read_file(path: String, max_bytes: Option<u64>) -> Result<AgentRead
         });
     }
 
-    let content = String::from_utf8(bytes)
-        .map_err(|e| format!("file is not valid UTF-8: {}", e))?;
+    let content =
+        String::from_utf8(bytes).map_err(|e| format!("file is not valid UTF-8: {}", e))?;
 
     Ok(AgentReadResult {
         content: Some(content),
@@ -347,7 +358,11 @@ pub fn agent_read_file_bytes(path: String, max_bytes: Option<u64>) -> Result<Vec
     let meta = std::fs::metadata(p).map_err(|e| format!("stat failed: {}", e))?;
     let cap = max_bytes.unwrap_or(10 * 1024 * 1024);
     if meta.len() > cap {
-        return Err(format!("file too large: {} bytes (limit {})", meta.len(), cap));
+        return Err(format!(
+            "file too large: {} bytes (limit {})",
+            meta.len(),
+            cap
+        ));
     }
     std::fs::read(p).map_err(|e| format!("read failed: {}", e))
 }
@@ -366,8 +381,7 @@ pub fn agent_write_file(path: String, content: String) -> Result<u64, String> {
         }
     }
 
-    std::fs::write(p, content.as_bytes())
-        .map_err(|e| format!("write failed: {}", e))?;
+    std::fs::write(p, content.as_bytes()).map_err(|e| format!("write failed: {}", e))?;
 
     Ok(content.as_bytes().len() as u64)
 }
@@ -396,10 +410,20 @@ pub async fn agent_save_attachment(
     // escape the attachments dir via "../../etc/passwd"-style names.
     let safe_name: String = name
         .chars()
-        .map(|c| if c == '/' || c == '\\' || c == '\0' { '_' } else { c })
+        .map(|c| {
+            if c == '/' || c == '\\' || c == '\0' {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let trimmed = safe_name.trim().trim_start_matches('.');
-    let final_name = if trimmed.is_empty() { "attachment" } else { trimmed };
+    let final_name = if trimmed.is_empty() {
+        "attachment"
+    } else {
+        trimmed
+    };
 
     // Timestamp + short random suffix for collision avoidance.
     // UUID v4 for collision-proof filenames (the uuid crate is already a dep).
@@ -831,8 +855,8 @@ pub struct ClipboardImageResult {
 pub fn read_clipboard_image() -> Result<ClipboardImageResult, String> {
     use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
-    let mut clipboard = arboard::Clipboard::new()
-        .map_err(|e| format!("failed to open clipboard: {}", e))?;
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|e| format!("failed to open clipboard: {}", e))?;
 
     let img = match clipboard.get_image() {
         Ok(img) => img,
@@ -949,8 +973,11 @@ fn crc32(data: &[u8]) -> u32 {
             for i in 0..256u32 {
                 let mut c = i;
                 for _ in 0..8 {
-                    if c & 1 != 0 { c = 0xedb88320 ^ (c >> 1); }
-                    else { c >>= 1; }
+                    if c & 1 != 0 {
+                        c = 0xedb88320 ^ (c >> 1);
+                    } else {
+                        c >>= 1;
+                    }
                 }
                 TABLE[i as usize] = c;
             }

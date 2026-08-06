@@ -5,14 +5,14 @@
 // ── Image helpers ─────────────────────────────────────────────────────────────
 
 const IMAGE_EXTS = new Set([
-  'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico',
+  'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'ico',
   'tiff', 'tif', 'avif', 'heic', 'heif',
 ]);
 
 const MIME_MAP: Record<string, string> = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg',
   png: 'image/png', gif: 'image/gif', webp: 'image/webp',
-  svg: 'image/svg+xml', bmp: 'image/bmp',
+  bmp: 'image/bmp',
   ico: 'image/x-icon', tiff: 'image/tiff', tif: 'image/tiff',
   avif: 'image/avif', heic: 'image/heic', heif: 'image/heif',
 };
@@ -42,13 +42,50 @@ export function bytesToBase64(bytes: Uint8Array): string {
 // ── Markdown renderer ─────────────────────────────────────────────────────────
 
 function escHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Decode exactly the one escaping pass applied before Markdown matching. */
+function decodeEscapedMarkdownUrl(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&');
+}
+
+function sanitizeMarkdownUrl(
+  encodedValue: string,
+  allowImageData = false,
+  allowRemote = true,
+): string | null {
+  const value = decodeEscapedMarkdownUrl(encodedValue).trim();
+  if (!value || /[\u0000-\u0020\u007f]/.test(value)) return null;
+
+  if (allowImageData && /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);base64,[A-Za-z0-9+/=]+$/i.test(value)) {
+    return value;
+  }
+  if (!allowRemote) return null;
+
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username || url.password) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 /** Render inline markdown (bold, italic, code, links, images). */
 function renderInline(raw: string): string {
   // Escape HTML first, then re-apply markdown
-  let s = raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let s = escHtml(raw);
   // Inline code (process before bold/italic to avoid interference)
   s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
   // Bold + italic
@@ -63,12 +100,26 @@ function renderInline(raw: string): string {
   // Strikethrough
   s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
   // Images (must come before links)
-  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2">');
+  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt: string, encodedUrl: string) => {
+    // Remote images disclose the viewer's IP and can be used as tracking
+    // beacons. Preview only first-party raster data URLs created in memory.
+    const safeUrl = sanitizeMarkdownUrl(encodedUrl, true, false);
+    return safeUrl ? `<img alt="${alt}" src="${escHtml(safeUrl)}">` : alt;
+  });
   // Links
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, encodedUrl: string) => {
+    const safeUrl = sanitizeMarkdownUrl(encodedUrl);
+    return safeUrl
+      ? `<a href="${escHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+      : label;
+  });
   // Auto-links (bare URLs not already inside an href/src)
-  s = s.replace(/(?<![="'])https?:\/\/[^\s<>"]+/g, (url) =>
-    `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
+  s = s.replace(/(?<![="'])https?:\/\/[^\s<>"]+/g, (encodedUrl) => {
+    const safeUrl = sanitizeMarkdownUrl(encodedUrl);
+    return safeUrl
+      ? `<a href="${escHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${encodedUrl}</a>`
+      : encodedUrl;
+  });
   return s;
 }
 

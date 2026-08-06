@@ -4,6 +4,13 @@ import { homeDir, join as joinPath } from '@tauri-apps/api/path';
 import { t } from './i18n';
 import { escapeHtml } from './status-bar';
 import { loadGroupOrder, sshKey, setConnectionGroup, removeConnectionGroup, getConnectionGroup } from './connection-groups';
+import {
+  connectionIdsForConfigs,
+  existingConnectionId,
+  markSshCredentialMigrationManualRequired,
+  syncUpsert,
+  syncDelete,
+} from './connection-sync';
 
 interface SshAgentStatus { available: boolean; key_count: number; reason: string; }
 
@@ -44,11 +51,15 @@ async function refreshKeyHints(keyInput: HTMLInputElement, badge: HTMLElement): 
   }
 }
 export interface SSHConnectionConfig {
+  /** Stable native registry identity; metadata only, never a credential. */
+  serverConnectionId?: string;
   name: string;
   host: string;
   port: number;
   username: string;
   authMethod: 'password' | 'key';
+  /** Explicit owner choice to use desktop ssh-agent/default identities. */
+  usesDesktopKeyLadder?: boolean;
   password?: string;
   privateKey?: string;
   passphrase?: string;
@@ -93,158 +104,103 @@ interface HostKeyError {
 }
 
 const SSH_CONNECTIONS_KEY = 'meterm-ssh-connections';
-const SSH_KEYCHAIN_SERVICE = 'com.meterm.app.ssh';
-const SSH_KEYCHAIN_SERVICE_OLD = 'com.meterm.dev.ssh';
 
-// ─── Secure credential storage helpers ───
-
-// In-memory cache + inflight dedup to avoid repeated keychain access (which triggers system dialogs)
-type SSHSecrets = { password?: string; passphrase?: string };
-const sshSecretsCache = new Map<string, SSHSecrets>();
-const sshSecretsInflight = new Map<string, Promise<SSHSecrets>>();
-// Track pending delete operations to prevent store/delete race conditions
-const sshSecretsPendingDelete = new Map<string, Promise<void>>();
-
-async function storeSSHSecrets(name: string, password?: string, passphrase?: string): Promise<void> {
-  const secrets: SSHSecrets = { password, passphrase };
-  // Skip keychain write if cache already has identical secrets (avoids unnecessary system dialog)
-  const cached = sshSecretsCache.get(name);
-  if (cached && cached.password === password && cached.passphrase === passphrase) {
-    return;
-  }
-  sshSecretsCache.set(name, secrets);
-  // Wait for any pending delete to complete before storing — prevents SecItemAdd/SecItemUpdate race
-  const pending = sshSecretsPendingDelete.get(name);
-  if (pending) await pending.catch(() => {});
-  // Store as single JSON entry — one keychain item = one system dialog
-  try {
-    await invoke('store_credential', { service: SSH_KEYCHAIN_SERVICE, account: `${name}:secrets`, secret: JSON.stringify(secrets) });
-  } catch (e) {
-    console.error('[ssh] Failed to store SSH secrets to keychain:', e);
-  }
-  // NOTE: Legacy cleanup is handled by migrateSSHCredentials() at startup;
-  // no fire-and-forget deletes here to avoid extra keychain dialogs.
-}
-
-async function loadSSHSecrets(name: string): Promise<SSHSecrets> {
-  if (sshSecretsCache.has(name)) return sshSecretsCache.get(name)!;
-  // Deduplicate concurrent calls
-  const existing = sshSecretsInflight.get(name);
-  if (existing) return existing;
-  const promise = (async () => {
-    // Try new unified format first (single keychain access)
-    try {
-      const json = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE, account: `${name}:secrets` });
-      const result: SSHSecrets = JSON.parse(json);
-      sshSecretsCache.set(name, result);
-      return result;
-    } catch { /* not found or parse error — try legacy format */ }
-    // Fallback: legacy separate entries (current service)
-    const result: SSHSecrets = {};
-    try {
-      result.password = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE, account: `${name}:password` });
-    } catch { /* not found */ }
-    try {
-      result.passphrase = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE, account: `${name}:passphrase` });
-    } catch { /* not found */ }
-    // Fallback: old service name (com.meterm.dev.ssh → com.meterm.app.ssh)
-    if (!result.password && !result.passphrase) {
-      try {
-        const json = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:secrets` });
-        const old: SSHSecrets = JSON.parse(json);
-        result.password = old.password;
-        result.passphrase = old.passphrase;
-      } catch { /* not found */ }
-      if (!result.password && !result.passphrase) {
-        try {
-          result.password = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:password` });
-        } catch { /* not found */ }
-        try {
-          result.passphrase = await invoke<string>('get_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:passphrase` });
-        } catch { /* not found */ }
-      }
-    }
-    sshSecretsCache.set(name, result);
-    // Deferred migration: write unified format to new service + clean up old service
-    if (result.password || result.passphrase) {
-      setTimeout(() => {
-        invoke('store_credential', {
-          service: SSH_KEYCHAIN_SERVICE,
-          account: `${name}:secrets`,
-          secret: JSON.stringify(result),
-        }).then(() => {
-          // Clean up old service entries
-          invoke('delete_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:secrets` }).catch(() => {});
-          invoke('delete_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:password` }).catch(() => {});
-          invoke('delete_credential', { service: SSH_KEYCHAIN_SERVICE_OLD, account: `${name}:passphrase` }).catch(() => {});
-        }).catch(() => {});
-      }, 3000);
-    }
-    return result;
-  })();
-  sshSecretsInflight.set(name, promise);
-  try {
-    return await promise;
-  } finally {
-    sshSecretsInflight.delete(name);
-  }
-}
-
-async function deleteSSHSecrets(name: string): Promise<void> {
-  sshSecretsCache.delete(name);
-  // Await all deletes and track the operation — prevents race with subsequent storeSSHSecrets
-  const deletePromise = Promise.allSettled([
-    invoke('delete_credential', { service: SSH_KEYCHAIN_SERVICE, account: `${name}:secrets` }),
-    invoke('delete_credential', { service: SSH_KEYCHAIN_SERVICE, account: `${name}:password` }),
-    invoke('delete_credential', { service: SSH_KEYCHAIN_SERVICE, account: `${name}:passphrase` }),
-  ]).then(() => {});
-  sshSecretsPendingDelete.set(name, deletePromise);
-  try {
-    await deletePromise;
-  } finally {
-    sshSecretsPendingDelete.delete(name);
-  }
+/** True only for inline private-key material; every other value is treated as a path. */
+export function isInlinePrivateKey(privateKey?: string): boolean {
+  if (!privateKey) return false;
+  const trimmed = privateKey.trimStart();
+  return privateKey.includes('\n')
+    || trimmed.startsWith('-----BEGIN ')
+    || trimmed.startsWith('---- BEGIN SSH2 ')
+    || trimmed.startsWith('PuTTY-User-Key-File-');
 }
 
 function stripSecrets(config: SSHConnectionConfig): SSHConnectionConfig {
-  const { password: _p, passphrase: _pp, ...rest } = config;
-  return rest as SSHConnectionConfig;
+  const {
+    password: _password,
+    passphrase: _passphrase,
+    proxyPassword: _proxyPassword,
+    ...metadata
+  } = config;
+  if (isInlinePrivateKey(metadata.privateKey)) delete metadata.privateKey;
+  return metadata as SSHConnectionConfig;
 }
 
-/** One-time migration: move secrets from localStorage to OS keychain */
-export async function migrateSSHCredentials(): Promise<void> {
-  const raw = localStorage.getItem(SSH_CONNECTIONS_KEY);
-  if (!raw) return;
+function hasLegacyPlaintext(config: SSHConnectionConfig): boolean {
+  return Boolean(
+    config.password
+    || config.passphrase
+    || config.proxyPassword
+    || isInlinePrivateKey(config.privateKey),
+  );
+}
+
+function storageListHasLegacyPlaintext(storageKey: string): boolean {
+  const raw = localStorage.getItem(storageKey);
+  if (!raw) return false;
   try {
-    const conns = JSON.parse(raw) as SSHConnectionConfig[];
-    let migrated = false;
-    for (const conn of conns) {
-      if (conn.password || conn.passphrase) {
-        await storeSSHSecrets(conn.name, conn.password, conn.passphrase);
-        migrated = true;
-      }
-    }
-    if (migrated) {
-      // Re-save with secrets stripped
-      const stripped = conns.map(stripSecrets);
-      localStorage.setItem(SSH_CONNECTIONS_KEY, JSON.stringify(stripped));
-      console.log('[security] SSH credentials migrated to OS keychain');
-    }
-  } catch (e) {
-    console.warn('[security] Migration failed, credentials remain in localStorage:', e);
+    const connections: unknown = JSON.parse(raw);
+    // A malformed legacy source may still contain the only credential copy.
+    // Keep it pending for an explicit recovery flow instead of silently
+    // declaring migration complete.
+    if (!Array.isArray(connections)) return true;
+    return connections.some((value) => (
+      typeof value !== 'object'
+      || value === null
+      || hasLegacyPlaintext(value as SSHConnectionConfig)
+    ));
+  } catch {
+    return true;
   }
-
-  // Also migrate recent connections
-  const recentRaw = localStorage.getItem(SSH_RECENT_KEY);
-  if (!recentRaw) return;
-  try {
-    const recent = JSON.parse(recentRaw) as SSHConnectionConfig[];
-    const stripped = recent.map(stripSecrets);
-    localStorage.setItem(SSH_RECENT_KEY, JSON.stringify(stripped));
-  } catch {}
 }
 
-// ─── Connection storage (metadata in localStorage, secrets in keychain) ───
+/** Startup-safe local inspection; no native command or Keychain API is used. */
+export function hasLegacySshPlaintextMigration(): boolean {
+  return storageListHasLegacyPlaintext(SSH_CONNECTIONS_KEY)
+    || storageListHasLegacyPlaintext(SSH_RECENT_KEY);
+}
+
+/**
+ * One-time migration of legacy Web Storage plaintext. Saved connection
+ * credentials are sent directly to the id-bound Rust vault; they are never
+ * read back into JavaScript. Recent history is metadata-only and does not
+ * retain standalone credentials.
+ */
+export async function migrateSSHCredentials(): Promise<void> {
+  const migrateStorageList = async (storageKey: string, persistSaved: boolean): Promise<void> => {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return;
+    try {
+      const connections = JSON.parse(raw) as SSHConnectionConfig[];
+      if (!Array.isArray(connections)) throw new Error('invalid SSH connection storage');
+      for (let index = 0; index < connections.length; index += 1) {
+        const connection = connections[index];
+        if (typeof connection?.name !== 'string' || !connection.name) {
+          throw new Error('cannot migrate unnamed SSH connection');
+        }
+        if (!hasLegacyPlaintext(connection)) continue;
+        if (persistSaved) {
+          // Commit one native vault transaction first, then immediately scrub
+          // only that successful source. Later failures retain their exact
+          // plaintext source and never cause an automatic startup retry.
+          await syncUpsert(connection);
+          connections[index] = stripSecrets(connection);
+          localStorage.setItem(storageKey, JSON.stringify(connections));
+        }
+      }
+      if (!persistSaved) {
+        localStorage.setItem(storageKey, JSON.stringify(connections.map(stripSecrets)));
+      }
+    } catch (error) {
+      markSshCredentialMigrationManualRequired('legacy_plaintext', 'previous_failure');
+      throw error;
+    }
+  };
+  await migrateStorageList(SSH_CONNECTIONS_KEY, true);
+  await migrateStorageList(SSH_RECENT_KEY, false);
+}
+
+// ─── Connection storage (metadata in localStorage, secrets in Rust vault) ───
 
 export function loadSavedConnections(): SSHConnectionConfig[] {
   try {
@@ -254,27 +210,21 @@ export function loadSavedConnections(): SSHConnectionConfig[] {
   return [];
 }
 
-export function saveConnections(connections: SSHConnectionConfig[]): void {
-  // Strip secrets before saving to localStorage; save each to keychain async
-  const stripped = connections.map((c) => {
-    if (c.password || c.passphrase) {
-      storeSSHSecrets(c.name, c.password, c.passphrase)
-        .catch((e) => console.warn('[security] Failed to save SSH secrets:', e));
-    }
-    return stripSecrets(c);
-  });
-  localStorage.setItem(SSH_CONNECTIONS_KEY, JSON.stringify(stripped));
+export async function saveConnections(connections: SSHConnectionConfig[]): Promise<void> {
+  localStorage.setItem(SSH_CONNECTIONS_KEY, JSON.stringify(connections.map(stripSecrets)));
 }
 
-export function addConnection(config: SSHConnectionConfig): void {
-  // Save secrets to keychain (async, best-effort but logged on failure)
-  if (config.password || config.passphrase) {
-    storeSSHSecrets(config.name, config.password, config.passphrase)
-      .catch((e) => console.warn('[security] Failed to save SSH secrets:', e));
-  }
+export async function addConnection(config: SSHConnectionConfig): Promise<void> {
+  // The native registry/vault is authoritative. Do not publish metadata that
+  // looks saved until its credential transaction has completed.
+  await syncUpsert(config);
+  const registryId = existingConnectionId(config.name);
   const connections = loadSavedConnections();
-  const stripped = stripSecrets(config);
-  const existing = connections.findIndex((c) => c.name === config.name);
+  const stripped = stripSecrets({ ...config, serverConnectionId: registryId });
+  const existing = connections.findIndex((c) => (
+    c.name === config.name
+    || Boolean(registryId && c.serverConnectionId === registryId)
+  ));
   if (existing >= 0) {
     connections[existing] = stripped;
   } else {
@@ -283,42 +233,53 @@ export function addConnection(config: SSHConnectionConfig): void {
   localStorage.setItem(SSH_CONNECTIONS_KEY, JSON.stringify(connections));
 }
 
-export function removeConnection(name: string): void {
-  deleteSSHSecrets(name).catch((e) => console.error('[ssh] deleteSSHSecrets failed:', e));
+export async function removeConnection(name: string): Promise<void> {
+  await syncDelete(name);
   const connections = loadSavedConnections().filter((c) => c.name !== name);
   localStorage.setItem(SSH_CONNECTIONS_KEY, JSON.stringify(connections));
 }
 
-export interface SSHExportData {
-  version: 1;
-  connections: SSHConnectionConfig[];
-  exportedAt: string;
+export interface SSHExportResult {
+  count: number;
+  portableCount: number;
+  missingCredentialCount: number;
+  mobileReadyCount: number;
+  mobileUnsupportedCount: number;
 }
 
-export async function exportConnectionsToJSON(): Promise<{ json: string; count: number } | null> {
+export function formatSSHExportResult(result: SSHExportResult): string {
+  const success = `${result.count} ${t('sshExportCount')}`;
+  const warnings: string[] = [];
+  if (result.missingCredentialCount > 0) {
+    warnings.push(t('sshExportMissingCredential').replace(
+      '{count}', String(result.missingCredentialCount),
+    ));
+  }
+  if (result.mobileUnsupportedCount > 0) {
+    warnings.push(t('sshExportMobileUnsupported').replace(
+      '{count}', String(result.mobileUnsupportedCount),
+    ));
+  }
+  return warnings.length > 0 ? `${success}\n${warnings.join('\n')}` : success;
+}
+
+export async function exportConnectionsToFile(): Promise<SSHExportResult | null | undefined> {
   const connections = loadSavedConnections();
-  if (connections.length === 0) return null;
-  // Restore secrets from keychain for export
-  const fullConnections = await Promise.all(
-    connections.map(async (c) => {
-      const secrets = await loadSSHSecrets(c.name);
-      return { ...c, password: secrets.password || c.password, passphrase: secrets.passphrase || c.passphrase };
-    }),
-  );
-  const data: SSHExportData = {
-    version: 1,
-    connections: fullConnections,
-    exportedAt: new Date().toISOString(),
-  };
-  return { json: JSON.stringify(data, null, 2), count: connections.length };
+  if (connections.length === 0) return undefined;
+  return invoke<SSHExportResult | null>('export_ssh_connections', {
+    connectionIds: connectionIdsForConfigs(connections),
+  });
 }
 
-export function importConnectionsFromJSON(json: string): { count: number } {
+export async function importConnectionsFromJSON(json: string): Promise<{ count: number }> {
   const data = JSON.parse(json);
   if (!data || data.version !== 1 || !Array.isArray(data.connections)) {
     throw new Error('Invalid format');
   }
-  const imported = data.connections as SSHConnectionConfig[];
+  if (json.length > 16 * 1024 * 1024 || data.connections.length > 1_000) {
+    throw new Error('Invalid format');
+  }
+  const imported = data.connections as Array<SSHConnectionConfig & { id?: unknown }>;
   const existing = loadSavedConnections();
   let count = 0;
   for (const conn of imported) {
@@ -327,12 +288,17 @@ export function importConnectionsFromJSON(json: string): { count: number } {
     if (typeof conn.name !== 'string' || typeof conn.host !== 'string' || typeof conn.username !== 'string') continue;
     if (conn.name.length > 256 || conn.host.length > 256 || conn.username.length > 128) continue;
     if (conn.port !== undefined && (typeof conn.port !== 'number' || conn.port < 1 || conn.port > 65535)) continue;
-    // Save secrets to keychain
-    if (conn.password || conn.passphrase) {
-      storeSSHSecrets(conn.name, conn.password, conn.passphrase)
-        .catch((e) => console.warn('[security] Failed to save imported SSH secrets:', e));
-    }
-    const stripped = stripSecrets(conn);
+    if (conn.authMethod !== 'password' && conn.authMethod !== 'key') continue;
+    // A package id is useful to mobile clients, but a desktop import binds by
+    // the local name map so an untrusted file cannot collide with another
+    // native vault entry by choosing its id.
+    const localId = existing.find(item => item.name === conn.name)?.serverConnectionId;
+    const localConfig = { ...conn, serverConnectionId: localId, id: undefined };
+    await syncUpsert(localConfig);
+    const stripped = stripSecrets({
+      ...localConfig,
+      serverConnectionId: existingConnectionId(conn.name),
+    });
     const idx = existing.findIndex((c) => c.name === conn.name);
     if (idx >= 0) {
       existing[idx] = stripped;
@@ -382,33 +348,40 @@ export function addRecentConnection(config: SSHConnectionConfig): void {
 }
 
 export async function createSSHSession(config: SSHConnectionConfig, trustedFingerprint?: string): Promise<string> {
-  // Load secrets from keychain if not present in config (e.g., when connecting from saved/recent)
-  let password = config.password;
-  let passphrase = config.passphrase;
-  const needsKeychain = !password && !passphrase && !!config.name;
-  console.log('[ssh] createSSHSession:', { host: config.host, port: config.port, username: config.username, authMethod: config.authMethod, hasPassword: !!password, hasPassphrase: !!passphrase, hasPrivateKey: !!config.privateKey, needsKeychain });
-  if (needsKeychain) {
-    const secrets = await loadSSHSecrets(config.name);
-    password = secrets.password || password;
-    passphrase = secrets.passphrase || passphrase;
-    console.log('[ssh] keychain loaded:', { hasPassword: !!password, hasPassphrase: !!passphrase });
+  // Saved metadata-only connections are routed through ssh-saved-session.ts;
+  // this raw command is only for credentials the user just entered.
+  const resolvedConfig = config;
+  if (resolvedConfig.authMethod === 'key'
+    && !resolvedConfig.privateKey
+    && !resolvedConfig.usesDesktopKeyLadder) {
+    throw new Error(t('sshKeySourceRequired'));
   }
+  console.log('[ssh] createSSHSession:', {
+    host: resolvedConfig.host,
+    port: resolvedConfig.port,
+    username: resolvedConfig.username,
+    authMethod: resolvedConfig.authMethod,
+    hasPassword: !!resolvedConfig.password,
+    hasPassphrase: !!resolvedConfig.passphrase,
+    hasPrivateKey: !!resolvedConfig.privateKey,
+    hasProxyPassword: !!resolvedConfig.proxyPassword,
+  });
   const raw = await invoke<string>('create_ssh_session', {
-    host: config.host,
-    port: config.port,
-    username: config.username,
-    authMethod: config.authMethod,
-    password: password || null,
-    privateKey: config.privateKey || null,
-    passphrase: passphrase || null,
+    host: resolvedConfig.host,
+    port: resolvedConfig.port,
+    username: resolvedConfig.username,
+    authMethod: resolvedConfig.authMethod,
+    password: resolvedConfig.password || null,
+    privateKey: resolvedConfig.privateKey || null,
+    passphrase: resolvedConfig.passphrase || null,
     trustedFingerprint: trustedFingerprint || null,
-    skipShellHook: config.skipShellHook || null,
-    multiplexSftp: config.multiplexSftp || null,
-    proxyType: config.proxyType || null,
-    proxyHost: config.proxyHost || null,
-    proxyPort: config.proxyPort || null,
-    proxyUsername: config.proxyUsername || null,
-    proxyPassword: config.proxyPassword || null,
+    skipShellHook: resolvedConfig.skipShellHook || null,
+    multiplexSftp: resolvedConfig.multiplexSftp || null,
+    proxyType: resolvedConfig.proxyType || null,
+    proxyHost: resolvedConfig.proxyHost || null,
+    proxyPort: resolvedConfig.proxyPort || null,
+    proxyUsername: resolvedConfig.proxyUsername || null,
+    proxyPassword: resolvedConfig.proxyPassword || null,
   });
   const parsed = JSON.parse(raw);
 
@@ -427,8 +400,7 @@ export async function createSSHSession(config: SSHConnectionConfig, trustedFinge
       throw new Error('Connection cancelled by user');
     }
     // Retry with trusted fingerprint — pass resolved secrets in config to avoid re-loading
-    const configWithSecrets = { ...config, password: password || undefined, passphrase: passphrase || undefined };
-    return createSSHSession(configWithSecrets, hkErr.fingerprint);
+    return createSSHSession(resolvedConfig, hkErr.fingerprint);
   }
 
   const resp = parsed as SSHSessionCreateResponse;
@@ -437,7 +409,7 @@ export async function createSSHSession(config: SSHConnectionConfig, trustedFinge
 }
 
 // Host key confirmation dialog — TOFU (Trust On First Use) flow
-function showHostKeyConfirmDialog(hostname: string, fingerprint: string, keyType: string): Promise<boolean> {
+export function showHostKeyConfirmDialog(hostname: string, fingerprint: string, keyType: string): Promise<boolean> {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.className = 'ssh-modal-overlay';
@@ -499,31 +471,36 @@ export function getSSHConnectHandler(): SSHConnectHandler | null {
 }
 
 export async function testSSHConnection(config: SSHConnectionConfig, trustedFingerprint?: string): Promise<{ ok: boolean; error?: string }> {
-  // Load secrets from keychain if not present in config
-  let password = config.password;
-  let passphrase = config.passphrase;
-  const needsKeychain = !password && !passphrase && !!config.name;
-  console.log('[ssh] testSSHConnection:', { host: config.host, port: config.port, username: config.username, authMethod: config.authMethod, hasPassword: !!password, hasPassphrase: !!passphrase, hasPrivateKey: !!config.privateKey, needsKeychain });
-  if (needsKeychain) {
-    const secrets = await loadSSHSecrets(config.name);
-    password = secrets.password || password;
-    passphrase = secrets.passphrase || passphrase;
-    console.log('[ssh] keychain loaded:', { hasPassword: !!password, hasPassphrase: !!passphrase });
+  const resolvedConfig = config;
+  if (resolvedConfig.authMethod === 'key'
+    && !resolvedConfig.privateKey
+    && !resolvedConfig.usesDesktopKeyLadder) {
+    return { ok: false, error: t('sshKeySourceRequired') };
   }
+  console.log('[ssh] testSSHConnection:', {
+    host: resolvedConfig.host,
+    port: resolvedConfig.port,
+    username: resolvedConfig.username,
+    authMethod: resolvedConfig.authMethod,
+    hasPassword: !!resolvedConfig.password,
+    hasPassphrase: !!resolvedConfig.passphrase,
+    hasPrivateKey: !!resolvedConfig.privateKey,
+    hasProxyPassword: !!resolvedConfig.proxyPassword,
+  });
   const raw = await invoke<string>('test_ssh_connection', {
-    host: config.host,
-    port: config.port,
-    username: config.username,
-    authMethod: config.authMethod,
-    password: password || null,
-    privateKey: config.privateKey || null,
-    passphrase: passphrase || null,
+    host: resolvedConfig.host,
+    port: resolvedConfig.port,
+    username: resolvedConfig.username,
+    authMethod: resolvedConfig.authMethod,
+    password: resolvedConfig.password || null,
+    privateKey: resolvedConfig.privateKey || null,
+    passphrase: resolvedConfig.passphrase || null,
     trustedFingerprint: trustedFingerprint || null,
-    proxyType: config.proxyType || null,
-    proxyHost: config.proxyHost || null,
-    proxyPort: config.proxyPort || null,
-    proxyUsername: config.proxyUsername || null,
-    proxyPassword: config.proxyPassword || null,
+    proxyType: resolvedConfig.proxyType || null,
+    proxyHost: resolvedConfig.proxyHost || null,
+    proxyPort: resolvedConfig.proxyPort || null,
+    proxyUsername: resolvedConfig.proxyUsername || null,
+    proxyPassword: resolvedConfig.proxyPassword || null,
   });
   console.log('[ssh] test result raw:', raw);
   const parsed = JSON.parse(raw);
@@ -543,7 +520,7 @@ export async function testSSHConnection(config: SSHConnectionConfig, trustedFing
       return { ok: false, error: 'Connection cancelled by user' };
     }
     // Retry with trusted fingerprint
-    return testSSHConnection(config, hkErr.fingerprint);
+    return testSSHConnection(resolvedConfig, hkErr.fingerprint);
   }
 
   return parsed as { ok: boolean; error?: string };
@@ -622,9 +599,11 @@ export function showAuthFailedDialog(config: SSHConnectionConfig): Promise<strin
   });
 }
 
-/** Update saved password in keychain for a named connection */
+/** Update one saved password without materializing the existing vault bundle. */
 export async function updateSavedPassword(name: string, newPassword: string): Promise<void> {
-  await storeSSHSecrets(name, newPassword);
+  const id = existingConnectionId(name);
+  if (!id) throw new Error('Saved SSH connection not found');
+  await invoke('sync_update_connection_password', { id, password: newPassword });
 }
 
 function createConnectionForm(
@@ -856,6 +835,36 @@ function createConnectionForm(
   credRow.appendChild(credGroup);
   form.appendChild(credRow);
 
+  // Selecting the desktop key ladder is a distinct broker capability. Keep it
+  // explicit so an absent/lost inline PEM can never silently become agent use.
+  const keyLadderRow = document.createElement('label');
+  keyLadderRow.style.display = 'none';
+  keyLadderRow.style.alignItems = 'center';
+  keyLadderRow.style.gap = '8px';
+  keyLadderRow.style.fontSize = '12px';
+  const keyLadderCheckbox = document.createElement('input');
+  keyLadderCheckbox.type = 'checkbox';
+  keyLadderCheckbox.id = 'ssh-use-desktop-key-ladder';
+  keyLadderCheckbox.checked = prefill?.usesDesktopKeyLadder === true;
+  const keyLadderText = document.createElement('span');
+  keyLadderText.textContent = t('sshUseDesktopKeyLadder');
+  keyLadderRow.append(keyLadderCheckbox, keyLadderText);
+  form.appendChild(keyLadderRow);
+
+  const syncKeySourceControls = () => {
+    const keyMode = authSelect.value === 'key';
+    keyLadderRow.style.display = keyMode ? 'flex' : 'none';
+    const ladder = keyMode && keyLadderCheckbox.checked;
+    if (ladder) keyInput.value = '';
+    keyInput.disabled = ladder;
+    keyBrowseBtn.disabled = ladder;
+  };
+  keyLadderCheckbox.addEventListener('change', syncKeySourceControls);
+  keyInput.addEventListener('input', () => {
+    if (keyInput.value) keyLadderCheckbox.checked = false;
+    syncKeySourceControls();
+  });
+
   // Toggle auth fields
   const toggleAuth = () => {
     const isPassword = authSelect.value === 'password';
@@ -873,6 +882,7 @@ function createConnectionForm(
       agentBadge.dataset.probed = '1';
       void refreshKeyHints(keyInput, agentBadge);
     }
+    syncKeySourceControls();
   };
   toggleAuth();
 
@@ -1007,18 +1017,25 @@ function createConnectionForm(
   form.appendChild(proxySection);
 
   const readFormConfig = (): SSHConnectionConfig => ({
+    serverConnectionId: prefill?.serverConnectionId,
     name: (document.getElementById('ssh-name') as HTMLInputElement).value || 'Unnamed',
     host: (document.getElementById('ssh-host') as HTMLInputElement).value,
     port: parseInt((document.getElementById('ssh-port') as HTMLInputElement).value) || 22,
     username: (document.getElementById('ssh-username') as HTMLInputElement).value,
     authMethod: (document.getElementById('ssh-authMethod') as HTMLSelectElement).value as 'password' | 'key',
+    usesDesktopKeyLadder: (document.getElementById('ssh-authMethod') as HTMLSelectElement).value === 'key'
+      && keyLadderCheckbox.checked,
     password: (document.getElementById('ssh-password') as HTMLInputElement).value,
-    privateKey: (document.getElementById('ssh-privateKey') as HTMLInputElement).value,
+    privateKey: keyLadderCheckbox.checked
+      ? undefined
+      : (document.getElementById('ssh-privateKey') as HTMLInputElement).value,
     proxyType: (document.getElementById('ssh-proxy-type') as HTMLSelectElement).value || undefined,
     proxyHost: (document.getElementById('ssh-proxy-host') as HTMLInputElement)?.value || undefined,
     proxyPort: parseInt((document.getElementById('ssh-proxy-port') as HTMLInputElement)?.value) || undefined,
     proxyUsername: (document.getElementById('ssh-proxy-username') as HTMLInputElement)?.value || undefined,
     proxyPassword: (document.getElementById('ssh-proxy-password') as HTMLInputElement)?.value || undefined,
+    skipShellHook: prefill?.skipShellHook,
+    multiplexSftp: prefill?.multiplexSftp,
   });
 
   const showStatus = (msg: string, type: 'success' | 'error' | 'info') => {
@@ -1063,12 +1080,20 @@ function createConnectionForm(
   btnRow.className = 'ssh-form-actions';
 
   // Shared pre-connect test: returns true if connection test passes
+  const testConfig = async (config: SSHConnectionConfig) => {
+    const [{ testSSHConnectionForConfig }, appState] = await Promise.all([
+      import('./ssh-saved-session'),
+      import('./app-state'),
+    ]);
+    return testSSHConnectionForConfig(config, appState.port, appState.authToken);
+  };
+
   const preConnectTest = async (config: SSHConnectionConfig): Promise<boolean> => {
     connectBtn.disabled = true;
     connectSaveBtn.disabled = true;
     showStatus(t('sshTesting'), 'info');
     try {
-      const result = await testSSHConnection(config);
+      const result = await testConfig(config);
       if (!result.ok) {
         showStatus(`${t('sshTestFailed')}: ${result.error || 'Unknown error'}`, 'error');
         return false;
@@ -1113,7 +1138,7 @@ function createConnectionForm(
     showStatus(t('sshTesting'), 'info');
 
     try {
-      const result = await testSSHConnection(config);
+      const result = await testConfig(config);
       if (result.ok) {
         showStatus(t('sshTestSuccess'), 'success');
       } else {
@@ -1137,7 +1162,12 @@ function createConnectionForm(
 
     if (!(await preConnectTest(config))) return;
 
-    addConnection(config);
+    try {
+      await addConnection(config);
+    } catch (error) {
+      showStatus(`${t('sshImportFailed')}: ${String(error)}`, 'error');
+      return;
+    }
     const selectedGroup = groupSelect.value;
     if (selectedGroup) setConnectionGroup(sshKey(config.name), selectedGroup);
     else removeConnectionGroup(sshKey(config.name));
@@ -1152,10 +1182,15 @@ function createConnectionForm(
   const saveBtn = document.createElement('button');
   saveBtn.className = 'ssh-btn ssh-btn-secondary';
   saveBtn.textContent = t('sshSaveConnection');
-  saveBtn.onclick = () => {
+  saveBtn.onclick = async () => {
     const config = readFormConfig();
     if (!config.host || !config.username) return;
-    addConnection(config);
+    try {
+      await addConnection(config);
+    } catch (error) {
+      showStatus(`${t('sshImportFailed')}: ${String(error)}`, 'error');
+      return;
+    }
     const selectedGrp = groupSelect.value;
     if (selectedGrp) setConnectionGroup(sshKey(config.name), selectedGrp);
     else removeConnectionGroup(sshKey(config.name));

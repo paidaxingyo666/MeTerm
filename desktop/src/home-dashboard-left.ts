@@ -6,6 +6,8 @@
 import { t } from './i18n';
 import { icon } from './icons';
 import { createOverlayScrollbar } from './overlay-scrollbar';
+import { appendSshConnectionMenuItems } from './development-credential-recovery-ui';
+import { loadCardOrder, saveCardOrder } from './home-dashboard-card-order';
 import {
   type SSHConnectionConfig,
   loadSavedConnections,
@@ -28,7 +30,6 @@ import {
   type JumpServerConfig,
   loadJumpServerConfigs,
   removeJumpServerConfig,
-  loadJSSecrets,
 } from './jumpserver-api';
 import {
   loadGroupMap,
@@ -63,19 +64,6 @@ export interface ConnectionItem {
 }
 
 const GROUP_COLORS = ['#3b82f6', '#22c55e', '#eab308', '#ef4444', '#a855f7', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#78716c'];
-
-// Card display order (includes both named groups and __type:* entries)
-const CARD_ORDER_KEY = 'meterm-card-display-order';
-function loadCardOrder(): string[] {
-  try {
-    const raw = localStorage.getItem(CARD_ORDER_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return [];
-}
-function saveCardOrder(order: string[]): void {
-  localStorage.setItem(CARD_ORDER_KEY, JSON.stringify(order));
-}
 
 // ─── Collect & filter ───
 
@@ -426,11 +414,9 @@ function createAssetHistoryRow(entry: JSAssetHistoryEntry, config: JumpServerCon
   row.onclick = () => {
     (async () => {
       const { connectToAsset } = await import('./jumpserver-handler');
-      const secrets = await loadJSSecrets(config.name);
-      const fullConfig: JumpServerConfig = { ...config, password: secrets.password, apiToken: secrets.apiToken };
       const asset = { id: entry.assetId, name: entry.assetName, address: entry.assetAddress, platform: { id: 0, name: '' }, is_active: true };
       const account = { id: entry.accountId, name: entry.accountUsername, username: entry.accountUsername, has_secret: true, privileged: false };
-      connectToAsset(fullConfig, asset, account);
+      connectToAsset(config, asset, account);
     })();
   };
   return row;
@@ -474,10 +460,8 @@ export function handleConnectionClick(item: ConnectionItem, anchor?: HTMLElement
     const config = item.raw as JumpServerConfig;
     (async () => {
       try {
-        const secrets = await loadJSSecrets(config.name);
-        const fullConfig: JumpServerConfig = { ...config, password: secrets.password, apiToken: secrets.apiToken };
         const { handleJumpServerConnect } = await import('./jumpserver-handler');
-        handleJumpServerConnect(fullConfig);
+        handleJumpServerConnect(config);
       } catch (err) {
         console.error('[JumpServer connect error]', err);
       }
@@ -596,11 +580,11 @@ export function showConnectionContextMenu(event: MouseEvent, item: ConnectionIte
   menu.style.top = `${event.clientY}px`;
 
   if (item.type === 'ssh') {
-    const editItem = document.createElement('button');
-    editItem.className = 'home-card-menu-item';
-    editItem.textContent = t('homeEditConnection');
-    editItem.onclick = () => { menu.remove(); showSSHModal(item.raw as SSHConnectionConfig); };
-    menu.appendChild(editItem);
+    const config = item.raw as SSHConnectionConfig;
+    appendSshConnectionMenuItems(menu, config, t('homeEditConnection'), () => {
+      menu.remove();
+      showSSHModal(config);
+    });
   } else if (item.type === 'remote') {
     const editItem = document.createElement('button');
     editItem.className = 'home-card-menu-item';
@@ -614,10 +598,8 @@ export function showConnectionContextMenu(event: MouseEvent, item: ConnectionIte
     editItem.onclick = async () => {
       menu.remove();
       const config = item.raw as JumpServerConfig;
-      const secrets = await loadJSSecrets(config.name);
-      const prefill: JumpServerConfig = { ...config, password: secrets.password, apiToken: secrets.apiToken };
       const { showJumpServerConfigDialog } = await import('./jumpserver-ui');
-      const result = await showJumpServerConfigDialog(prefill);
+      const result = await showJumpServerConfigDialog(config);
       if (result) {
         refreshView();
         if (result.connect) {
@@ -670,7 +652,9 @@ export function showConnectionContextMenu(event: MouseEvent, item: ConnectionIte
   deleteItem.textContent = t('sshDeleteConnection');
   deleteItem.onclick = () => {
     menu.remove();
-    handleDeleteConnection(item, refreshView);
+    void handleDeleteConnection(item, refreshView).catch((error) => {
+      console.error('[connections] Unable to delete credential:', error);
+    });
   };
   menu.appendChild(deleteItem);
 
@@ -679,14 +663,14 @@ export function showConnectionContextMenu(event: MouseEvent, item: ConnectionIte
   autoCloseMenu(menu);
 }
 
-function handleDeleteConnection(item: ConnectionItem, refreshView: () => void): void {
+async function handleDeleteConnection(item: ConnectionItem, refreshView: () => void): Promise<void> {
   if (item.type === 'ssh') {
     removeSSHConnection((item.raw as SSHConnectionConfig).name);
   } else if (item.type === 'remote') {
     const info = item.raw as RemoteServerInfo;
-    removeRemoteConnection(info.host, info.port);
+    await removeRemoteConnection(info.host, info.port);
   } else if (item.type === 'jumpserver') {
-    removeJumpServerConfig((item.raw as JumpServerConfig).name);
+    await removeJumpServerConfig((item.raw as JumpServerConfig).name);
   }
   removeConnectionGroup(item.key);
   refreshView();

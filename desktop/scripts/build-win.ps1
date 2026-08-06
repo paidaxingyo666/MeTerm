@@ -1,85 +1,104 @@
-# build-win.ps1 — Build Windows installer from WSL
+# build-win.ps1 — build the native Windows installer from a WSL checkout
 #
-# Syncs the desktop project to a Windows-local directory, runs tauri build,
-# then copies the resulting installer(s) to the user's Downloads folder.
+# Mirrors desktop/ and frontend/ into a Windows-local worktree, builds both web
+# frontends, then builds the Tauri app. The HTTP/WebSocket server and terminal
+# backends are linked into the Rust executable; no sidecar binary is built.
 
-param([string]$UncPath)
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [Alias("UncPath")]
+    [string]$RepoUncPath
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
 $env:PATH = 'C:\Program Files\nodejs;' + $env:USERPROFILE + '\.cargo\bin;' + $env:PATH
-$env:CARGO_TARGET_DIR = $env:USERPROFILE + '\AppData\Local\meterm-target'
+$env:CARGO_TARGET_DIR = Join-Path $env:LOCALAPPDATA "meterm-target"
 
-$workDir = Join-Path $env:LOCALAPPDATA "meterm-dev"
+function Invoke-RobocopyMirror {
+    param([string]$Source, [string]$Destination)
 
-# ── Sync WSL → Windows (incremental) ─────────────────────────────────────────
-Write-Host "[build-win] Syncing $UncPath -> $workDir ..."
-robocopy $UncPath $workDir /MIR /XD node_modules .git target dist .vite /NFL /NDL /NJH /NJS /NP | Out-Null
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    & robocopy.exe $Source $Destination /MIR /XD node_modules .git target dist .vite /NFL /NDL /NJH /NJS /NP | Out-Null
+    $copyExit = $LASTEXITCODE
+    if ($copyExit -ge 8) {
+        throw "robocopy failed for $Source with exit code $copyExit"
+    }
+}
+
+function Invoke-Checked {
+    param([string]$Command, [string[]]$Arguments)
+
+    & $Command @Arguments
+    $commandExit = $LASTEXITCODE
+    if ($commandExit -ne 0) {
+        throw "$Command failed with exit code $commandExit"
+    }
+}
+
+$desktopSource = Join-Path $RepoUncPath "desktop"
+$frontendSource = Join-Path $RepoUncPath "frontend"
+if (-not (Test-Path (Join-Path $desktopSource "package.json")) -or
+    -not (Test-Path (Join-Path $frontendSource "package.json"))) {
+    throw "RepoUncPath must point to the MeTerm repository root: $RepoUncPath"
+}
+
+$workRoot = Join-Path $env:LOCALAPPDATA "meterm-rust-dev"
+$desktopDir = Join-Path $workRoot "desktop"
+$frontendDir = Join-Path $workRoot "frontend"
+
+Write-Host "[build-win] Syncing desktop and frontend into $workRoot ..."
+Invoke-RobocopyMirror $desktopSource $desktopDir
+Invoke-RobocopyMirror $frontendSource $frontendDir
 Write-Host "[build-win] Sync done"
 
-# ── Build native Windows backend sidecar ─────────────────────────────────────
-$goExe = Get-Command go -ErrorAction SilentlyContinue
-if (-not $goExe) {
-    Write-Host "[build-win] ERROR: Go not found in PATH (required to build meterm sidecar)." -ForegroundColor Red
-    exit 1
+$conptyDir = Join-Path (Join-Path $desktopDir "src-tauri\binaries") "conpty"
+if (-not (Test-Path (Join-Path $conptyDir "conpty.dll")) -or
+    -not (Test-Path (Join-Path $conptyDir "OpenConsole.exe"))) {
+    throw "ConPTY resources are missing. Run make desktop-build-win from WSL so scripts/download-conpty.sh can prepare them."
 }
-$backendDir = Join-Path $workDir "backend"
-$sidecarDir = Join-Path $workDir "desktop\src-tauri\binaries"
-$sidecarExe = Join-Path $sidecarDir "meterm-server-x86_64-pc-windows-msvc.exe"
-New-Item -ItemType Directory -Force -Path $sidecarDir | Out-Null
-Write-Host "[build-win] Building native sidecar -> $sidecarExe ..."
-Push-Location $backendDir
-try {
-    go build -o $sidecarExe .
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[build-win] Sidecar build failed with exit code $LASTEXITCODE" -ForegroundColor Red
-        exit $LASTEXITCODE
-    }
-} finally {
-    Pop-Location
-}
-Write-Host "[build-win] Sidecar build done"
 
-# ── Build ─────────────────────────────────────────────────────────────────────
-Push-Location $workDir
+# The Rust in-process server embeds frontend/dist. Build it before Cargo.
+Write-Host "[build-win] Building standalone web frontend ..."
+Push-Location $frontendDir
 try {
-    npm install
-    npx tauri build --config src-tauri/tauri.windows.conf.json
-    $buildExit = $LASTEXITCODE
-    if ($buildExit -ne 0) {
-        Write-Host "[build-win] Build failed with exit code $buildExit" -ForegroundColor Red
-        exit $buildExit
-    }
+    Invoke-Checked "npm.cmd" @("install")
+    Invoke-Checked "npm.cmd" @("run", "build")
 } finally {
     Pop-Location
 }
 
-# ── Copy installers to Downloads ──────────────────────────────────────────────
+Write-Host "[build-win] Building native Tauri/Rust installer ..."
+Push-Location $desktopDir
+try {
+    Invoke-Checked "npm.cmd" @("install")
+    Invoke-Checked "npx.cmd" @("tauri", "build", "--config", "src-tauri/tauri.windows.conf.json")
+} finally {
+    Pop-Location
+}
+
 $bundleDir = Join-Path $env:CARGO_TARGET_DIR "release\bundle"
-$dlDir = Join-Path $env:USERPROFILE "Downloads"
+$downloadDir = Join-Path $env:USERPROFILE "Downloads"
+New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
 
-$copied = 0
-
-# NSIS installer (.exe)
+$installers = @()
 $nsisDir = Join-Path $bundleDir "nsis"
 if (Test-Path $nsisDir) {
-    Get-ChildItem -Path $nsisDir -Filter "*.exe" | ForEach-Object {
-        Copy-Item $_.FullName -Destination $dlDir -Force
-        Write-Host "[build-win] Copied $($_.Name) -> $dlDir" -ForegroundColor Green
-        $copied++
-    }
+    $installers += @(Get-ChildItem -Path $nsisDir -Filter "*.exe" -File)
 }
-
-# MSI installer
 $msiDir = Join-Path $bundleDir "msi"
 if (Test-Path $msiDir) {
-    Get-ChildItem -Path $msiDir -Filter "*.msi" | ForEach-Object {
-        Copy-Item $_.FullName -Destination $dlDir -Force
-        Write-Host "[build-win] Copied $($_.Name) -> $dlDir" -ForegroundColor Green
-        $copied++
-    }
+    $installers += @(Get-ChildItem -Path $msiDir -Filter "*.msi" -File)
 }
 
-if ($copied -eq 0) {
-    Write-Host "[build-win] Warning: no installer files found in $bundleDir" -ForegroundColor Yellow
-} else {
-    Write-Host "[build-win] Done! $copied installer(s) copied to $dlDir" -ForegroundColor Green
+if ($installers.Count -eq 0) {
+    throw "Tauri completed but no installer was found in $bundleDir"
 }
+
+foreach ($installer in $installers) {
+    Copy-Item $installer.FullName -Destination $downloadDir -Force
+    Write-Host "[build-win] Copied $($installer.Name) -> $downloadDir" -ForegroundColor Green
+}
+Write-Host "[build-win] Done: $($installers.Count) installer(s) copied." -ForegroundColor Green

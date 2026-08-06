@@ -20,7 +20,11 @@ import {
   type ServerInfoResponse,
   type FileSearchResponse,
 } from './protocol';
-import { handleFileReadResponse, handleSaveResponse } from './file-editor-bridge';
+import {
+  handleFileReadError,
+  handleFileReadResponse,
+  handleSaveResponse,
+} from './file-editor-bridge';
 import { isMacPlatform } from './app-state';
 import { refreshJumpServerSftp } from './jumpserver-sftp-refresh';
 import { encodeMessage, validateFileName, formatSize } from './file-utils';
@@ -395,7 +399,7 @@ export class FileManager {
         console.error('Failed to parse server info:', e);
       }
     } else if (msgType === MsgFileReadResponse) {
-      handleFileReadResponse(payload);
+      handleFileReadResponse(payload, this.transport ?? this.ws ?? undefined);
     } else if (msgType === MsgFileSearchResp) {
       this.handleFileSearchResponse(payload);
       return true;
@@ -715,11 +719,32 @@ export class FileManager {
       if (payload.length < 1) { console.error('❌ 收到空错误响应'); return; }
       const code = payload[0];
       const message = new TextDecoder().decode(payload.slice(1));
+      // ERR_NOT_MASTER(0x01) 是终端输入的 master 门控错误——viewer 端 xterm 自动
+      // 回应终端查询(光标位置/设备属性)被写回 PTY 而遭拒,与文件操作无关。
+      // file-manager 劫持 onmessage 会看到所有帧,但不该把这个终端错误当文件错误弹窗。
+      if (code === 0x01) return;
       const isDownloading = this.activeDownloads.size > 0;
       error = { code: code === 0xFF && isDownloading ? 'READ_FAILED' : 'INTERNAL_ERROR', message };
     }
     try {
       console.error('🚨 服务器返回错误:', error.code, '-', error.message);
+      const editorSource = this.transport ?? this.ws ?? undefined;
+      const editorError = `${error.code}: ${error.message}`;
+      const readErrors = new Set([
+        'READ_FAILED', 'READ_TIMEOUT', 'FILE_TOO_LARGE', 'IS_DIRECTORY', 'NOT_FOUND',
+      ]);
+      const writeErrors = new Set(['WRITE_FAILED', 'RENAME_FAILED', 'INVALID_PATH']);
+      if (readErrors.has(error.code)
+          && !(error.code === 'NOT_FOUND' && this.pendingStatCallback)) {
+        handleFileReadError(editorError, editorSource);
+      } else if (writeErrors.has(error.code)) {
+        handleSaveResponse('', false, editorError, editorSource);
+      } else if (error.code === 'INVALID_REQUEST' || error.code === 'SFTP_NOT_AVAILABLE'
+          || error.code === 'SFTP_AUTH_FAILED') {
+        if (!handleFileReadError(editorError, editorSource)) {
+          handleSaveResponse('', false, editorError, editorSource);
+        }
+      }
 
       if (error.code === 'NO_PARTIAL_UPLOAD' && this.activeUploads.size > 0) {
         // Restart the first active upload that failed resume
@@ -809,10 +834,6 @@ export class FileManager {
           setTimeout(() => this.loadDirectory(retryPath), delay);
         }
         return;
-      }
-
-      if (error.code === 'WRITE_FAILED' || error.code === 'INVALID_PATH' || error.code === 'INVALID_REQUEST' || error.code === 'SFTP_NOT_AVAILABLE') {
-        handleSaveResponse('', false, `${error.code}: ${error.message}`);
       }
 
       if (error.code === 'NOT_FOUND' && this.pendingStatCallback) {
@@ -1130,7 +1151,12 @@ export class FileManager {
       const response = JSON.parse(new TextDecoder().decode(payload));
 
       if (response.operation === 'save') {
-        handleSaveResponse(response.path || '', response.success, response.message);
+        handleSaveResponse(
+          response.path || '',
+          response.success,
+          response.message,
+          this.transport ?? this.ws ?? undefined,
+        );
         return;
       }
 

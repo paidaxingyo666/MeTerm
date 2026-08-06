@@ -30,13 +30,10 @@ mod inner {
     ) -> Result<(), String> {
         use objc2_app_kit::{NSColor, NSWindow};
 
-        let ns_window_raw =
-            window.ns_window().map_err(|e| e.to_string())?;
+        let ns_window_raw = window.ns_window().map_err(|e| e.to_string())?;
         let ns_window = unsafe { &*(ns_window_raw as *const NSWindow) };
 
-        let color = unsafe {
-            NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0)
-        };
+        let color = unsafe { NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0) };
         ns_window.setBackgroundColor(Some(&color));
 
         Ok(())
@@ -46,17 +43,15 @@ mod inner {
     pub fn register_vibrancy_anti_flash(
         window: &tauri::WebviewWindow,
     ) -> Result<VibrancyGuard, String> {
-        use std::ptr::NonNull;
         use objc2::msg_send;
         use objc2::runtime::AnyObject;
         use objc2_app_kit::{
-            NSWindow, NSWindowDidDeminiaturizeNotification,
-            NSWindowDidMiniaturizeNotification,
+            NSWindow, NSWindowDidDeminiaturizeNotification, NSWindowDidMiniaturizeNotification,
         };
         use objc2_foundation::{NSNotification, NSNotificationCenter};
+        use std::ptr::NonNull;
 
-        let ns_window_raw =
-            window.ns_window().map_err(|e| e.to_string())?;
+        let ns_window_raw = window.ns_window().map_err(|e| e.to_string())?;
         let addr = ns_window_raw as usize;
 
         let center = unsafe { NSNotificationCenter::defaultCenter() };
@@ -66,11 +61,9 @@ mod inner {
 
         // --- DidMiniaturize: set alpha=0 (window is in Dock, invisible) ---
         let a1 = addr;
-        let b1 = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
-            unsafe {
-                let w = &*(a1 as *const NSWindow);
-                let _: () = msg_send![w, setAlphaValue: 0.0_f64];
-            }
+        let b1 = block2::RcBlock::new(move |_: NonNull<NSNotification>| unsafe {
+            let w = &*(a1 as *const NSWindow);
+            let _: () = msg_send![w, setAlphaValue: 0.0_f64];
         });
         observers.push(unsafe {
             center.addObserverForName_object_queue_usingBlock(
@@ -83,11 +76,9 @@ mod inner {
 
         // --- DidDeminiaturize: restore alpha=1 ---
         let a2 = addr;
-        let b2 = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
-            unsafe {
-                let w = &*(a2 as *const NSWindow);
-                let _: () = msg_send![w, setAlphaValue: 1.0_f64];
-            }
+        let b2 = block2::RcBlock::new(move |_: NonNull<NSNotification>| unsafe {
+            let w = &*(a2 as *const NSWindow);
+            let _: () = msg_send![w, setAlphaValue: 1.0_f64];
         });
         observers.push(unsafe {
             center.addObserverForName_object_queue_usingBlock(

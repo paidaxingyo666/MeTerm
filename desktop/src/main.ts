@@ -34,6 +34,10 @@ import '@xterm/xterm/css/xterm.css';
 import { TabManager } from './tabs';
 import { TerminalRegistry } from './terminal';
 import { loadSettings } from './themes';
+import {
+  hydrateSettingsSecretPresenceFromStorage,
+  initializeSettingsSecrets,
+} from './settings-secrets';
 import { applyWindowOpacity, applyAiBarOpacity, applyColorScheme, applyBackgroundImage, applyVibrancy } from './appearance';
 import { applyUiFont } from './fonts';
 import { applyNbPalette, listenForNbPaletteChanges } from './nb-palette';
@@ -47,8 +51,10 @@ import { initEditorWindowShell } from './file-editor-init';
 import { initPip } from './pip';
 import { initMacFullscreen } from './fullscreen-mac';
 import { initLanguage, setLanguage } from './i18n';
-import { setSSHConnectHandler, migrateSSHCredentials } from './ssh';
-import { setRemoteConnectHandler, migrateRemoteCredentials, pruneUnreachableRecentRemotes } from './remote';
+import { setSSHConnectHandler } from './ssh';
+import { detectSshMigrationPendingAtStartup, pullConnections } from './connection-sync';
+import { fetchRemoteSessions, setRemoteConnectHandler, detectRemoteCredentialMigrationPendingAtStartup, pruneUnreachableRecentRemotes } from './remote';
+import { detectJumpServerCredentialMigrationPendingAtStartup } from './jumpserver-api';
 import { setupTabTransferListener, type TabTransferSessionInfo } from './tab-drag';
 import { escapeHtml } from './status-bar';
 import { StatusBar } from './status-bar';
@@ -107,6 +113,7 @@ async function init(): Promise<void> {
   // Route to utility windows if URL parameter is set
   const params = new URLSearchParams(window.location.search);
   if (params.get('window') === 'settings') {
+    await initializeSettingsSecrets('settings');
     initSettingsWindow();
     return;
   }
@@ -130,8 +137,18 @@ async function init(): Promise<void> {
     return;
   }
 
-    // One-time migration: import localStorage data from old bundle ID (com.meterm.dev → com.meterm.app)
-  await migrateOldLocalStorage();
+  // Release may import and consume only 11 strictly validated, non-secret UI
+  // preference keys from the old Dev database. Debug is always a no-op; all
+  // credential/history rows remain untouched for explicit recovery/cleanup.
+  if (getCurrentWindow().label === 'main') await consumeLegacyUiPreferences();
+  // Only the primary window may perform the one-shot native migration. Normal
+  // `window-*` launches consume non-sensitive cached presence flags and never
+  // touch the settings Keychain during startup.
+  if (getCurrentWindow().label === 'main') {
+    await initializeSettingsSecrets('startup');
+  } else {
+    hydrateSettingsSecretPresenceFromStorage();
+  }
 
   initLanguage();
   setSettings(loadSettings());
@@ -157,9 +174,39 @@ async function init(): Promise<void> {
   // otherwise new windows never render their toolbar.
   void syncTrayLanguage();
 
-  // Fire-and-forget: migrate plaintext credentials from localStorage to OS keychain
-  void migrateSSHCredentials();
-  void migrateRemoteCredentials();
+  // Only the main window records whether an explicit SSH migration is pending.
+  // This startup check is Web Storage-only and never scans Keychain accounts.
+  if (currentWindowLabel === 'main') {
+    try {
+      await detectSshMigrationPendingAtStartup();
+    } catch (error) {
+      // Startup only records a redacted pending/manual state. Credential reads
+      // and writes require the explicit migration UI or normal user edits.
+      console.warn('[security] SSH credential migration requires explicit action:', error);
+    }
+    try {
+      await detectRemoteCredentialMigrationPendingAtStartup();
+    } catch (error) {
+      // The durable manual marker prevents startup retries. Plaintext is kept
+      // for an explicit connection attempt or re-save by the user.
+      console.warn('[security] Remote credential migration incomplete:', error);
+    }
+    try {
+      await detectJumpServerCredentialMigrationPendingAtStartup();
+    } catch (error) {
+      // The durable manual marker prevents startup retries. Explicit use of the
+      // JumpServer UI retains the existing on-demand migration path.
+      console.warn('[security] JumpServer credential migration incomplete:', error);
+    }
+  }
+
+  // Fire-and-forget: reverse pull — merge connections created/deleted on the
+  // phone (or another device) back into this desktop. Runs once at startup then
+  // polls every 10s so cross-device changes surface. Fully try/caught inside;
+  // a sync failure never breaks local SSH management. Credential migration is
+  // manual-only; this pull contains metadata and never reads the desktop vault.
+  void pullConnections();
+  setInterval(() => { void pullConnections(); }, 10000);
 
   // Setup JumpServer: restore state from localStorage (only for secondary windows, not on app restart)
   import('./jumpserver-handler').then(({ setupJumpServerEventListener, restoreActiveJumpServersFromStorage, clearActiveJumpServersStorage }) => {
@@ -233,18 +280,21 @@ async function init(): Promise<void> {
       try {
         // For remote sessions, query the remote server; for local, query localhost
         const remoteInfo = remoteInfoMap.get(sessionId);
-        let apiUrl: string;
-        let apiToken: string;
         if (remoteInfo) {
-          const proto = remoteInfo.secure ? 'https' : 'http';
-          apiUrl = `${proto}://${remoteInfo.host}:${remoteInfo.port}/api/sessions/${sessionId}`;
-          apiToken = remoteInfo.token;
-        } else {
-          apiUrl = `http://127.0.0.1:${port}/api/sessions/${sessionId}`;
-          apiToken = authToken;
+          const sessions = await fetchRemoteSessions(remoteInfo);
+          const data = sessions.find((session) => session.id === sessionId) as (typeof sessions[number] & {
+            connected_clients?: number;
+            clients?: number;
+          }) | undefined;
+          if (!data) return 0;
+          const totalClients = typeof data.connected_clients === 'number'
+            ? data.connected_clients
+            : (typeof data.clients === 'number' ? data.clients : 0);
+          return Math.max(0, totalClients - 1);
         }
+        const apiUrl = `http://127.0.0.1:${port}/api/sessions/${sessionId}`;
         const resp = await fetch(apiUrl, {
-          headers: { Authorization: `Bearer ${apiToken}` },
+          headers: { Authorization: `Bearer ${authToken}` },
         });
         if (!resp.ok) return 0;
         const data = await resp.json();
@@ -329,15 +379,6 @@ async function init(): Promise<void> {
     if (sessionCreated) renderToolbarActions();
   }
 
-  // Sync discoverable (LAN discovery) state from localStorage to tray menu
-  const savedDiscoverable = localStorage.getItem('meterm-discoverable') === '1';
-  try {
-    await invoke('set_discoverable_state', { checked: savedDiscoverable });
-    if (savedDiscoverable) {
-      await invoke('toggle_lan_sharing', { enabled: true });
-    }
-  } catch { /* ignore startup discoverable errors */ }
-
   // Setup cross-window tab drag-and-drop (needs meterm connection info)
   setupTabTransferListener(activateTab, showHomeView, port, authToken, renderTabs, (sess: TabTransferSessionInfo) => {
     // Restore SSH config map so the cloud icon appears in renderTabs
@@ -351,16 +392,13 @@ async function init(): Promise<void> {
       });
     }
     // Restore remote info map so the globe icon and remote list button appear
-    if (sess.isRemote && sess.remoteWsUrl) {
-      try {
-        const url = new URL(sess.remoteWsUrl);
-        remoteInfoMap.set(sess.sessionId, {
-          host: url.hostname,
-          port: parseInt(url.port) || 8080,
-          token: sess.remoteToken || '',
-          secure: url.protocol === 'wss:',
-        });
-      } catch { /* ignore parse errors */ }
+    if (sess.isRemote && sess.remoteHost && sess.remotePort) {
+      remoteInfoMap.set(sess.sessionId, {
+        host: sess.remoteHost,
+        port: sess.remotePort,
+        token: '',
+        secure: true,
+      });
       remoteTabNumbers.set(sess.sessionId, incrementNextRemoteTabNumber());
     }
   });
@@ -376,34 +414,25 @@ async function init(): Promise<void> {
 }
 
 /**
- * One-time migration: read localStorage from the old `com.meterm.dev` WebKit data
- * and write entries into the current (new) localStorage under `com.meterm.app`.
- * Skips keys that already exist in the new localStorage to avoid overwriting.
+ * Consume the native migration's strict non-secret UI-preference allowlist.
+ * The command cannot be used as a generic old localStorage reader.
  */
-async function migrateOldLocalStorage(): Promise<void> {
-  const MIGRATION_KEY = 'meterm-migrated-from-dev';
-  if (localStorage.getItem(MIGRATION_KEY)) return; // already migrated
-
+async function consumeLegacyUiPreferences(): Promise<void> {
   try {
-    const data = await invoke<Record<string, string> | null>('read_old_localstorage');
-    if (!data) {
-      localStorage.setItem(MIGRATION_KEY, '1');
-      return;
-    }
+    const data = await invoke<Record<string, string> | null>('consume_legacy_ui_preferences');
+    if (!data) return;
     let count = 0;
     for (const [key, value] of Object.entries(data)) {
-      if (!localStorage.getItem(key)) {
+      if (localStorage.getItem(key) === null) {
         localStorage.setItem(key, value);
         count++;
       }
     }
-    localStorage.setItem(MIGRATION_KEY, '1');
     if (count > 0) {
-      console.log(`[migration] Imported ${count} localStorage entries from com.meterm.dev`);
+      console.log(`[migration] Imported ${count} legacy UI preferences`);
     }
   } catch (e) {
-    console.warn('[migration] Failed to read old localStorage:', e);
-    // Don't set the flag so it can retry next launch
+    console.warn('[migration] Failed to consume legacy UI preferences:', e);
   }
 }
 

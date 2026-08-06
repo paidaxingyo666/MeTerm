@@ -50,18 +50,15 @@ export function createWebSearchTool(): ToolHandler {
         finalQuery += ' ' + sites.map(s => `site:${s}`).join(' OR ');
       }
 
-      const baseUrl = settings.searxngUrl.replace(/\/+$/, '');
-      const searchUrl = `${baseUrl}/search?q=${encodeURIComponent(finalQuery)}&format=json` +
-        (args.language ? `&language=${encodeURIComponent(String(args.language))}` : '');
-
-      const headers: [string, string][] = [];
-      if (settings.searxngUsername && settings.searxngPassword) {
-        headers.push(['Authorization', 'Basic ' + btoa(`${settings.searxngUsername}:${settings.searxngPassword}`)]);
-      }
-
       try {
-        const fetchPromise = invoke<{ ok: boolean; status: number; body: string }>('fetch_ai_models', {
-          request: { url: searchUrl, headers },
+        const fetchPromise = invoke<{ ok: boolean; status: number; body: string }>('fetch_searxng_search', {
+          request: {
+            baseUrl: settings.searxngUrl,
+            username: settings.searxngUsername,
+            query: finalQuery,
+            page: 1,
+            language: args.language ? String(args.language) : undefined,
+          },
         });
         const timeoutPromise = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('Search request timed out (10s)')), 10_000),
